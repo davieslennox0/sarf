@@ -44,9 +44,9 @@ patterns=(
   '(PRIVATE_KEY|SECRET_KEY|MNEMONIC|SEED_PHRASE)[[:space:]]*[=:][[:space:]]*["'"'"']?(0x)?[0-9a-fA-F]{32,}'
 )
 for p in "${patterns[@]}"; do
-  if git diff --cached -U0 | grep -E "^\+" | grep -Ev "^\+\+\+" | grep -qE "$p"; then
+  if git diff --cached -U0 | grep -E "^\+" | grep -Ev "^\+\+\+" | grep -qE -e "$p"; then
     echo "BLOCKED: staged content matches private-key pattern: $p" >&2
-    git diff --cached -U0 | grep -E "^\+" | grep -E "$p" | head -3 | sed 's/^/  /' >&2
+    git diff --cached -U0 | grep -E "^\+" | grep -E -e "$p" | head -3 | sed 's/^/  /' >&2
     fail=1
   fi
 done

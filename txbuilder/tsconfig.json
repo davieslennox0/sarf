@@ -1,0 +1,19 @@
+{
+  // The vendor SDK ships ESM with extensionless relative imports
+  // (moduleResolution: Bundler), which plain `node` can't resolve — upstream's
+  // own examples run under tsx. We do the same: typecheck with Bundler
+  // resolution, execute with tsx (see package.json "start").
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
