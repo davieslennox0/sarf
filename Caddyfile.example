@@ -1,0 +1,14 @@
+# Caddy reverse proxy for SuiFlow. Only the MCP server is exposed;
+# the tx-builder sidecar (8761) must never appear here.
+suiflow.example.com {
+	encode zstd gzip
+
+	# MCP endpoint + health only. Everything else 404s.
+	@allowed path /mcp /mcp/* /healthz
+	handle @allowed {
+		reverse_proxy 127.0.0.1:8760
+	}
+	handle {
+		respond 404
+	}
+}
