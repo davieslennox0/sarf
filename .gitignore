@@ -1,0 +1,29 @@
+# --- Secrets: never commit. CI + pre-commit hook also enforce this. ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keystore
+sui.keystore
+sui_config/
+.sui/
+
+# Vendored SDK (cloned + built by scripts/setup.sh, not tracked here)
+vendor/
+
+# Python
+server/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node
+node_modules/
+txbuilder/dist/
+
+# Local state
+data/*.db
+data/*.db-*
+*.log
+.DS_Store
