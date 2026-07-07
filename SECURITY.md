@@ -78,6 +78,16 @@ That gap is closed; this section replaces the old one entirely.
    `SARF_SESSION_SECRET`, revocable and expirable via its DB row (both checks
    must pass on every request).
 
+Explicit revocation (logout, or an operator killing a compromised token)
+**marks** the row (`revoked_at`, `revocation_reason`) rather than deleting
+it, and revoked rows are retained for 30 days — so the audit trail can
+distinguish a compromise response from natural expiry. That distinction is
+server-internal only: the token holder sees plain `session_expired` either
+way, deliberately. Session tokens never reach log files: Caddy does not
+access-log the sarf hosts, and uvicorn's access log (which records full
+request lines, `?key=` included) runs behind a redaction filter that scrubs
+`sarf_sess_…` tokens before writing.
+
 **Session lifetime: 30 minutes** (`SESSION_TTL_SECONDS`, hard-capped at 60 in
 code). Long enough for one propose→review→sign conversation; short enough
 that a leaked connector URL dies the same hour. Expiry requires signing in

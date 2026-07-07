@@ -19,6 +19,7 @@ invariant the server owns on top.
 from __future__ import annotations
 
 import base64
+import logging
 
 import pytest
 from fastapi import FastAPI
@@ -224,6 +225,74 @@ def test_logout_revokes_session(client):
     headers = {"Authorization": f"Bearer {token}"}
     client.post("/api/auth/logout", headers=headers)
     assert client.get("/api/me/activity", headers=headers).status_code == 401
+
+
+# -------------------------------------- revocation audit trail (internal only)
+
+def _token_id(token: str) -> str:
+    return token.split(".", 1)[0].removeprefix("sarf_sess_")
+
+
+def test_revocation_recorded_server_side(db):
+    """An explicit revoke must be distinguishable internally from natural
+    expiry (when and why), while the token holder sees exactly the same
+    'expired' behavior — the reason never leaves the DB."""
+    token, _ = auth.mint_session(db, ADDR_A)
+    auth.revoke_token(db, token, reason="compromise_suspected")
+    rec = db.session_record(_token_id(token))
+    assert rec is not None and rec["revoked_at"] is not None
+    assert rec["revocation_reason"] == "compromise_suspected"
+    # holder-facing state is byte-for-byte the natural-expiry story
+    assert auth.resolve_session_state(db, token) == (None, "expired")
+    # ...whereas a naturally-expired row carries no revocation record
+    stale, _ = auth.mint_session(db, ADDR_A, ttl_seconds=-1)
+    rec2 = db.session_record(_token_id(stale))
+    assert rec2["revoked_at"] is None and rec2["revocation_reason"] is None
+
+
+def test_logout_records_reason(client, db):
+    token = _sign_in(client)
+    client.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
+    rec = db.session_record(_token_id(token))
+    assert rec is not None and rec["revocation_reason"] == "user_logout"
+
+
+def test_revoked_row_survives_pruning(db):
+    """put_session prunes stale rows, but a revoked row is audit evidence:
+    it must outlive its own expiry (for the retention window)."""
+    revoked, _ = auth.mint_session(db, ADDR_A, ttl_seconds=-1)  # already past expiry
+    auth.revoke_token(db, revoked, reason="test")
+    plain_stale, _ = auth.mint_session(db, ADDR_A, ttl_seconds=-1)
+    auth.mint_session(db, ADDR_B)  # insert triggers the prune
+    assert db.session_record(_token_id(revoked)) is not None
+    assert db.session_record(_token_id(plain_stale)) is None
+
+
+# ---------------------------------------------- access-log token redaction
+
+def test_access_log_filter_redacts_tokens(db):
+    """uvicorn's access log records the full request line including
+    ?key=<token>; the filter must scrub it before the line is written."""
+    token, _ = auth.mint_session(db, ADDR_A)
+    record = logging.LogRecord(
+        name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("1.2.3.4:0", "POST", f"/mcp?key={token}", "1.1", 200),
+        exc_info=None,
+    )
+    assert auth.RedactSessionTokens().filter(record) is True  # never drops lines
+    line = record.getMessage()
+    assert token not in line
+    assert 'POST /mcp?key=sarf_sess_[redacted] HTTP/1.1' in line
+    # non-token lines pass through untouched
+    plain = logging.LogRecord(
+        name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("1.2.3.4:0", "GET", "/healthz", "1.1", 200),
+        exc_info=None,
+    )
+    auth.RedactSessionTokens().filter(plain)
+    assert '"GET /healthz HTTP/1.1" 200' in plain.getMessage()
 
 
 # ------------------------------------------------ address binding on submit

@@ -44,6 +44,29 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger("sarf.auth")
 
 _TOKEN_RE = re.compile(r"^sarf_sess_([0-9a-f]{32})\.([0-9a-f]{64})$")
+# Unanchored variant for scrubbing tokens out of larger strings (log lines).
+_TOKEN_ANYWHERE_RE = re.compile(r"sarf_sess_[0-9a-f]{32}\.[0-9a-f]{64}")
+
+
+class RedactSessionTokens(logging.Filter):
+    """Scrub session tokens from log records before they are written.
+
+    Connector URLs put the token in the query string (?key=sarf_sess_…) —
+    the only auth style every MCP client supports — and uvicorn's access log
+    records the full request line. A live bearer credential must not be
+    retained in log files, so main.py installs this filter on every uvicorn
+    log handler.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _TOKEN_ANYWHERE_RE.sub("sarf_sess_[redacted]", record.msg)
+        if record.args:
+            record.args = tuple(
+                _TOKEN_ANYWHERE_RE.sub("sarf_sess_[redacted]", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
 
 # Address of the verified session for the current request, set by the /mcp
 # middleware (and by REST handlers after bearer validation). None = no
@@ -105,10 +128,13 @@ def resolve_session_state(db: "Database", token: str | None) -> tuple[str | None
     return (address, "valid") if address else (None, "expired")
 
 
-def revoke_token(db: "Database", token: str | None) -> None:
+def revoke_token(db: "Database", token: str | None, reason: str | None = None) -> None:
+    """Explicitly kill a session. The reason is recorded server-side only
+    (audit: was this a routine logout or a compromise response?); the token
+    holder sees plain session_expired either way."""
     m = _TOKEN_RE.match((token or "").strip())
     if m:
-        db.revoke_session(m.group(1))
+        db.revoke_session(m.group(1), reason)
 
 
 def bind_session(address: str | None, state: str | None = None):

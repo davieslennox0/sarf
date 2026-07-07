@@ -72,7 +72,18 @@ CREATE TABLE IF NOT EXISTS stats (
 _MIGRATIONS = [
     "ALTER TABLE proposals ADD COLUMN summary_text TEXT",
     "ALTER TABLE proposals ADD COLUMN risk_notes_json TEXT",
+    # Revocation bookkeeping: an explicitly revoked session is marked, not
+    # deleted, so the audit trail can distinguish "revoked (and why)" from
+    # "naturally expired". Internal only — the token holder always sees the
+    # same session_expired behavior regardless.
+    "ALTER TABLE sessions ADD COLUMN revoked_at REAL",
+    "ALTER TABLE sessions ADD COLUMN revocation_reason TEXT",
 ]
+
+# How long a revoked session row is retained after revocation for auditing
+# (a compromise investigation needs to see WHEN and WHY a token was killed).
+# Non-revoked rows are pruned as soon as they expire — they carry no signal.
+REVOKED_SESSION_RETENTION_SECONDS = 30 * 86400
 
 
 @dataclass(frozen=True)
@@ -252,22 +263,51 @@ class Database:
         lives in auth.py; this table only decides expiry and revocation."""
         now = time.time()
         with self._lock, self._conn:
-            self._conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+            # Prune: expired-and-never-revoked rows immediately (no audit
+            # value); revoked rows only after the audit retention window.
             self._conn.execute(
-                "INSERT INTO sessions VALUES (?,?,?,?)", (token_id, address, now, now + ttl_seconds)
+                "DELETE FROM sessions WHERE expires_at < ? AND revoked_at IS NULL", (now,)
+            )
+            self._conn.execute(
+                "DELETE FROM sessions WHERE revoked_at IS NOT NULL AND revoked_at < ?",
+                (now - REVOKED_SESSION_RETENTION_SECONDS,),
+            )
+            self._conn.execute(
+                "INSERT INTO sessions (token, address, created_at, expires_at) VALUES (?,?,?,?)",
+                (token_id, address, now, now + ttl_seconds),
             )
 
     def session_address(self, token_id: str) -> str | None:
         r = self._conn.execute(
-            "SELECT address, expires_at FROM sessions WHERE token=?", (token_id,)
+            "SELECT address, expires_at, revoked_at FROM sessions WHERE token=?", (token_id,)
         ).fetchone()
-        if not r or r[1] < time.time():
+        if not r or r[1] < time.time() or r[2] is not None:
             return None
         return r[0]
 
-    def revoke_session(self, token_id: str) -> None:
+    def revoke_session(self, token_id: str, reason: str | None = None) -> None:
+        """Mark (not delete) so the audit trail keeps when/why. The token
+        holder still just sees session_expired — the reason is internal."""
         with self._lock, self._conn:
-            self._conn.execute("DELETE FROM sessions WHERE token=?", (token_id,))
+            self._conn.execute(
+                "UPDATE sessions SET revoked_at=?, revocation_reason=? WHERE token=?",
+                (time.time(), reason, token_id),
+            )
+
+    def session_record(self, token_id: str) -> dict[str, Any] | None:
+        """Full session row for internal auditing (includes revoked/expired
+        rows still within retention). Never exposed to token holders."""
+        r = self._conn.execute(
+            "SELECT token, address, created_at, expires_at, revoked_at, revocation_reason"
+            " FROM sessions WHERE token=?",
+            (token_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {
+            "token_id": r[0], "address": r[1], "created_at": r[2],
+            "expires_at": r[3], "revoked_at": r[4], "revocation_reason": r[5],
+        }
 
     def set_stat(self, key: str, value: dict[str, Any]) -> None:
         with self._lock, self._conn:

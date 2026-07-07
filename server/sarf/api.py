@@ -125,7 +125,7 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
     @r.post("/auth/logout")
     async def auth_logout(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         if authorization and authorization.lower().startswith("bearer "):
-            auth.revoke_token(db, authorization[7:])
+            auth.revoke_token(db, authorization[7:], reason="user_logout")
         return {"ok": True}
 
     # ----------------------------------------------------- authed activity

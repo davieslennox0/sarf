@@ -200,7 +200,21 @@ app.mount("/", mcp.streamable_http_app())
 
 
 def run() -> None:
+    import copy
+
     import uvicorn
+
+    # MCP connector URLs carry the session token as ?key=..., and uvicorn's
+    # access log records the full request line including the query string — a
+    # live bearer credential must not sit in log files. Filters must ride in
+    # uvicorn's log_config: uvicorn applies dictConfig at startup, which
+    # would drop a filter attached to the logger earlier.
+    log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    log_config.setdefault("filters", {})["redact_session_tokens"] = {
+        "()": auth.RedactSessionTokens,
+    }
+    for handler in log_config["handlers"].values():
+        handler.setdefault("filters", []).append("redact_session_tokens")
 
     # proxy_headers: Caddy is the only client on loopback; trusting its
     # X-Forwarded-For gives the rate limiter real client IPs instead of one
@@ -211,6 +225,7 @@ def run() -> None:
         port=settings.port,
         proxy_headers=True,
         forwarded_allow_ips="127.0.0.1",
+        log_config=log_config,
     )
 
 
