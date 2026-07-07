@@ -1,10 +1,28 @@
-# Caddy reverse proxy for Sarf. Only the MCP endpoint, dashboard, signer and
-# API are exposed; the tx-builder sidecar (8761) must never appear here.
-sarf.example.com {
+# Caddy reverse proxy for Sarf. Both hosts front the same FastAPI process on
+# 127.0.0.1:8760 — the split is a path allowlist per audience, not two
+# deployments. The tx-builder sidecar (8761) must never appear here.
+
+# Frontend: dashboard, in-chat signer, and the REST API they call
+# (same-origin, so no CORS surface). This is what SARF_PUBLIC_URL points at —
+# every proposal's sign_url is minted on this host.
+sarf.managerx.xyz {
 	encode zstd gzip
 
-	# MCP + health + dashboard/signer + REST API. Everything else 404s.
-	@allowed path / /mcp /mcp/* /healthz /sign /dashboard /dashboard/* /api/*
+	@allowed path / /dashboard /dashboard/* /sign /api/* /healthz
+	handle @allowed {
+		reverse_proxy 127.0.0.1:8760
+	}
+	handle {
+		respond 404
+	}
+}
+
+# MCP endpoint for Claude / ChatGPT connectors. Nothing but the MCP
+# transport (and health) is reachable on this host.
+sarf-mcp.managerx.xyz {
+	encode zstd gzip
+
+	@allowed path /mcp /mcp/* /healthz
 	handle @allowed {
 		reverse_proxy 127.0.0.1:8760
 	}

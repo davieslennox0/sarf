@@ -91,11 +91,14 @@ backend) and `LEVERAGE_PAIRS` (quote-server pair IDs; format in
 
 ### Adding to Claude (custom connector)
 
-1. Deploy behind Caddy (see `Caddyfile.example`) so the MCP endpoint is
-   `https://your-domain/mcp`.
-2. Claude → Settings → Connectors → *Add custom connector* → paste the URL.
-   If you set `MCP_AUTH_TOKEN`, use `https://your-domain/mcp?key=<token>`
-   or configure the Authorization header where supported.
+1. Deploy behind Caddy (see `Caddyfile.example`). The MCP endpoint lives on
+   its own host: `https://sarf-mcp.managerx.xyz/mcp` (the dashboard/signer
+   host `https://sarf.managerx.xyz` does not expose `/mcp`, and vice versa —
+   both proxy to the same process, split by path allowlist).
+2. Claude → Settings → Connectors → *Add custom connector* → paste
+   `https://sarf-mcp.managerx.xyz/mcp`. If you set `MCP_AUTH_TOKEN`, use
+   `https://sarf-mcp.managerx.xyz/mcp?key=<token>` or configure the
+   Authorization header where supported.
 3. Tools appear under the connector; the assistant is instructed (via server
    instructions) to always show `human_summary` and `risk_notes` before the
    user decides.
@@ -114,9 +117,12 @@ There is intentionally no signing capability anywhere in this repo.
 ## Dashboard & in-chat signer
 
 The React/Vite app in `frontend/` is served by the FastAPI process at
-`/dashboard/` (build with `cd frontend && npm run build`; Caddy exposes it on
-the same domain as the MCP endpoint — one deployment, same Vultr/Caddy
-pattern as the base server).
+`/dashboard/` (build with `cd frontend && npm run build`). Caddy exposes it
+at **https://sarf.managerx.xyz** while the MCP connector endpoint lives at
+**https://sarf-mcp.managerx.xyz/mcp** — one deployment, one process, two
+hosts with per-audience path allowlists (see `Caddyfile.example`). The
+dashboard, signer, and `/api` share the frontend origin, so there is no CORS
+surface to open up.
 
 - **Stats page (public)** — total users (a `COUNT(*)` over identities that
   actually connected: wallet sign-ins and MCP tool users) and **TVL supplied
