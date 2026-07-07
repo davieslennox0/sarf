@@ -25,6 +25,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .api import build_api, tvl_refresher
 from .config import settings
@@ -32,6 +33,18 @@ from .db import Database
 from .providers.current_finance import CurrentFinanceProvider
 from .registry import AssetRegistry
 from .txclient import txbuilder
+
+# Host-header validation for the MCP transport (DNS-rebinding protection).
+# Loopback always allowed for dev; public hostnames come from
+# SARF_ALLOWED_HOSTS since Host arrives verbatim through the Caddy proxy.
+_transport_security = TransportSecuritySettings(
+    allowed_hosts=["127.0.0.1:*", "localhost:*", *settings.allowed_hosts],
+    allowed_origins=[
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        *(f"https://{h}" for h in settings.allowed_hosts),
+    ],
+)
 
 mcp = FastMCP(
     "Sarf",
@@ -46,6 +59,7 @@ mcp = FastMCP(
     ),
     stateless_http=True,
     json_response=True,
+    transport_security=_transport_security,
 )
 
 db = Database(settings.db_path)
@@ -134,7 +148,16 @@ app.mount("/", mcp.streamable_http_app())
 def run() -> None:
     import uvicorn
 
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    # proxy_headers: Caddy is the only client on loopback; trusting its
+    # X-Forwarded-For gives the rate limiter real client IPs instead of one
+    # shared 127.0.0.1 bucket for everyone.
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        proxy_headers=True,
+        forwarded_allow_ips="127.0.0.1",
+    )
 
 
 if __name__ == "__main__":

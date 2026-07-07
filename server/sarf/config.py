@@ -78,5 +78,15 @@ class Settings:
     # Simple per-client rate limit for the MCP endpoint.
     rate_limit_per_minute: int = int(_env("RATE_LIMIT_PER_MINUTE", "60"))
 
+    # Public hostnames Caddy fronts this process with (comma-separated).
+    # The MCP transport's DNS-rebinding protection rejects any other Host
+    # header; loopback is always allowed in main.py so local dev works
+    # without this being set.
+    allowed_hosts: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            h.strip().lower() for h in _env("SARF_ALLOWED_HOSTS", "").split(",") if h.strip()
+        )
+    )
+
 
 settings = Settings()
