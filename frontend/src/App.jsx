@@ -69,7 +69,9 @@ export default function App() {
       <SessionBanner />
       <header>
         <div className="brand">
-          <span className="logo">◈</span> Sarf
+          <Link to="/" className="brand-link">
+            <span className="logo">◈</span> Sarf
+          </Link>
           <span className="tag">non-custodial Sui lending assistant</span>
         </div>
         <nav>

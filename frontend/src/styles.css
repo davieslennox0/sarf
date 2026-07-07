@@ -27,6 +27,8 @@ header {
   flex-wrap: wrap; gap: 12px;
 }
 .brand { font-weight: 700; font-size: 19px; }
+.brand-link { color: var(--text); text-decoration: none; }
+.brand-link:hover .logo { filter: brightness(1.25); }
 .logo { color: var(--accent); margin-right: 4px; }
 .tag { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 10px; }
 nav { display: flex; align-items: center; gap: 18px; }
