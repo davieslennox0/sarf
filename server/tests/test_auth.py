@@ -257,6 +257,22 @@ def test_logout_records_reason(client, db):
     assert rec is not None and rec["revocation_reason"] == "user_logout"
 
 
+def test_logout_without_token_fails_loudly(client):
+    """A tokenless logout is a client bug (it revokes nothing while looking
+    successful — the App.jsx clear-before-logout regression). 401, not ok."""
+    assert client.post("/api/auth/logout").status_code == 401
+
+
+def test_logout_voids_mcp_connector_credential(client, db):
+    """End session in the dashboard must disconnect Claude: the revoked
+    token — the same string in the connector URL — resolves as expired,
+    so tools refuse to act on it."""
+    token = _sign_in(client)
+    res = client.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 200
+    assert auth.resolve_session_state(db, token) == (None, "expired")
+
+
 def test_revoked_row_survives_pruning(db):
     """put_session prunes stale rows, but a revoked row is audit evidence:
     it must outlive its own expiry (for the retention window)."""

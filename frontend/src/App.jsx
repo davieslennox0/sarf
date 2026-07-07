@@ -4,7 +4,7 @@ import { ConnectButton, useCurrentAccount, useDisconnectWallet } from '@mysten/d
 import Stats from './pages/Stats.jsx';
 import Activity from './pages/Activity.jsx';
 import Sign from './pages/Sign.jsx';
-import { api, clearSession } from './api.js';
+import { api, clearSession, getSession } from './api.js';
 import { SESSION_MINUTES, endEphemeralSession } from './zklogin.js';
 
 /**
@@ -35,8 +35,11 @@ function SessionBanner() {
 
   const end = () => {
     endEphemeralSession();
+    // Revoke server-side BEFORE forgetting the token locally — this same
+    // token is the MCP connector credential, and revocation is what actually
+    // disconnects Claude. Passed explicitly so the ordering can't regress.
+    api.logout(getSession()?.token);
     clearSession();
-    api.logout();
     disconnect();
   };
 

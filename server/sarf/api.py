@@ -124,8 +124,14 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
 
     @r.post("/auth/logout")
     async def auth_logout(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        if authorization and authorization.lower().startswith("bearer "):
-            auth.revoke_token(db, authorization[7:], reason="user_logout")
+        # Logout MUST revoke: the token is also the MCP connector credential,
+        # so "end session" that doesn't reach the DB leaves Claude connected.
+        # A tokenless call is therefore a client bug — fail loudly rather
+        # than return ok and mask it (which is exactly how the App.jsx
+        # clear-before-logout ordering bug went unnoticed).
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(401, "logout requires the session bearer token")
+        auth.revoke_token(db, authorization[7:], reason="user_logout")
         return {"ok": True}
 
     # ----------------------------------------------------- authed activity

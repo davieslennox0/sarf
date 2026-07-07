@@ -39,6 +39,9 @@ export function clearSession() {
 export async function ensureSession(address, signMessage) {
   const existing = getSession();
   if (existing && existing.address === address) return existing;
+  // Discarding a token (e.g. the wallet address changed) must void it
+  // server-side too — a token we abandon is still a live MCP credential.
+  if (existing) api.logout(existing.token);
   clearSession();
   const { message } = await api.authChallenge(address);
   const res = await signMessage({ message: new TextEncoder().encode(message) });
@@ -72,6 +75,12 @@ export const api = {
   authChallenge: (address) => req(`/api/auth/challenge?address=${address}`),
   authVerify: (address, signature) =>
     req('/api/auth/verify', { method: 'POST', body: JSON.stringify({ address, signature }) }),
-  logout: () => req('/api/auth/logout', { method: 'POST' }).catch(() => {}),
+  // Token passed explicitly: callers revoke while (or after) clearing local
+  // state, so logout must not depend on the token still being in storage.
+  logout: (token) =>
+    req('/api/auth/logout', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).catch(() => {}),
   myActivity: () => req('/api/me/activity'),
 };
