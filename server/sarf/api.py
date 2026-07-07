@@ -7,9 +7,12 @@ happens only in the user's browser wallet. The signer page POSTs to
 invariant (byte-match, TTL, single-use) is enforced in exactly one place.
 
 Auth: challenge–response over a wallet personal-message signature. The
-browser asks for a nonce, the wallet signs it (works for zkLogin wallets too
-— verification handles zk signatures via on-chain JWK lookup in the sidecar),
-and a bearer session token is minted. No key material ever reaches us.
+browser asks for a nonce, the wallet signs it, and the sidecar verifies via
+@mysten/sui's verifyPersonalMessageSignature — for zkLogin signatures that
+means the full spec checks (ZK proof binding the OAuth JWT to the address
+seed, on-chain JWK lookup, maxEpoch freshness). Only then does auth.py mint
+a short-lived, HMAC-signed session token; that same token is the MCP
+connector credential. No key material ever reaches us.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from . import auth
 from .config import settings
 from .db import Database
 from .providers.current_finance import CurrentFinanceProvider
@@ -96,13 +100,20 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
             raise HTTPException(401, f"signature verification failed: {res.get('reason', '')}")
         _challenges.pop(addr, None)  # single use
         db.upsert_user(addr, "wallet")
-        token = db.create_session(addr)
-        return {"token": token, "address": addr, "expires_in": 24 * 3600}
+        token, ttl = auth.mint_session(db, addr)
+        return {
+            "token": token,
+            "address": addr,
+            "expires_in": ttl,
+            # The same session token is the MCP connector credential; the
+            # dashboard shows this URL so the user can paste it into Claude.
+            "mcp_url": f"{settings.mcp_public_url}/mcp?key={token}" if settings.mcp_public_url else None,
+        }
 
     def _session_addr(authorization: str | None) -> str:
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HTTPException(401, "missing bearer token")
-        addr = db.session_address(authorization[7:])
+        addr = auth.resolve_session(db, authorization[7:])
         if not addr:
             raise HTTPException(401, "invalid or expired session")
         return addr
@@ -110,7 +121,7 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
     @r.post("/auth/logout")
     async def auth_logout(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         if authorization and authorization.lower().startswith("bearer "):
-            db.revoke_session(authorization[7:])
+            auth.revoke_token(db, authorization[7:])
         return {"ok": True}
 
     # ----------------------------------------------------- authed activity
@@ -131,12 +142,19 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
         return view
 
     @r.post("/submit")
-    async def submit(body: dict[str, Any]) -> dict[str, Any]:
+    async def submit(
+        body: dict[str, Any], authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        # Same session rule as the MCP tool: the submitting session must own
+        # the proposal. The signature itself already proves key control, but
+        # requiring the session keeps one auth model across both write paths.
+        addr = _session_addr(authorization)
         try:
             return await provider.execute_submit(
                 body.get("proposal_id", ""),
                 body.get("signed_tx_bytes_base64", ""),
                 body.get("signatures", []),
+                session_address=addr,
             )
         except ValidationError as e:
             raise HTTPException(400, str(e))

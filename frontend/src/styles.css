@@ -98,3 +98,23 @@ button.primary.big { width: 100%; padding: 14px; font-size: 16px; margin-top: 18
 
 footer { margin-top: 48px; border-top: 1px solid var(--line); padding-top: 14px;
   color: var(--muted); font-size: 13px; }
+
+/* MCP connector card (Activity page, post sign-in) */
+.connect-card {
+  border: 1px solid #2a3342;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 14px 0 18px;
+  background: #141a23;
+}
+.token-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.token-url {
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #0d1117;
+  font-size: 12px;
+}
+.token-row button { flex-shrink: 0; }

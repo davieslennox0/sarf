@@ -47,17 +47,20 @@ with no change to existing tools or the validation layer.
 
 ## MCP tools
 
+All tools act on **the session's wallet-verified address** — none accepts a
+`user_address` argument (see SECURITY.md "Auth model").
+
 | Tool | Kind | Notes |
 |---|---|---|
-| `get_portfolio(user_address)` | read | positions, cap IDs, LTVs, liquidation prices |
-| `get_market_info(market?, asset?)` | read | live rates, prices, risk params; no auth |
-| `propose_enter_market(user_address, asset, amount, market?)` | proposal | creates ObligationOwnerCap |
-| `propose_deposit(user_address, obligation_cap_id, asset, amount)` | proposal | |
+| `get_portfolio()` | read | the authenticated user's positions, cap IDs, LTVs, liquidation prices |
+| `get_market_info(market?, asset?)` | read | live rates, prices, risk params |
+| `propose_enter_market(asset, amount, market?)` | proposal | creates ObligationOwnerCap |
+| `propose_deposit(obligation_cap_id, asset, amount)` | proposal | |
 | `propose_borrow(...)` | proposal | includes post-borrow LTV + liquidation prices |
 | `propose_repay(...)` | proposal | |
 | `propose_withdraw(...)` | proposal | underlying→ctoken conversion server-side |
-| `propose_leverage_position(user_address, collateral_asset, principal_amount, target_multiplier)` | proposal | hard-capped multiplier; states liquidation price & worst case |
-| `submit_signed_transaction(proposal_id, signed_tx_bytes_base64, signatures)` | write | only broadcasts byte-matched, unexpired proposals |
+| `propose_leverage_position(collateral_asset, principal_amount, target_multiplier)` | proposal | hard-capped multiplier; states liquidation price & worst case |
+| `submit_signed_transaction(proposal_id, signed_tx_bytes_base64, signatures)` | write | only broadcasts byte-matched, unexpired proposals owned by this session |
 
 Deviation from the original tool sketch, on purpose:
 `submit_signed_transaction` also takes `proposal_id` and `signatures`
@@ -79,7 +82,9 @@ pm2 start ecosystem.config.cjs
 ```
 
 Environment variables: see `.env.example` (RPC endpoint, ports, risk caps,
-optional `MCP_AUTH_TOKEN`, optional leverage quote-server config).
+`SARF_ENV`/`SARF_SESSION_SECRET` for the auth layer, optional leverage
+quote-server config). In `SARF_ENV=production` the server refuses to start
+without a session-signing secret.
 
 ### Enabling leverage
 
@@ -95,10 +100,15 @@ backend) and `LEVERAGE_PAIRS` (quote-server pair IDs; format in
    its own host: `https://sarf-mcp.managerx.xyz/mcp` (the dashboard/signer
    host `https://sarf.managerx.xyz` does not expose `/mcp`, and vice versa —
    both proxy to the same process, split by path allowlist).
-2. Claude → Settings → Connectors → *Add custom connector* → paste
-   `https://sarf-mcp.managerx.xyz/mcp`. If you set `MCP_AUTH_TOKEN`, use
-   `https://sarf-mcp.managerx.xyz/mcp?key=<token>` or configure the
-   Authorization header where supported.
+2. **Sign in first**: open the dashboard → *My activity* → connect wallet →
+   sign the one-time login message. The page then shows your personal
+   connector URL (`https://sarf-mcp.managerx.xyz/mcp?key=sarf_sess_…`),
+   bound to your verified address.
+3. Claude → Settings → Connectors → *Add custom connector* → paste that URL.
+   The token expires with the session (30 min); when tools start returning
+   auth errors, sign in again and update the connector with the fresh URL.
+   Unauthenticated connections are refused in production — there is no
+   anonymous mode.
 3. Tools appear under the connector; the assistant is instructed (via server
    instructions) to always show `human_summary` and `risk_notes` before the
    user decides.
@@ -171,8 +181,11 @@ signature to `/api/submit`, which shares every invariant with the MCP
   is no unlocked-signing mode, by design.
 - **Dashboard auth**: sign-in = wallet signs a one-time server nonce (the
   message states it authorizes no transaction); the server verifies the
-  signature (zkLogin signatures included) and mints a 24h bearer token held
-  in `sessionStorage`.
+  signature with the Sui SDK (full zkLogin proof checks included) and mints a
+  30-minute HMAC-signed bearer token held in `sessionStorage`. The same token
+  is the MCP connector credential (`?key=…`) and everything the MCP tools act
+  on is bound to its verified address — see SECURITY.md. Expiry means
+  signing in again; there is no silent renewal.
 - **Native zkLogin (config-gated)**: `frontend/src/zklogin.js` implements the
   ephemeral-key lifecycle — created in-browser on login, stored only in
   `sessionStorage` with an explicit expiry, wiped on expiry or End-session,

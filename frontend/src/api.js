@@ -19,15 +19,32 @@ export function getSession() {
   }
 }
 
-export function setSession(token, address, expiresInSeconds) {
+export function setSession(token, address, expiresInSeconds, mcpUrl) {
   sessionStorage.setItem(
     TOKEN_KEY,
-    JSON.stringify({ token, address, expiresAt: Date.now() + expiresInSeconds * 1000 }),
+    JSON.stringify({ token, address, expiresAt: Date.now() + expiresInSeconds * 1000, mcpUrl }),
   );
 }
 
 export function clearSession() {
   sessionStorage.removeItem(TOKEN_KEY);
+}
+
+// Challenge → wallet personal-message signature → server verification →
+// short-lived session token. The server verifies the signature with the Sui
+// SDK (full zkLogin proof checks for zkLogin wallets) before minting; every
+// API call and MCP tool call is bound to this session's address. Re-runs
+// automatically once the token expires — expiry means signing in again, by
+// design (no silent renewal).
+export async function ensureSession(address, signMessage) {
+  const existing = getSession();
+  if (existing && existing.address === address) return existing;
+  clearSession();
+  const { message } = await api.authChallenge(address);
+  const res = await signMessage({ message: new TextEncoder().encode(message) });
+  const out = await api.authVerify(address, res.signature);
+  setSession(out.token, out.address, out.expires_in, out.mcp_url);
+  return getSession();
 }
 
 async function req(path, opts = {}) {

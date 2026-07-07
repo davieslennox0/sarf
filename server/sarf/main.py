@@ -1,21 +1,22 @@
 """Sarf MCP server (remote/streamable-HTTP).
 
-Wiring only — policy lives in config.py, enforcement in validation.py, tools
-in providers/. Runs behind Caddy (TLS) under pm2; binds loopback by default.
+Wiring only — policy lives in config.py, enforcement in validation.py and
+auth.py, tools in providers/. Runs behind Caddy (TLS) under pm2; binds
+loopback by default.
 
-Auth model (assumption, documented in SECURITY.md): identity is the Sui
-address. There was no reusable server-side zkLogin session code to inherit
-(the referenced pattern is a frontend wallet-popup flow), and unsigned
-proposals for an address you don't control are unusable — the wallet
-signature is the real authorization. Optional MCP_AUTH_TOKEN gates the whole
-endpoint for private deployments.
+Auth model (see SECURITY.md): tool calls run under a verified session. The
+user proves address ownership with a wallet/zkLogin signature over a server
+nonce (verified via @mysten/sui in the sidecar); the server mints a
+short-lived session token; the middleware below resolves that token on every
+/mcp request and binds the proven address to the request context. Tools take
+no user_address argument — they act on the session's address only. In
+production mode, no valid session means 401.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hmac
-import os
+import logging
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -28,6 +29,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from . import auth
 from .api import build_api, tvl_refresher
 from .config import settings
 from .db import Database
@@ -50,13 +52,17 @@ _transport_security = TransportSecuritySettings(
 mcp = FastMCP(
     "Sarf",
     instructions=(
-        "Non-custodial Sui lending assistant (Current Finance). propose_* tools "
-        "only BUILD transactions and return them for the user to sign in their "
-        "own wallet — always show the user the human_summary and every "
-        "risk_note before they decide, and share the sign_url so they can "
-        "review and sign on the Sarf signer page. Never imply an action was "
-        "executed until submit_signed_transaction (or the signer page) "
-        "returns a tx_digest."
+        "Non-custodial Sui lending assistant (Current Finance). All tools act "
+        "on the wallet-verified account bound to this connector's session "
+        "token — there is no way (and no need) to pass an address. If tools "
+        "return an authentication error, the session expired: the user signs "
+        "in again on the Sarf dashboard and updates the connector token. "
+        "propose_* tools only BUILD transactions and return them for the user "
+        "to sign in their own wallet — always show the user the human_summary "
+        "and every risk_note before they decide, and share the sign_url so "
+        "they can review and sign on the Sarf signer page. Never imply an "
+        "action was executed until submit_signed_transaction (or the signer "
+        "page) returns a tx_digest."
     ),
     stateless_http=True,
     json_response=True,
@@ -84,12 +90,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Sarf", lifespan=lifespan)
 
 
-# --- Minimal hardening middleware -------------------------------------------
-# Sliding-window rate limit per client IP. In-memory on purpose: one uvicorn
-# worker (pm2 runs the process singleton), and the state is advisory —
-# correctness never depends on it.
+# --- Hardening + session middleware ------------------------------------------
+# Sliding-window rate limit per client IP (uvicorn trusts Caddy's
+# X-Forwarded-For, so this is the real client). In-memory on purpose: one
+# uvicorn worker, and the state is advisory — correctness never depends on it.
 _hits: dict[str, deque[float]] = defaultdict(deque)
-_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+_log = logging.getLogger("sarf.auth")
+
+
+def _extract_token(request: Request) -> str:
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return (request.headers.get("x-api-key", "") or request.query_params.get("key", "")).strip()
 
 
 @app.middleware("http")
@@ -104,14 +117,26 @@ async def guard(request: Request, call_next):
             return Response("rate limited", status_code=429)
         q.append(now)
 
-        if _AUTH_TOKEN:
-            supplied = ""
-            auth = request.headers.get("authorization", "")
-            if auth.lower().startswith("bearer "):
-                supplied = auth[7:]
-            supplied = supplied or request.headers.get("x-api-key", "") or request.query_params.get("key", "")
-            if not hmac.compare_digest(supplied, _AUTH_TOKEN):
-                return Response("unauthorized", status_code=401)
+        # Session gate: the token was minted only after a verified
+        # wallet/zkLogin signature (auth.py). Tools act on the address bound
+        # here — never on an address supplied in tool arguments.
+        address = auth.resolve_session(db, _extract_token(request))
+        if address is None and settings.env == "production":
+            return Response(
+                "unauthorized: sign in with your wallet at "
+                f"{settings.public_url or 'the Sarf dashboard'} to mint a session token, "
+                "then use ?key=<token> (or a Bearer header) on this endpoint. "
+                f"Tokens expire after {settings.session_ttl_seconds // 60} minutes.",
+                status_code=401,
+            )
+        if address is None:
+            # Dev mode only — deliberately loud on EVERY request so a dev
+            # deployment can't quietly masquerade as production.
+            _log.warning(
+                "SARF DEV MODE: unauthenticated /mcp request from %s allowed; "
+                "set SARF_ENV=production to fail closed", ip,
+            )
+        auth.bind_session(address)
 
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"

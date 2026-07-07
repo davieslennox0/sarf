@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useCurrentAccount, useSignPersonalMessage } from '@mysten/dapp-kit';
-import { api, getSession, setSession } from '../api.js';
+import { api, ensureSession, getSession } from '../api.js';
 
 // Authenticated view of the proposal audit trail. Sign-in = wallet signs a
 // server nonce (personal message, explicitly "authorizes no transaction");
@@ -24,12 +24,58 @@ function statusChip(p) {
   return <span className={cls}>{label}</span>;
 }
 
+// The session token doubles as the Claude connector credential. Shown only
+// after wallet sign-in; goes stale with the session (~30 min) — that is the
+// point: a pasted/leaked connector URL cannot outlive the session, and
+// renewing it always costs a fresh wallet signature.
+function McpConnectCard() {
+  const [now, setNow] = useState(Date.now());
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const s = getSession();
+  if (!s?.mcpUrl) return null;
+  const msLeft = s.expiresAt - now;
+  if (msLeft <= 0) return null;
+  const copy = async () => {
+    await navigator.clipboard.writeText(s.mcpUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <div className="connect-card">
+      <div className="row-title">Connect Claude to this account</div>
+      <p className="muted small">
+        Add this as a custom connector URL in Claude (Settings → Connectors). It is bound to your
+        verified address and expires with this session in{' '}
+        <b>{Math.floor(msLeft / 60000)}m {String(Math.floor((msLeft % 60000) / 1000)).padStart(2, '0')}s</b>
+        — after that, sign in again for a fresh one.
+      </p>
+      <div className="token-row">
+        <code className="token-url">{s.mcpUrl}</code>
+        <button onClick={copy}>{copied ? 'Copied ✓' : 'Copy'}</button>
+      </div>
+    </div>
+  );
+}
+
 export default function Activity() {
   const account = useCurrentAccount();
   const { mutateAsync: signMessage } = useSignPersonalMessage();
   const [authed, setAuthed] = useState(Boolean(getSession()));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+
+  // Sessions are short-lived (server-enforced); when one lapses, drop back
+  // to the sign-in state instead of showing stale data behind a dead token.
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (authed && !getSession()) setAuthed(false);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [authed]);
 
   const { data, refetch } = useQuery({
     queryKey: ['activity'],
@@ -42,10 +88,7 @@ export default function Activity() {
     setErr(null);
     setBusy(true);
     try {
-      const { message } = await api.authChallenge(account.address);
-      const res = await signMessage({ message: new TextEncoder().encode(message) });
-      const out = await api.authVerify(account.address, res.signature);
-      setSession(out.token, out.address, out.expires_in);
+      await ensureSession(account.address, signMessage);
       setAuthed(true);
       refetch();
     } catch (e) {
@@ -84,6 +127,7 @@ export default function Activity() {
   return (
     <section>
       <h1>My activity</h1>
+      <McpConnectCard />
       <p className="muted">Every proposal Sarf built for this address, and what became of it.</p>
       {rows.length === 0 && <p className="muted">No proposals yet.</p>}
       <div className="rows">

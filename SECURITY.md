@@ -28,7 +28,7 @@ sending anything. Enforced server-side on every call:
 | Address/object shape | `0x` + exactly 64 hex, normalized; homoglyphs/short forms rejected |
 | Asset whitelist | symbols only, resolved against the protocol's own market config (via sidecar); optional `ASSET_WHITELIST` narrowing; raw Move types never accepted |
 | Amount bounds | decimal-string only (JSON numbers rejected), regex-limited charset, > 0, ≤ u64, no exponents/signs/separators, sub-minimal-unit precision rejected rather than rounded |
-| Obligation ownership | the cap's **live on-chain owner** must equal `user_address` at proposal time, re-checked from the builder's view (SQLite is only a cache, never the decision input) |
+| Obligation ownership | the cap's **live on-chain owner** must equal the session's verified address at proposal time, re-checked from the builder's view (SQLite is only a cache, never the decision input) |
 | Leverage cap | `target_multiplier` ≤ `LEVERAGE_MAX_MULTIPLIER` (default 3.0), hard-clamped at 5.0 in code — a misconfigured env cannot raise it |
 | USD cap | per-proposal `MAX_PROPOSAL_USD` (default $250k); **fails closed** if the oracle price is unavailable |
 | Simulation | every PTB is dry-run before being returned; failed simulations are marked non-executable and cannot be submitted |
@@ -52,23 +52,60 @@ liquidation, hence 3x default and an absolute ceiling well below the
 protocol's own maximum. Every leverage proposal must state the liquidation
 price and that the entire principal is at risk.
 
-## Auth model
+## Auth model — proof of address ownership before any tool call
 
-Identity is the Sui address; funds-safety never depends on server auth
-because:
+v1 shipped with identity = claimed Sui address (wallet signature only at the
+final signing step). That never exposed funds — unsigned proposals are
+unusable, and broadcast requires the owner's signature — but it let anyone
+read another address's portfolio through `get_portfolio` and spam proposal
+generation (simulation load, audit-log noise) against arbitrary addresses.
+That gap is closed; this section replaces the old one entirely.
 
-1. proposals are unsigned and unusable without the user's wallet;
-2. ownership checks bind proposals to the address's live on-chain state;
-3. the broadcast path only accepts wallet-signed bytes matching a proposal.
+**Session establishment (the only way in):**
 
-On top of that, the dashboard implements **challenge–response wallet
-authentication**: the server issues a one-time nonce, the user's wallet signs
-it as a personal message (the text states it authorizes no transaction), and
-the sidecar verifies the signature — including zkLogin signatures via
-on-chain JWK lookup — before a 24h bearer session is minted. Sessions gate
-only the private view of the audit trail; the MCP endpoint can additionally
-be gated with `MCP_AUTH_TOKEN` for private deployments. Login nonces are
-single-use with a 5-minute TTL.
+1. The client requests a one-time login nonce for an address
+   (`/api/auth/challenge`; single-use, 5-minute TTL, the message text states
+   it authorizes no transaction).
+2. The user's wallet signs it as a personal message. The sidecar verifies the
+   signature with `verifyPersonalMessageSignature` from `@mysten/sui/verify`,
+   bound to the claimed address. For **zkLogin** wallets this performs the
+   full spec checks — the Groth16 proof binding the OAuth JWT to the address
+   seed, on-chain JWK lookup for the provider, and `maxEpoch` freshness
+   against the chain. Nothing is hand-rolled; a missing, expired, or
+   wrong-address proof fails verification and no session exists.
+3. Only then does the server mint its own token:
+   `sarf_sess_<128-bit id>.<HMAC-SHA256(secret, id)>` — unforgeable without
+   `SARF_SESSION_SECRET`, revocable and expirable via its DB row (both checks
+   must pass on every request).
+
+**Session lifetime: 30 minutes** (`SESSION_TTL_SECONDS`, hard-capped at 60 in
+code). Long enough for one propose→review→sign conversation; short enough
+that a leaked connector URL dies the same hour. Expiry requires signing in
+again with the wallet — there is deliberately no refresh or silent renewal.
+
+**Every tool call is bound to the verified session.** The MCP middleware
+resolves the token (Bearer header or `?key=`) and binds the proven address to
+the request; `get_portfolio` and all `propose_*` tools take **no
+`user_address` argument at all** — they act on the session's address, so a
+caller (or a prompted-into-it model) cannot name someone else's address. The
+same applies to the dashboard's authenticated REST endpoints.
+`submit_signed_transaction` keeps its byte-match/TTL/single-use invariants
+and additionally refuses proposals that belong to a different account than
+the submitting session.
+
+**Production fails closed.** With `SARF_ENV=production` the server refuses to
+start without `SARF_SESSION_SECRET` (≥32 chars) and returns 401 on any /mcp
+request without a live session — there is no unauthenticated fallback. Dev
+mode (`SARF_ENV=dev`) permits anonymous *endpoint* access for local testing
+but logs a warning on **every** such request, and tools still refuse to act
+without a session address. The former static `MCP_AUTH_TOKEN` gate is
+superseded by per-user session tokens and has been removed.
+
+Funds-safety still does not *depend* on any of this — proposals remain
+unsigned and the broadcast path still demands the owner's wallet signature
+over exact proposal bytes. The session layer protects read privacy and
+prevents resource abuse; the wallet signature remains the authorization to
+move funds.
 
 ## In-chat signer & ephemeral keys
 

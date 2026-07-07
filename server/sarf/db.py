@@ -247,29 +247,27 @@ class Database:
         cur = self._conn.execute("SELECT DISTINCT user_address FROM obligation_caps")
         return [r[0] for r in cur.fetchall()]
 
-    def create_session(self, address: str, ttl_seconds: int = 24 * 3600) -> str:
-        import secrets
-
-        token = secrets.token_urlsafe(32)
+    def put_session(self, token_id: str, address: str, ttl_seconds: int) -> None:
+        """Store a session row. Token minting/verification (HMAC over the id)
+        lives in auth.py; this table only decides expiry and revocation."""
         now = time.time()
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
             self._conn.execute(
-                "INSERT INTO sessions VALUES (?,?,?,?)", (token, address, now, now + ttl_seconds)
+                "INSERT INTO sessions VALUES (?,?,?,?)", (token_id, address, now, now + ttl_seconds)
             )
-        return token
 
-    def session_address(self, token: str) -> str | None:
+    def session_address(self, token_id: str) -> str | None:
         r = self._conn.execute(
-            "SELECT address, expires_at FROM sessions WHERE token=?", (token,)
+            "SELECT address, expires_at FROM sessions WHERE token=?", (token_id,)
         ).fetchone()
         if not r or r[1] < time.time():
             return None
         return r[0]
 
-    def revoke_session(self, token: str) -> None:
+    def revoke_session(self, token_id: str) -> None:
         with self._lock, self._conn:
-            self._conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+            self._conn.execute("DELETE FROM sessions WHERE token=?", (token_id,))
 
     def set_stat(self, key: str, value: dict[str, Any]) -> None:
         with self._lock, self._conn:

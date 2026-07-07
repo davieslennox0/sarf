@@ -1,11 +1,15 @@
 """Current Finance provider: lending + leverage MCP tools.
 
-Every state-changing tool follows the same contract:
+Every tool acts on the address of the request's verified session
+(auth.require_address()) — no tool accepts a user_address argument, so a
+caller can neither read nor propose against an account they haven't proven
+control of. Every state-changing tool then follows the same contract:
   validate inputs -> verify ownership on-chain -> build unsigned PTB in the
   sidecar -> dry-run -> enforce USD cap -> persist proposal -> return it.
 Nothing in this file signs or broadcasts except submit_signed_transaction,
 which only relays bytes the user's wallet already signed, and only if they
-byte-match a stored, unexpired proposal (this server is not an open relay).
+byte-match a stored, unexpired proposal owned by the same session (this
+server is not an open relay).
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from pydantic import Field
 
 from mcp.server.fastmcp import FastMCP
 
+from ..auth import require_address
 from ..config import settings
 from ..db import Database
 from ..registry import AssetRegistry
@@ -28,7 +33,6 @@ from ..validation import (
     OwnershipError,
     ValidationError,
     check_cap_ownership,
-    validate_address,
     validate_amount,
     validate_asset,
     validate_base64,
@@ -175,12 +179,14 @@ class CurrentFinanceProvider:
 
     async def execute_submit(
         self, proposal_id: str, signed_tx_bytes_base64: str, signatures: list[str],
+        *, session_address: str,
     ) -> dict[str, Any]:
         """Shared write path for the MCP tool and the signer page's REST call.
 
-        All submit invariants live here exactly once: proposal must exist, be
-        'proposed', unexpired, and the signed bytes must byte-match the PTB we
-        built and simulated. This server is not an open relay.
+        All submit invariants live here exactly once: the proposal must belong
+        to the authenticated session's address, exist, be 'proposed',
+        unexpired, and the signed bytes must byte-match the PTB we built and
+        simulated. This server is not an open relay.
         """
         if not isinstance(proposal_id, str) or not _PROPOSAL_ID_RE.match(proposal_id.strip()):
             raise ValidationError("proposal_id must look like sarf_<32 hex>")
@@ -193,6 +199,11 @@ class CurrentFinanceProvider:
         prop = self.db.get_proposal(pid)
         if prop is None:
             raise ValidationError(f"unknown proposal {pid}")
+        if prop.user_address != session_address:
+            # Refuse without revealing who does own it.
+            raise ValidationError(
+                f"proposal {pid} does not belong to the authenticated account"
+            )
         if prop.status != "proposed":
             raise ValidationError(f"proposal {pid} is not executable (status: {prop.status})")
         if time.time() > prop.expires_at:
@@ -240,14 +251,13 @@ class CurrentFinanceProvider:
         provider = self
 
         @mcp.tool()
-        async def get_portfolio(
-            user_address: Annotated[str, Field(description="Sui address (0x + 64 hex)")],
-        ) -> dict[str, Any]:
-            """Read-only: current Current Finance lending positions for an address,
-            including obligation cap IDs, supplied/borrowed balances, LTVs and
-            per-asset liquidation prices. No auth required — this is public
-            on-chain state."""
-            addr = validate_address(user_address)
+        async def get_portfolio() -> dict[str, Any]:
+            """Read-only: the authenticated user's Current Finance lending
+            positions — obligation cap IDs, supplied/borrowed balances, LTVs
+            and per-asset liquidation prices. Acts on the wallet-verified
+            session address; there is no way to query someone else's
+            portfolio."""
+            addr = require_address()
             db.upsert_user(addr, "mcp")
             data = await tx.portfolio(addr)
             for p in data.get("positions", []):
@@ -273,16 +283,16 @@ class CurrentFinanceProvider:
 
         @mcp.tool()
         async def propose_enter_market(
-            user_address: Annotated[str, Field(description="Sui address that will sign")],
             asset: Annotated[str, Field(description="Asset symbol to deposit, e.g. 'USDC'")],
             amount: Annotated[str, Field(description='Amount in human units as a decimal string, e.g. "25.5"')],
             market: Annotated[MarketName, Field(description="Market to enter")] = "MainMarket",
         ) -> dict[str, Any]:
-            """Build (never execute) an 'enter market + first deposit' transaction.
-            Creates the user's ObligationOwnerCap. Returns an unsigned proposal
-            for the user to review and sign in their own wallet."""
+            """Build (never execute) an 'enter market + first deposit' transaction
+            for the authenticated user's address. Creates their
+            ObligationOwnerCap. Returns an unsigned proposal for the user to
+            review and sign in their own wallet."""
             await registry.ensure_loaded()
-            addr = validate_address(user_address)
+            addr = require_address()
             m = validate_market(market, registry.markets)
             a = validate_asset(asset, m, registry.assets, settings.asset_whitelist)
             min_units = validate_amount(amount, a.decimals)
@@ -312,10 +322,10 @@ class CurrentFinanceProvider:
         async def _simple_action(
             action: Literal["deposit", "borrow", "repay", "withdraw"],
             tool_name: str,
-            user_address: str, obligation_cap_id: str, asset: str, amount: str,
+            obligation_cap_id: str, asset: str, amount: str,
         ) -> dict[str, Any]:
             await registry.ensure_loaded()
-            addr = validate_address(user_address)
+            addr = require_address()
             cap_id = validate_object_id(obligation_cap_id, what="obligation_cap_id")
             cap = await provider._verify_cap(addr, cap_id)
             m = cap["marketName"]
@@ -348,63 +358,62 @@ class CurrentFinanceProvider:
 
         @mcp.tool()
         async def propose_deposit(
-            user_address: Annotated[str, Field(description="Sui address that will sign")],
-            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by user_address)")],
+            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by the authenticated address)")],
             asset: Annotated[str, Field(description="Asset symbol, e.g. 'USDC'")],
             amount: Annotated[str, Field(description='Amount in human units, decimal string')],
         ) -> dict[str, Any]:
-            """Build (never execute) a deposit into an existing lending position."""
+            """Build (never execute) a deposit into an existing lending position
+            owned by the authenticated user."""
             return await _simple_action("deposit", "propose_deposit",
-                                        user_address, obligation_cap_id, asset, amount)
+                                        obligation_cap_id, asset, amount)
 
         @mcp.tool()
         async def propose_borrow(
-            user_address: Annotated[str, Field(description="Sui address that will sign")],
-            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by user_address)")],
+            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by the authenticated address)")],
             asset: Annotated[str, Field(description="Asset symbol to borrow")],
             amount: Annotated[str, Field(description='Amount in human units, decimal string')],
         ) -> dict[str, Any]:
-            """Build (never execute) a borrow against existing collateral. The
-            proposal states the post-borrow LTV and liquidation prices — always
-            surface those to the user, not just the amounts."""
+            """Build (never execute) a borrow against the authenticated user's
+            existing collateral. The proposal states the post-borrow LTV and
+            liquidation prices — always surface those to the user, not just
+            the amounts."""
             return await _simple_action("borrow", "propose_borrow",
-                                        user_address, obligation_cap_id, asset, amount)
+                                        obligation_cap_id, asset, amount)
 
         @mcp.tool()
         async def propose_repay(
-            user_address: Annotated[str, Field(description="Sui address that will sign")],
-            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by user_address)")],
+            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by the authenticated address)")],
             asset: Annotated[str, Field(description="Asset symbol of the debt")],
             amount: Annotated[str, Field(description='Amount in human units, decimal string')],
         ) -> dict[str, Any]:
-            """Build (never execute) a debt repayment."""
+            """Build (never execute) a debt repayment for the authenticated user."""
             return await _simple_action("repay", "propose_repay",
-                                        user_address, obligation_cap_id, asset, amount)
+                                        obligation_cap_id, asset, amount)
 
         @mcp.tool()
         async def propose_withdraw(
-            user_address: Annotated[str, Field(description="Sui address that will sign")],
-            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by user_address)")],
+            obligation_cap_id: Annotated[str, Field(description="ObligationOwnerCap object ID (must be owned by the authenticated address)")],
             asset: Annotated[str, Field(description="Asset symbol to withdraw")],
             amount: Annotated[str, Field(description='Amount in human units, decimal string')],
         ) -> dict[str, Any]:
-            """Build (never execute) a collateral withdrawal."""
+            """Build (never execute) a collateral withdrawal for the
+            authenticated user."""
             return await _simple_action("withdraw", "propose_withdraw",
-                                        user_address, obligation_cap_id, asset, amount)
+                                        obligation_cap_id, asset, amount)
 
         @mcp.tool()
         async def propose_leverage_position(
-            user_address: Annotated[str, Field(description="Sui address that will sign")],
             collateral_asset: Annotated[str, Field(description="Collateral symbol for the loop, e.g. 'HASUI'")],
             principal_amount: Annotated[str, Field(description='Principal to commit, human units, decimal string')],
             target_multiplier: Annotated[float, Field(description=f"Leverage multiplier, capped server-side (<= {settings.leverage_max_multiplier})")],
         ) -> dict[str, Any]:
-            """Build (never execute) a Current Multiply leveraged position via a
-            flash-loan loop. Higher risk than plain deposits: the whole principal
-            can be liquidated. The multiplier is hard-capped server-side; the cap
-            in this tool's description is enforcement, not advice."""
+            """Build (never execute) a Current Multiply leveraged position for
+            the authenticated user via a flash-loan loop. Higher risk than
+            plain deposits: the whole principal can be liquidated. The
+            multiplier is hard-capped server-side; the cap in this tool's
+            description is enforcement, not advice."""
             await registry.ensure_loaded()
-            addr = validate_address(user_address)
+            addr = require_address()
             mult = validate_multiplier(target_multiplier, settings.leverage_max_multiplier)
             if not isinstance(collateral_asset, str) or not collateral_asset.strip():
                 raise ValidationError("collateral_asset must be a symbol string")
@@ -465,5 +474,10 @@ class CurrentFinanceProvider:
         ) -> dict[str, Any]:
             """Broadcast a transaction the user already signed in their own wallet.
             The ONLY write path to the chain. Refuses anything that does not
-            byte-match a live proposal from this server — it is not a relay."""
-            return await provider.execute_submit(proposal_id, signed_tx_bytes_base64, signatures)
+            byte-match a live proposal from this server, or a proposal that
+            belongs to a different account than this session — it is not a
+            relay."""
+            return await provider.execute_submit(
+                proposal_id, signed_tx_bytes_base64, signatures,
+                session_address=require_address(),
+            )

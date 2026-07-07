@@ -1,8 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ConnectButton, useCurrentAccount, useSignTransaction } from '@mysten/dapp-kit';
-import { api } from '../api.js';
+import {
+  ConnectButton,
+  useCurrentAccount,
+  useSignPersonalMessage,
+  useSignTransaction,
+} from '@mysten/dapp-kit';
+import { api, ensureSession, getSession } from '../api.js';
 
 /**
  * The in-chat signer. Claude links here (sign_url on every proposal); the
@@ -36,6 +41,7 @@ export default function Sign() {
   const pid = params.get('p');
   const account = useCurrentAccount();
   const { mutateAsync: signTransaction } = useSignTransaction();
+  const { mutateAsync: signMessage } = useSignPersonalMessage();
   const [phase, setPhase] = useState('review'); // review | signing | done
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
@@ -59,6 +65,11 @@ export default function Sign() {
     setErr(null);
     setPhase('signing');
     try {
+      // Submitting requires an authenticated session for the proposal's
+      // address (the server refuses proposals that belong to another
+      // account). If none is live, the wallet first asks for a sign-in
+      // message — that's the extra prompt before the transaction itself.
+      await ensureSession(account.address, signMessage);
       // Sign the exact server-built bytes. The wallet shows its own review UI
       // on top of ours; the server re-checks byte equality on submit.
       const signed = await signTransaction({
@@ -152,9 +163,17 @@ export default function Sign() {
           address {prop.user_address.slice(0, 10)}… Switch accounts to sign.
         </div>
       ) : (
-        <button className="primary big" disabled={phase === 'signing'} onClick={approve}>
-          {phase === 'signing' ? 'Confirm in your wallet…' : 'Sign in wallet & broadcast'}
-        </button>
+        <div className="cta">
+          <button className="primary big" disabled={phase === 'signing'} onClick={approve}>
+            {phase === 'signing' ? 'Confirm in your wallet…' : 'Sign in wallet & broadcast'}
+          </button>
+          {!getSession() && (
+            <p className="muted small">
+              Your wallet will ask for two confirmations: a one-time sign-in message (proves
+              address ownership, authorizes nothing), then the transaction itself.
+            </p>
+          )}
+        </div>
       )}
 
       {err && <div className="error">{err}</div>}
