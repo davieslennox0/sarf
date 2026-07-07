@@ -4,6 +4,7 @@ import { ConnectButton, useCurrentAccount, useDisconnectWallet } from '@mysten/d
 import Stats from './pages/Stats.jsx';
 import Activity from './pages/Activity.jsx';
 import Sign from './pages/Sign.jsx';
+import Authorize from './pages/Authorize.jsx';
 import { api, clearSession, getSession } from './api.js';
 import { SESSION_MINUTES, endEphemeralSession } from './zklogin.js';
 
@@ -89,6 +90,7 @@ export default function App() {
           <Route path="/" element={<Stats />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/sign" element={<Sign />} />
+          <Route path="/authorize" element={<Authorize />} />
         </Routes>
       </main>
       <footer>

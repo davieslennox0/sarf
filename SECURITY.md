@@ -78,15 +78,29 @@ That gap is closed; this section replaces the old one entirely.
    `SARF_SESSION_SECRET`, revocable and expirable via its DB row (both checks
    must pass on every request).
 
+**How the token reaches an MCP client — OAuth, added once.** The server is
+its own OAuth 2.1 authorization server (`oauth.py`): RFC 9728/8414
+discovery, RFC 7591 dynamic registration (public clients, PKCE S256, no
+client secrets), authorization-code grant only. The /authorize consent page
+is the SAME wallet challenge–response as dashboard sign-in — OAuth changes
+how a session token is *delivered* (Authorization header, stable connector
+URL with no key in it), not how ownership is proven or what the token is.
+There are deliberately **no refresh tokens**: renewal always costs a fresh
+wallet signature via the client's Reconnect flow. Legacy key-in-URL
+connectors (`?key=`) remain for clients without OAuth support.
+
 Explicit revocation (logout, or an operator killing a compromised token)
 **marks** the row (`revoked_at`, `revocation_reason`) rather than deleting
 it, and revoked rows are retained for 30 days — so the audit trail can
 distinguish a compromise response from natural expiry. That distinction is
 server-internal only: the token holder sees plain `session_expired` either
-way, deliberately. Session tokens never reach log files: Caddy does not
-access-log the sarf hosts, and uvicorn's access log (which records full
-request lines, `?key=` included) runs behind a redaction filter that scrubs
-`sarf_sess_…` tokens before writing.
+way, deliberately. **Ending a session on the dashboard revokes every live
+session for that wallet** — dashboard bearer and all MCP connector tokens
+together — so "End session" in Sarf disconnects Claude too. Session tokens
+never reach log files: Caddy does not access-log the sarf hosts, and
+uvicorn's access log (which records full request lines, `?key=` included)
+runs behind a redaction filter that scrubs `sarf_sess_…` tokens before
+writing.
 
 **Session lifetime: 30 minutes** (`SESSION_TTL_SECONDS`, hard-capped at 60 in
 code). Long enough for one propose→review→sign conversation; short enough
@@ -104,22 +118,22 @@ and additionally refuses proposals that belong to a different account than
 the submitting session.
 
 **Production fails closed.** With `SARF_ENV=production` the server refuses to
-start without `SARF_SESSION_SECRET` (≥32 chars), and /mcp requests with no
-token or a forged one get a transport-level 401 — there is no
-unauthenticated fallback. One deliberate nuance: a token that is
-**HMAC-authentic but expired** passes the transport and fails at the tool
-layer instead, with a labeled in-band error
-(`session_expired: … sign in again at …`). Per the MCP spec, a transport 401
-is consumed by the client's OAuth machinery (we run no OAuth server) and
-reaches the model as an opaque failure, while `result.isError` text is
-routed to the model — so the expired case, the only auth failure a
-legitimate user routinely hits, is the one place we speak on the channel
-the user can actually hear. Nothing executes on an expired session; tools
-have no address to act on. Dev mode (`SARF_ENV=dev`) permits anonymous
-*endpoint* access for local testing but logs a warning on **every** such
-request, and tools still refuse to act without a session address. The former
-static `MCP_AUTH_TOKEN` gate is superseded by per-user session tokens and
-has been removed.
+start without `SARF_SESSION_SECRET` (≥32 chars), and there is no
+unauthenticated fallback on /mcp. The 401 policy splits by credential
+channel (`auth.transport_denies`): **Bearer-header clients** — OAuth-capable
+by definition — get a transport 401 + `WWW-Authenticate` for *every*
+non-valid state including expired and revoked, which their client renders
+as a Reconnect prompt on the connector (this is what makes "End session"
+visibly disconnect Claude). **Legacy `?key=` clients** have no OAuth
+machinery, so for them an HMAC-authentic-but-expired token still passes the
+transport and fails at the tool layer with a labeled in-band error
+(`session_expired: …`) the model can relay — the one channel that user can
+actually hear; forged/missing tokens 401 regardless. Nothing executes on an
+expired session either way; tools have no address to act on. Dev mode
+(`SARF_ENV=dev`) permits anonymous *endpoint* access for local testing but
+logs a warning on **every** such request, and tools still refuse to act
+without a session address. The former static `MCP_AUTH_TOKEN` gate is
+superseded by per-user session tokens and has been removed.
 
 Funds-safety still does not *depend* on any of this — proposals remain
 unsigned and the broadcast path still demands the owner's wallet signature

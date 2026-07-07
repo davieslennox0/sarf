@@ -100,21 +100,26 @@ backend) and `LEVERAGE_PAIRS` (quote-server pair IDs; format in
    its own host: `https://sarf-mcp.managerx.xyz/mcp` (the dashboard/signer
    host `https://sarf.managerx.xyz` does not expose `/mcp`, and vice versa —
    both proxy to the same process, split by path allowlist).
-2. **Sign in first**: open the dashboard → *My activity* → connect wallet →
-   sign the one-time login message. The page then shows your personal
-   connector URL (`https://sarf-mcp.managerx.xyz/mcp?key=sarf_sess_…`),
-   bound to your verified address.
-3. Claude → Settings → Connectors → *Add custom connector* → paste that URL.
-   The token expires with the session (30 min); when tools start returning
-   auth errors, sign in again and update the connector with the fresh URL.
+2. Claude → Settings → Connectors → *Add custom connector* → paste the
+   **stable URL** `https://sarf-mcp.managerx.xyz/mcp` (no key). Claude
+   discovers the built-in OAuth server, opens the Sarf authorize page, and
+   you approve with a one-time wallet signature (it authorizes no
+   transaction). Add once, never edit again.
+3. Sessions last 30 minutes with no silent renewal. When one ends — by
+   expiry or by *End session* on the dashboard, which revokes **every**
+   session for your wallet including the connector's — the connector shows
+   **Reconnect**; clicking it re-runs the wallet-signature approval.
    Unauthenticated connections are refused in production — there is no
    anonymous mode.
-3. Tools appear under the connector; the assistant is instructed (via server
+4. Tools appear under the connector; the assistant is instructed (via server
    instructions) to always show `human_summary` and `risk_notes` before the
    user decides.
 
-ChatGPT: same URL via *Apps & Connectors* (developer mode) — the transport is
-standard streamable HTTP MCP.
+Clients without OAuth support: sign in on the dashboard (*My activity*) and
+use the legacy key-in-URL connector it offers
+(`…/mcp?key=sarf_sess_…`, dies with the session). ChatGPT: either form via
+*Apps & Connectors* (developer mode) — the transport is standard
+streamable-HTTP MCP.
 
 ### Signing (wallet side)
 

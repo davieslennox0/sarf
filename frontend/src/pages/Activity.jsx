@@ -44,19 +44,31 @@ function McpConnectCard() {
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+  const stableUrl = s.mcpUrl.split('?')[0];
+  const copyStable = async () => {
+    await navigator.clipboard.writeText(stableUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
   return (
     <div className="connect-card">
       <div className="row-title">Connect Claude to this account</div>
       <p className="muted small">
-        Add this as a custom connector URL in Claude (Settings → Connectors). It is bound to your
-        verified address and expires with this session in{' '}
-        <b>{Math.floor(msLeft / 60000)}m {String(Math.floor((msLeft % 60000) / 1000)).padStart(2, '0')}s</b>
-        — after that, sign in again for a fresh one.
+        Add this URL <b>once</b> as a custom connector in Claude (Settings → Connectors). Claude
+        will open a Sarf page asking you to approve with a wallet signature; when a session ends
+        (30 min, or you end it here), the connector shows <b>Reconnect</b> instead of silently
+        working — no need to ever paste a new URL.
       </p>
       <div className="token-row">
-        <code className="token-url">{s.mcpUrl}</code>
-        <button onClick={copy}>{copied ? 'Copied ✓' : 'Copy'}</button>
+        <code className="token-url">{stableUrl}</code>
+        <button onClick={copyStable}>{copied ? 'Copied ✓' : 'Copy'}</button>
       </div>
+      <p className="muted small">
+        Client can’t do OAuth? A key-in-URL connector bound to this session (expires in{' '}
+        <b>{Math.floor(msLeft / 60000)}m {String(Math.floor((msLeft % 60000) / 1000)).padStart(2, '0')}s</b>
+        ):{' '}
+        <button className="linkish" onClick={copy}>{copied ? 'copied ✓' : 'copy legacy URL'}</button>
+      </p>
     </div>
   );
 }

@@ -8,7 +8,7 @@
 sarf.managerx.xyz {
 	encode zstd gzip
 
-	@allowed path / /dashboard /dashboard/* /sign /api/* /healthz
+	@allowed path / /dashboard /dashboard/* /sign /authorize /api/* /.well-known/* /healthz
 	handle @allowed {
 		reverse_proxy 127.0.0.1:8760
 	}
@@ -22,7 +22,7 @@ sarf.managerx.xyz {
 sarf-mcp.managerx.xyz {
 	encode zstd gzip
 
-	@allowed path /mcp /mcp/* /healthz
+	@allowed path /mcp /mcp/* /.well-known/* /healthz
 	handle @allowed {
 		reverse_proxy 127.0.0.1:8760
 	}

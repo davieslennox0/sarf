@@ -83,4 +83,6 @@ export const api = {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }).catch(() => {}),
   myActivity: () => req('/api/me/activity'),
+  oauthApprove: (body) =>
+    req('/api/oauth/approve', { method: 'POST', body: JSON.stringify(body) }),
 };

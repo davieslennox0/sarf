@@ -128,6 +128,28 @@ def resolve_session_state(db: "Database", token: str | None) -> tuple[str | None
     return (address, "valid") if address else (None, "expired")
 
 
+def transport_denies(state: str, *, via_header: bool, env: str) -> bool:
+    """Which failed auth states get an HTTP 401 vs pass through to fail
+    in-band at the tool layer.
+
+    Header clients (Authorization: Bearer) speak OAuth: a 401 with
+    WWW-Authenticate makes the client render a Reconnect prompt on the
+    connector — actionable UI. So for them EVERY non-valid state 401s,
+    including expired and revoked; that is what makes "End session" in
+    Sarf visibly disconnect Claude. Query-param (?key=) clients have no
+    OAuth machinery, so a 401 is an opaque dead connector — for them,
+    expired-but-authentic still passes the transport and fails in-band
+    where the model can relay the fix. Forged/malformed always 401.
+    A missing token 401s too: that first 401 + WWW-Authenticate is what
+    triggers OAuth discovery when a connector is added.
+    """
+    if env != "production" or state == "valid":
+        return False
+    if via_header:
+        return True
+    return state != "expired"
+
+
 def revoke_token(db: "Database", token: str | None, reason: str | None = None) -> None:
     """Explicitly kill a session. The reason is recorded server-side only
     (audit: was this a routine logout or a compromise response?); the token

@@ -34,6 +34,48 @@ CHALLENGE_TTL = 300  # seconds a login nonce stays valid
 _challenges: dict[str, tuple[str, float]] = {}  # address -> (nonce, expires)
 
 
+def _challenge_message(addr: str, nonce: str) -> str:
+    return (
+        f"Sarf login\naddress: {addr}\nnonce: {nonce}\n"
+        f"This signature only proves address ownership to sarf; it authorizes no transaction."
+    )
+
+
+def issue_challenge(addr: str) -> str:
+    """One live nonce per address; returns the message the wallet must sign."""
+    nonce = secrets.token_urlsafe(24)
+    now = time.time()
+    for k in [k for k, (_, exp) in _challenges.items() if exp < now]:
+        _challenges.pop(k, None)
+    _challenges[addr] = (nonce, now + CHALLENGE_TTL)
+    return _challenge_message(addr, nonce)
+
+
+async def verify_wallet_challenge(tx: TxBuilder, addr: str, signature: Any) -> None:
+    """Consume the live challenge for addr iff the signature verifies (sidecar
+    verifyPersonalMessageSignature — full zkLogin proof checks included).
+    Raises HTTPException otherwise. Shared by dashboard sign-in and the OAuth
+    authorize flow so there is exactly one proof-of-ownership gate."""
+    if not isinstance(signature, str) or not signature:
+        raise HTTPException(400, "signature required")
+    entry = _challenges.get(addr)
+    if not entry or entry[1] < time.time():
+        raise HTTPException(400, "no live challenge for this address; request a new one")
+    import base64 as b64
+
+    res = await tx._req(  # noqa: SLF001 - thin internal client
+        "POST", "/verify-signature",
+        {
+            "address": addr,
+            "messageBase64": b64.b64encode(_challenge_message(addr, entry[0]).encode()).decode(),
+            "signature": signature,
+        },
+    )
+    if not res.get("valid"):
+        raise HTTPException(401, f"signature verification failed: {res.get('reason', '')}")
+    _challenges.pop(addr, None)  # single use
+
+
 def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> APIRouter:
     r = APIRouter(prefix="/api")
 
@@ -60,45 +102,12 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
     @r.get("/auth/challenge")
     async def auth_challenge(address: str) -> dict[str, Any]:
         addr = validate_address(address)
-        nonce = secrets.token_urlsafe(24)
-        now = time.time()
-        # prune + store; one live challenge per address
-        for k in [k for k, (_, exp) in _challenges.items() if exp < now]:
-            _challenges.pop(k, None)
-        _challenges[addr] = (nonce, now + CHALLENGE_TTL)
-        message = (
-            f"Sarf login\naddress: {addr}\nnonce: {nonce}\n"
-            f"This signature only proves address ownership to sarf; it authorizes no transaction."
-        )
-        return {"message": message}
+        return {"message": issue_challenge(addr)}
 
     @r.post("/auth/verify")
     async def auth_verify(body: dict[str, Any]) -> dict[str, Any]:
         addr = validate_address(body.get("address"))
-        signature = body.get("signature")
-        if not isinstance(signature, str) or not signature:
-            raise HTTPException(400, "signature required")
-        entry = _challenges.get(addr)
-        if not entry or entry[1] < time.time():
-            raise HTTPException(400, "no live challenge for this address; request a new one")
-        nonce = entry[0]
-        message = (
-            f"Sarf login\naddress: {addr}\nnonce: {nonce}\n"
-            f"This signature only proves address ownership to sarf; it authorizes no transaction."
-        )
-        import base64 as b64
-
-        res = await tx._req(  # noqa: SLF001 - thin internal client
-            "POST", "/verify-signature",
-            {
-                "address": addr,
-                "messageBase64": b64.b64encode(message.encode()).decode(),
-                "signature": signature,
-            },
-        )
-        if not res.get("valid"):
-            raise HTTPException(401, f"signature verification failed: {res.get('reason', '')}")
-        _challenges.pop(addr, None)  # single use
+        await verify_wallet_challenge(tx, addr, body.get("signature"))
         db.upsert_user(addr, "wallet")
         token, ttl = auth.mint_session(db, addr)
         return {
@@ -131,7 +140,15 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
         # clear-before-logout ordering bug went unnoticed).
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HTTPException(401, "logout requires the session bearer token")
-        auth.revoke_token(db, authorization[7:], reason="user_logout")
+        token = authorization[7:]
+        addr, _state = auth.resolve_session_state(db, token)
+        if addr:
+            # End session means end it EVERYWHERE for this wallet: the
+            # dashboard bearer and every MCP connector token (OAuth or ?key=)
+            # die together — terminating in Sarf disconnects Claude too.
+            db.revoke_sessions_for_address(addr, reason="user_logout")
+        else:
+            auth.revoke_token(db, token, reason="user_logout")
         return {"ok": True}
 
     # ----------------------------------------------------- authed activity

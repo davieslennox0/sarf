@@ -29,7 +29,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import auth
+from . import auth, oauth
 from .api import build_api, tvl_refresher
 from .config import settings
 from .db import Database
@@ -55,8 +55,9 @@ mcp = FastMCP(
         "Non-custodial Sui lending assistant (Current Finance). All tools act "
         "on the wallet-verified account bound to this connector's session "
         "token — there is no way (and no need) to pass an address. If tools "
-        "return an authentication error, the session expired: the user signs "
-        "in again on the Sarf dashboard and updates the connector token. "
+        "return an authentication error, the session expired: the user "
+        "reconnects this connector (Claude will prompt to re-authenticate) "
+        "or signs in on the Sarf dashboard for a fresh ?key= token. "
         "propose_* tools only BUILD transactions and return them for the user "
         "to sign in their own wallet — always show the user the human_summary "
         "and every risk_note before they decide, and share the sign_url so "
@@ -98,11 +99,17 @@ _hits: dict[str, deque[float]] = defaultdict(deque)
 _log = logging.getLogger("sarf.auth")
 
 
-def _extract_token(request: Request) -> str:
+def _extract_token(request: Request) -> tuple[str, bool]:
+    """-> (token, via_header). Bearer means an OAuth-capable client whose
+    401s render as a Reconnect prompt; ?key=/x-api-key are legacy clients
+    that need in-band errors for the expired case (see auth.transport_denies)."""
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
-        return header[7:].strip()
-    return (request.headers.get("x-api-key", "") or request.query_params.get("key", "")).strip()
+        return header[7:].strip(), True
+    return (
+        (request.headers.get("x-api-key", "") or request.query_params.get("key", "")).strip(),
+        False,
+    )
 
 
 @app.middleware("http")
@@ -118,24 +125,28 @@ async def guard(request: Request, call_next):
         q.append(now)
 
         # Session gate: the token was minted only after a verified
-        # wallet/zkLogin signature (auth.py). Tools act on the address bound
-        # here — never on an address supplied in tool arguments.
+        # wallet/zkLogin signature (auth.py / oauth.py). Tools act on the
+        # address bound here — never on an address in tool arguments.
         #
-        # Expired-but-authentic tokens deliberately PASS the transport: an
-        # HTTP 401 is consumed by the MCP client's OAuth machinery (we run
-        # none) and reaches the model as an opaque failed call, killing even
-        # the handshake. Letting the request through means initialize/
-        # tools/list keep working and require_address() raises an in-band
-        # "session_expired: …reconnect at…" tool error the model can relay.
-        # Nothing executes on an expired session — tools have no address.
-        address, state = auth.resolve_session_state(db, _extract_token(request))
-        if address is None and state != "expired" and settings.env == "production":
+        # 401 policy lives in auth.transport_denies: OAuth (Bearer) clients
+        # get a 401 + WWW-Authenticate for every non-valid state — their
+        # client turns it into a Reconnect prompt, which is how ending a
+        # session in Sarf visibly disconnects the connector. Legacy ?key=
+        # clients keep the in-band path for expired-but-authentic tokens
+        # (a 401 is opaque to them). Nothing executes without a valid
+        # session either way — tools have no address to act on.
+        token, via_header = _extract_token(request)
+        address, state = auth.resolve_session_state(db, token)
+        if address is None and auth.transport_denies(
+            state, via_header=via_header, env=settings.env
+        ):
             return Response(
-                "unauthorized: sign in with your wallet at "
-                f"{settings.public_url or 'the Sarf dashboard'} to mint a session token, "
-                "then use ?key=<token> (or a Bearer header) on this endpoint. "
-                f"Tokens expire after {settings.session_ttl_seconds // 60} minutes.",
+                "unauthorized: connect this MCP client via OAuth (it will prompt you to "
+                f"sign in with your wallet at {settings.public_url or 'the Sarf dashboard'}), "
+                "or mint a ?key= token on the dashboard. Sessions expire after "
+                f"{settings.session_ttl_seconds // 60} minutes.",
                 status_code=401,
+                headers={"WWW-Authenticate": oauth.www_authenticate()},
             )
         if address is None and settings.env != "production":
             # Dev mode only — deliberately loud on EVERY request so a dev
@@ -157,6 +168,7 @@ async def healthz():
 
 
 app.include_router(build_api(db, txbuilder, provider))
+app.include_router(oauth.build_oauth(db, txbuilder))
 
 # Dashboard + signer static bundle (built by `npm run build` in frontend/).
 # Explicit routes/mounts win over the catch-all MCP mount below; /dashboard

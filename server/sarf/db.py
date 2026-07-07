@@ -66,6 +66,27 @@ CREATE TABLE IF NOT EXISTS stats (
   value_json TEXT NOT NULL,
   updated_at REAL NOT NULL
 );
+
+-- OAuth (MCP connector auth): dynamically registered public clients and
+-- single-use PKCE authorization codes. Access tokens are ordinary session
+-- rows — OAuth changes how a session is obtained, not what it is.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id     TEXT PRIMARY KEY,
+  client_name   TEXT,
+  redirect_uris TEXT NOT NULL,        -- JSON array, exact-match at authorize/token
+  created_at    REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code           TEXT PRIMARY KEY,
+  client_id      TEXT NOT NULL,
+  redirect_uri   TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,       -- PKCE S256
+  address        TEXT NOT NULL,       -- wallet-verified before the code exists
+  created_at     REAL NOT NULL,
+  expires_at     REAL NOT NULL,
+  used           INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Columns added after the base schema shipped; applied idempotently.
@@ -294,6 +315,19 @@ class Database:
                 (time.time(), reason, token_id),
             )
 
+    def revoke_sessions_for_address(self, address: str, reason: str | None = None) -> int:
+        """Kill every live session for an address — 'End session' means end it
+        everywhere: dashboard bearer AND any MCP connector tokens (OAuth or
+        ?key=) minted for the same wallet. Returns how many were revoked."""
+        now = time.time()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE sessions SET revoked_at=?, revocation_reason=?"
+                " WHERE address=? AND revoked_at IS NULL AND expires_at > ?",
+                (now, reason, address, now),
+            )
+            return cur.rowcount
+
     def session_record(self, token_id: str) -> dict[str, Any] | None:
         """Full session row for internal auditing (includes revoked/expired
         rows still within retention). Never exposed to token holders."""
@@ -308,6 +342,49 @@ class Database:
             "token_id": r[0], "address": r[1], "created_at": r[2],
             "expires_at": r[3], "revoked_at": r[4], "revocation_reason": r[5],
         }
+
+    # -- OAuth clients / authorization codes -----------------------------------
+
+    def create_oauth_client(self, client_id: str, client_name: str | None,
+                            redirect_uris: list[str]) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO oauth_clients VALUES (?,?,?,?)",
+                (client_id, client_name, json.dumps(redirect_uris), time.time()),
+            )
+
+    def get_oauth_client(self, client_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT client_id, client_name, redirect_uris FROM oauth_clients WHERE client_id=?",
+            (client_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {"client_id": r[0], "client_name": r[1], "redirect_uris": json.loads(r[2])}
+
+    def put_oauth_code(self, code: str, client_id: str, redirect_uri: str,
+                       code_challenge: str, address: str, ttl_seconds: int) -> None:
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM oauth_codes WHERE expires_at < ?", (now,))
+            self._conn.execute(
+                "INSERT INTO oauth_codes VALUES (?,?,?,?,?,?,?,0)",
+                (code, client_id, redirect_uri, code_challenge, address, now, now + ttl_seconds),
+            )
+
+    def consume_oauth_code(self, code: str) -> dict[str, Any] | None:
+        """Single-use: the first caller gets the row, everyone after gets None
+        (a replayed code must fail even inside its TTL)."""
+        with self._lock, self._conn:
+            r = self._conn.execute(
+                "SELECT client_id, redirect_uri, code_challenge, address, expires_at, used"
+                " FROM oauth_codes WHERE code=?",
+                (code,),
+            ).fetchone()
+            if not r or r[5] or r[4] < time.time():
+                return None
+            self._conn.execute("UPDATE oauth_codes SET used=1 WHERE code=?", (code,))
+        return {"client_id": r[0], "redirect_uri": r[1], "code_challenge": r[2], "address": r[3]}
 
     def set_stat(self, key: str, value: dict[str, Any]) -> None:
         with self._lock, self._conn:
