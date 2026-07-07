@@ -94,12 +94,22 @@ and additionally refuses proposals that belong to a different account than
 the submitting session.
 
 **Production fails closed.** With `SARF_ENV=production` the server refuses to
-start without `SARF_SESSION_SECRET` (≥32 chars) and returns 401 on any /mcp
-request without a live session — there is no unauthenticated fallback. Dev
-mode (`SARF_ENV=dev`) permits anonymous *endpoint* access for local testing
-but logs a warning on **every** such request, and tools still refuse to act
-without a session address. The former static `MCP_AUTH_TOKEN` gate is
-superseded by per-user session tokens and has been removed.
+start without `SARF_SESSION_SECRET` (≥32 chars), and /mcp requests with no
+token or a forged one get a transport-level 401 — there is no
+unauthenticated fallback. One deliberate nuance: a token that is
+**HMAC-authentic but expired** passes the transport and fails at the tool
+layer instead, with a labeled in-band error
+(`session_expired: … sign in again at …`). Per the MCP spec, a transport 401
+is consumed by the client's OAuth machinery (we run no OAuth server) and
+reaches the model as an opaque failure, while `result.isError` text is
+routed to the model — so the expired case, the only auth failure a
+legitimate user routinely hits, is the one place we speak on the channel
+the user can actually hear. Nothing executes on an expired session; tools
+have no address to act on. Dev mode (`SARF_ENV=dev`) permits anonymous
+*endpoint* access for local testing but logs a warning on **every** such
+request, and tools still refuse to act without a session address. The former
+static `MCP_AUTH_TOKEN` gate is superseded by per-user session tokens and
+has been removed.
 
 Funds-safety still does not *depend* on any of this — proposals remain
 unsigned and the broadcast path still demands the owner's wallet signature

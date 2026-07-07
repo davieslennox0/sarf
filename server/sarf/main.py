@@ -120,8 +120,16 @@ async def guard(request: Request, call_next):
         # Session gate: the token was minted only after a verified
         # wallet/zkLogin signature (auth.py). Tools act on the address bound
         # here — never on an address supplied in tool arguments.
-        address = auth.resolve_session(db, _extract_token(request))
-        if address is None and settings.env == "production":
+        #
+        # Expired-but-authentic tokens deliberately PASS the transport: an
+        # HTTP 401 is consumed by the MCP client's OAuth machinery (we run
+        # none) and reaches the model as an opaque failed call, killing even
+        # the handshake. Letting the request through means initialize/
+        # tools/list keep working and require_address() raises an in-band
+        # "session_expired: …reconnect at…" tool error the model can relay.
+        # Nothing executes on an expired session — tools have no address.
+        address, state = auth.resolve_session_state(db, _extract_token(request))
+        if address is None and state != "expired" and settings.env == "production":
             return Response(
                 "unauthorized: sign in with your wallet at "
                 f"{settings.public_url or 'the Sarf dashboard'} to mint a session token, "
@@ -129,14 +137,14 @@ async def guard(request: Request, call_next):
                 f"Tokens expire after {settings.session_ttl_seconds // 60} minutes.",
                 status_code=401,
             )
-        if address is None:
+        if address is None and settings.env != "production":
             # Dev mode only — deliberately loud on EVERY request so a dev
             # deployment can't quietly masquerade as production.
             _log.warning(
                 "SARF DEV MODE: unauthenticated /mcp request from %s allowed; "
                 "set SARF_ENV=production to fail closed", ip,
             )
-        auth.bind_session(address)
+        auth.bind_session(address, state)
 
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"

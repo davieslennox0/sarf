@@ -49,6 +49,10 @@ _TOKEN_RE = re.compile(r"^sarf_sess_([0-9a-f]{32})\.([0-9a-f]{64})$")
 # middleware (and by REST handlers after bearer validation). None = no
 # authenticated session in this context.
 _session_address: ContextVar[str | None] = ContextVar("sarf_session_address", default=None)
+# Why there is no address: "missing" (no/forged token) vs "expired" (a token
+# we provably minted whose session lapsed or was ended). The distinction
+# drives the error the model can relay to the user.
+_session_state: ContextVar[str] = ContextVar("sarf_session_state", default="missing")
 
 
 class AuthError(Exception):
@@ -75,15 +79,30 @@ def resolve_session(db: "Database", token: str | None) -> str | None:
     """Token -> verified address, or None. Constant-time HMAC check first
     (forged tokens never reach the DB), then the stored row decides expiry
     and revocation."""
+    return resolve_session_state(db, token)[0]
+
+
+def resolve_session_state(db: "Database", token: str | None) -> tuple[str | None, str]:
+    """Token -> (verified address | None, state).
+
+    States: "valid" | "expired" | "invalid" | "missing". A passing HMAC
+    proves we minted the token, so HMAC-ok + no live DB row = a real user
+    whose session lapsed (or who ended it) -> "expired", which callers turn
+    into an actionable "sign in again" error. Anything unverifiable is
+    "invalid"/"missing" and stays a generic transport-level rejection —
+    forged tokens don't deserve a helpful error, and it's not a state a
+    legitimate user ever sees.
+    """
     if not token:
-        return None
+        return None, "missing"
     m = _TOKEN_RE.match(token.strip())
     if not m:
-        return None
+        return None, "invalid"
     token_id, sig = m.group(1), m.group(2)
     if not hmac.compare_digest(sig, _sign(token_id)):
-        return None
-    return db.session_address(token_id)
+        return None, "invalid"
+    address = db.session_address(token_id)
+    return (address, "valid") if address else (None, "expired")
 
 
 def revoke_token(db: "Database", token: str | None) -> None:
@@ -92,8 +111,10 @@ def revoke_token(db: "Database", token: str | None) -> None:
         db.revoke_session(m.group(1))
 
 
-def bind_session(address: str | None):
-    """Bind the verified address to the current request context."""
+def bind_session(address: str | None, state: str | None = None):
+    """Bind the verified address (and why there isn't one) to the current
+    request context."""
+    _session_state.set(state or ("valid" if address else "missing"))
     return _session_address.set(address)
 
 
@@ -103,13 +124,31 @@ def current_address() -> str | None:
 
 def require_address() -> str:
     """The address every tool acts on. Raises if the request carried no valid
-    session — tools never accept an address from the caller instead."""
+    session — tools never accept an address from the caller instead.
+
+    Raised inside a tool, the message becomes an in-band MCP tool error
+    (result.isError + text) — the channel the spec routes to the model — so
+    the assistant can tell the user exactly how to reconnect. A transport
+    401 would instead be eaten by the client's OAuth machinery and surface
+    as an opaque failed call.
+    """
     addr = current_address()
-    if not addr:
+    if addr:
+        return addr
+    dashboard = (
+        f"{settings.public_url}/dashboard/activity" if settings.public_url else "the Sarf dashboard"
+    )
+    minutes = settings.session_ttl_seconds // 60
+    if _session_state.get() == "expired":
         raise AuthError(
-            "No authenticated session. Sign in with your wallet at "
-            f"{settings.public_url or 'the Sarf dashboard'} to mint a connector token, then "
-            "configure the MCP connector URL with ?key=<token>. Tokens expire after "
-            f"{settings.session_ttl_seconds // 60} minutes and require signing in again."
+            f"session_expired: Your Sarf session has expired (sessions last {minutes} minutes; "
+            "there is no silent renewal, by design). Tell the user to: (1) open "
+            f"{dashboard} and sign in with their wallet, (2) copy the fresh connector URL "
+            "shown there, (3) update this connector's URL/key with it — then retry the request."
         )
-    return addr
+    raise AuthError(
+        f"not_authenticated: No Sarf session on this connection. Tell the user to sign in "
+        f"with their wallet at {dashboard}, copy the personal connector URL shown there "
+        f"(…/mcp?key=sarf_sess_…), and configure this connector with it. Tokens expire after "
+        f"{minutes} minutes."
+    )

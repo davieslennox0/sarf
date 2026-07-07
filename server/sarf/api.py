@@ -113,9 +113,13 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
     def _session_addr(authorization: str | None) -> str:
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HTTPException(401, "missing bearer token")
-        addr = auth.resolve_session(db, authorization[7:])
+        addr, state = auth.resolve_session_state(db, authorization[7:])
         if not addr:
-            raise HTTPException(401, "invalid or expired session")
+            raise HTTPException(
+                401,
+                "session expired — sign in with your wallet again"
+                if state == "expired" else "invalid session",
+            )
         return addr
 
     @r.post("/auth/logout")

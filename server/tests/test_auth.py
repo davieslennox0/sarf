@@ -157,6 +157,22 @@ def test_revoked_session_rejected(db):
     assert auth.resolve_session(db, token) is None
 
 
+def test_session_states_distinguished(db):
+    """Expired-but-authentic is distinguishable from forged/missing — it
+    drives the actionable in-band error instead of a transport 401."""
+    live, _ = auth.mint_session(db, ADDR_A)
+    stale, _ = auth.mint_session(db, ADDR_A, ttl_seconds=-1)
+    assert auth.resolve_session_state(db, live) == (ADDR_A, "valid")
+    assert auth.resolve_session_state(db, stale) == (None, "expired")
+    assert auth.resolve_session_state(db, None) == (None, "missing")
+    assert auth.resolve_session_state(db, "garbage") == (None, "invalid")
+    tampered = live[:-1] + ("0" if live[-1] != "0" else "1")
+    assert auth.resolve_session_state(db, tampered) == (None, "invalid")
+    # ended-by-user reads as expired too: same user story, same remedy
+    auth.revoke_token(db, live)
+    assert auth.resolve_session_state(db, live) == (None, "expired")
+
+
 # ------------------------------------------- challenge–response via the API
 
 def test_login_happy_path_mints_short_lived_session(client, db):
@@ -303,6 +319,24 @@ async def test_caller_supplied_address_never_honored(mcp_with_tools, faketx):
 @pytest.mark.asyncio
 async def test_tool_without_session_is_refused(mcp_with_tools, faketx):
     auth.bind_session(None)
-    with pytest.raises(Exception, match="[Nn]o authenticated session"):
+    with pytest.raises(Exception, match="not_authenticated"):
         await mcp_with_tools.call_tool("get_portfolio", {})
+    assert faketx.portfolio_called_with is None
+
+
+@pytest.mark.asyncio
+async def test_expired_session_tool_error_is_actionable(mcp_with_tools, faketx):
+    """Expired session -> a distinct, labeled, in-band tool error telling the
+    model to send the user back to the dashboard — not a generic failure.
+    (Transport-level behavior is covered by the live e2e: expired tokens
+    pass the middleware so initialize/tools/list still work.)"""
+    auth.bind_session(None, "expired")
+    try:
+        with pytest.raises(Exception) as exc:
+            await mcp_with_tools.call_tool("get_portfolio", {})
+    finally:
+        auth.bind_session(None)
+    msg = str(exc.value)
+    assert "session_expired" in msg
+    assert "sign in" in msg
     assert faketx.portfolio_called_with is None
