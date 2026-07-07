@@ -41,15 +41,23 @@ PROPOSAL_TTL_DEFAULT = 600
 
 @dataclass(frozen=True)
 class Settings:
-    host: str = _env("SUIFLOW_HOST", "127.0.0.1")
-    port: int = int(_env("SUIFLOW_PORT", "8760"))
-    db_path: str = _env("SUIFLOW_DB_PATH", "./data/suiflow.db")
+    host: str = _env("SARF_HOST", "127.0.0.1")
+    port: int = int(_env("SARF_PORT", "8760"))
+    db_path: str = _env("SARF_DB_PATH", "./data/sarf.db")
     txbuilder_url: str = "http://%s:%s" % (
         _env("TXBUILDER_HOST", "127.0.0.1"),
         _env("TXBUILDER_PORT", "8761"),
     )
 
     proposal_ttl_seconds: int = int(_env("PROPOSAL_TTL_SECONDS", str(PROPOSAL_TTL_DEFAULT)))
+
+    # Public base URL (Caddy) — used to build the in-chat signer link on every
+    # proposal. Empty = no sign_url in responses.
+    public_url: str = _env("SARF_PUBLIC_URL", "").rstrip("/")
+
+    # How often the TVL/user-count snapshot refreshes. On-chain reads across
+    # all tracked users are too slow/rate-limited to do per page load.
+    stats_refresh_seconds: int = int(_env("STATS_REFRESH_SECONDS", "90"))
 
     # 0 disables the USD cap (not recommended; see SECURITY.md).
     max_proposal_usd: float = float(_env("MAX_PROPOSAL_USD", "250000"))

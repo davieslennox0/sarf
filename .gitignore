@@ -21,6 +21,7 @@ __pycache__/
 # Node
 node_modules/
 txbuilder/dist/
+frontend/dist/
 
 # Local state (audit db lives outside git regardless of nesting)
 **/data/

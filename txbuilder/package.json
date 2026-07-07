@@ -1,9 +1,9 @@
 {
-  "name": "suiflow-txbuilder",
+  "name": "sarf-txbuilder",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Loopback-only PTB builder/simulator/broadcaster for SuiFlow. Never sees private keys.",
+  "description": "Loopback-only PTB builder/simulator/broadcaster for Sarf. Never sees private keys.",
   "scripts": {
     "typecheck": "tsc",
     "start": "tsx src/index.ts",

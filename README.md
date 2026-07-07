@@ -1,4 +1,4 @@
-# SuiFlow
+# Sarf
 
 Non-custodial MCP server that lets Claude / ChatGPT act as a trading & lending
 assistant on **Sui**, starting with **Current Finance** (lending, leveraged
@@ -41,7 +41,7 @@ the flash-loan leverage PTB assembly. Reimplementing those in Python would be
 error-prone and drift from upstream. Tradeoff documented in
 `txbuilder/src/context.ts`.
 
-`server/suiflow/providers/` is the extension point: Aftermath Finance
+`server/sarf/providers/` is the extension point: Aftermath Finance
 (swaps/perps) lands as `providers/aftermath.py` + its own sidecar module,
 with no change to existing tools or the validation layer.
 
@@ -111,11 +111,78 @@ wallets (Slush et al.) via the frontend `signTransaction` dapp-kit call; the
 resulting `{bytes, signature}` go straight to `submit_signed_transaction`.
 There is intentionally no signing capability anywhere in this repo.
 
+## Dashboard & in-chat signer
+
+The React/Vite app in `frontend/` is served by the FastAPI process at
+`/dashboard/` (build with `cd frontend && npm run build`; Caddy exposes it on
+the same domain as the MCP endpoint — one deployment, same Vultr/Caddy
+pattern as the base server).
+
+- **Stats page (public)** — total users (a `COUNT(*)` over identities that
+  actually connected: wallet sign-ins and MCP tool users) and **TVL supplied
+  through Sarf-tracked positions** — deliberately *not* Current Finance's
+  protocol-wide TVL, and the UI says so. Nothing is mocked: zeros render as
+  zeros with a "last updated" timestamp.
+- **Activity page (authenticated)** — the proposal audit trail for the
+  signed-in address, with outcomes (awaiting signature / broadcast ✓ /
+  simulation failed / expired unsigned / rejected).
+
+### How TVL is computed and refreshed
+
+A background task in the server (interval `STATS_REFRESH_SECONDS`, default
+90s) iterates the distinct addresses holding Sarf-tracked obligation caps,
+reads each obligation live through the Current Finance SDK, prices deposits
+with **Pyth oracle prices at scan time** (never hardcoded), sums supplied
+USD, and writes the snapshot to the `stats` table. `/api/stats` serves only
+that snapshot — page loads never trigger on-chain scans — and reports the
+snapshot's age so freshness is visible instead of faked.
+
+### How the signer is hosted (and why it isn't a Claude artifact)
+
+Every successful `propose_*` response carries a `sign_url`
+(`$SARF_PUBLIC_URL/sign?p=<proposal_id>`). Claude presents the proposal and
+links the user there. **Checked and confirmed:** Claude Artifacts run under a
+CSP that blocks all external network requests from client-side JS, so an
+inline artifact could neither fetch the proposal nor reach a wallet/fullnode
+— the signer therefore lives on our own domain, same origin as the API.
+
+The `/sign` page: fetches the stored proposal (simulated outcome, gas, risk
+notes — the same simulate-and-summarize data, never just raw parameters),
+enforces that the connected wallet matches the proposal's address, lets the
+user sign **the exact server-built bytes** in their own wallet
+(`@mysten/dapp-kit` — includes zkLogin wallets like Slush), and POSTs the
+signature to `/api/submit`, which shares every invariant with the MCP
+`submit_signed_transaction` tool (byte-match, TTL, single-use).
+
+### Session & ephemeral key lifecycle
+
+- **Wallet sessions**: connecting starts a visible session banner
+  ("Signing session active — expires in Xm") with a hard 30-minute cap and an
+  **End session** button that disconnects the wallet, revokes the API
+  session, and wipes any cached material immediately. Auto-connect is off; a
+  signing surface should never silently reconnect. Every action still shows
+  its specific proposal and requires an explicit wallet confirmation — there
+  is no unlocked-signing mode, by design.
+- **Dashboard auth**: sign-in = wallet signs a one-time server nonce (the
+  message states it authorizes no transaction); the server verifies the
+  signature (zkLogin signatures included) and mints a 24h bearer token held
+  in `sessionStorage`.
+- **Native zkLogin (config-gated)**: `frontend/src/zklogin.js` implements the
+  ephemeral-key lifecycle — created in-browser on login, stored only in
+  `sessionStorage` with an explicit expiry, wiped on expiry or End-session,
+  never sent anywhere. Activating the full in-page zkLogin flow (OAuth →
+  prover → zkLoginSignature) requires `VITE_GOOGLE_CLIENT_ID` and
+  `VITE_ZKLOGIN_PROVER_URL` (Mysten's mainnet prover needs enrollment; Enoki
+  is the managed path). Until configured the UI never offers it — zkLogin
+  users sign through their zkLogin wallet instead, which is the same
+  custody model.
+
 ## Development
 
 ```bash
 cd server && .venv/bin/python -m pytest tests/ -q   # validation suite (offline)
 cd txbuilder && npx tsc                             # typecheck
+cd frontend && npm run dev                          # dashboard w/ /api proxy to :8760
 ```
 
 Git hooks: `git config core.hooksPath .githooks` (done by setup.sh). Every

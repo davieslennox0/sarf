@@ -1,4 +1,4 @@
-"""SuiFlow MCP server (remote/streamable-HTTP).
+"""Sarf MCP server (remote/streamable-HTTP).
 
 Wiring only — policy lives in config.py, enforcement in validation.py, tools
 in providers/. Runs behind Caddy (TLS) under pm2; binds loopback by default.
@@ -13,15 +13,20 @@ endpoint for private deployments.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import os
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from mcp.server.fastmcp import FastMCP
 
+from .api import build_api, tvl_refresher
 from .config import settings
 from .db import Database
 from .providers.current_finance import CurrentFinanceProvider
@@ -29,13 +34,15 @@ from .registry import AssetRegistry
 from .txclient import txbuilder
 
 mcp = FastMCP(
-    "SuiFlow",
+    "Sarf",
     instructions=(
         "Non-custodial Sui lending assistant (Current Finance). propose_* tools "
         "only BUILD transactions and return them for the user to sign in their "
         "own wallet — always show the user the human_summary and every "
-        "risk_note before they decide. Never imply an action was executed "
-        "until submit_signed_transaction returns a tx_digest."
+        "risk_note before they decide, and share the sign_url so they can "
+        "review and sign on the Sarf signer page. Never imply an action was "
+        "executed until submit_signed_transaction (or the signer page) "
+        "returns a tx_digest."
     ),
     stateless_http=True,
     json_response=True,
@@ -43,18 +50,23 @@ mcp = FastMCP(
 
 db = Database(settings.db_path)
 registry = AssetRegistry(txbuilder)
-CurrentFinanceProvider(db, txbuilder, registry).register_tools(mcp)
+provider = CurrentFinanceProvider(db, txbuilder, registry)
+provider.register_tools(mcp)
 # Extension point: AftermathProvider(db, aftermath_txbuilder, registry)
 # .register_tools(mcp) once providers/aftermath.py exists.
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with mcp.session_manager.run():
-        yield
+    tvl_task = asyncio.create_task(tvl_refresher(db, txbuilder))
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        tvl_task.cancel()
 
 
-app = FastAPI(title="SuiFlow", lifespan=lifespan)
+app = FastAPI(title="Sarf", lifespan=lifespan)
 
 
 # --- Minimal hardening middleware -------------------------------------------
@@ -93,7 +105,27 @@ async def guard(request: Request, call_next):
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True, "service": "suiflow", "leverage_max": settings.leverage_max_multiplier}
+    return {"ok": True, "service": "sarf", "leverage_max": settings.leverage_max_multiplier}
+
+
+app.include_router(build_api(db, txbuilder, provider))
+
+# Dashboard + signer static bundle (built by `npm run build` in frontend/).
+# Explicit routes/mounts win over the catch-all MCP mount below; /dashboard
+# serves the SPA and /sign deep-links into it (SPA router handles the path).
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/dashboard", StaticFiles(directory=_FRONTEND_DIST, html=True), name="dashboard")
+
+    @app.get("/")
+    async def index():
+        return RedirectResponse("/dashboard/")
+
+    @app.get("/sign")
+    async def sign_page(request: Request):
+        # The SPA is served from /dashboard/; forward the ?p=sarf_... param.
+        qs = request.url.query
+        return RedirectResponse(f"/dashboard/sign{'?' + qs if qs else ''}", status_code=307)
 
 
 app.mount("/", mcp.streamable_http_app())

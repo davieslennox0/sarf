@@ -16,6 +16,9 @@ test -f vendor/current-sdk/sdk/dist/src/index.js || { echo "SDK build failed"; e
 echo "==> txbuilder deps"
 (cd txbuilder && npm install --no-fund --no-audit && npx tsc)
 
+echo "==> frontend (dashboard + signer)"
+(cd frontend && npm install --no-fund --no-audit && npm run build)
+
 echo "==> python venv"
 python3 -m venv server/.venv
 server/.venv/bin/pip install -q -r server/requirements.txt

@@ -1,5 +1,5 @@
 /**
- * SuiFlow tx-builder sidecar.
+ * Sarf tx-builder sidecar.
  *
  * SECURITY: binds to loopback ONLY (TXBUILDER_HOST, default 127.0.0.1). It is
  * an internal service for the Python MCP server, performs no authentication
@@ -39,7 +39,7 @@ app.setErrorHandler((err: Error, _req, reply) => {
   reply.status(typeof status === 'number' ? status : 500).send({ error: err.message });
 });
 
-app.get('/health', async () => ({ ok: true, service: 'suiflow-txbuilder' }));
+app.get('/health', async () => ({ ok: true, service: 'sarf-txbuilder' }));
 
 /** Static market/asset registry (names, coin types, symbols, decimals). */
 app.get('/markets', async () => ({
@@ -156,6 +156,34 @@ app.get<{ Params: { address: string } }>('/portfolio/:address', async (req) => {
 app.post<{ Body: BuildRequest }>('/build', async (req) => buildLendingAction(req.body));
 
 app.post<{ Body: LeverageBuildRequest }>('/build/leverage', async (req) => buildLeverageOpen(req.body));
+
+/**
+ * Verify a personal-message signature for dashboard auth. Proves control of
+ * an address without any key ever reaching a server: the browser wallet
+ * (including zkLogin wallets) signs a server-issued nonce, we verify here.
+ */
+app.post<{ Body: { address: string; messageBase64: string; signature: string } }>(
+  '/verify-signature',
+  async (req) => {
+    const { address, messageBase64, signature } = req.body;
+    if (!address || !messageBase64 || !signature) {
+      throw new HttpError(400, 'address, messageBase64, signature required');
+    }
+    const { verifyPersonalMessageSignature } = await import('@mysten/sui/verify');
+    const { fromBase64 } = await import('@mysten/sui/utils');
+    try {
+      // `address` binds multisig/zkLogin cases; zkLogin verification needs a
+      // client for on-chain JWK lookups.
+      await verifyPersonalMessageSignature(fromBase64(messageBase64), signature, {
+        address,
+        client: (await import('./context.js')).rpc as any,
+      });
+      return { valid: true };
+    } catch (e: any) {
+      return { valid: false, reason: e.message };
+    }
+  },
+);
 
 app.post<{ Body: { txBytesBase64: string; signatures: string[] } }>('/broadcast', async (req) => {
   const { txBytesBase64, signatures } = req.body;

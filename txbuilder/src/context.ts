@@ -1,5 +1,5 @@
 /**
- * Shared clients + market registry for the SuiFlow tx-builder sidecar.
+ * Shared clients + market registry for the Sarf tx-builder sidecar.
  *
  * Why a Node sidecar instead of pysui: the Current SDK embeds protocol logic
  * that would be risky to reimplement — the Pyth oracle refresh (VAA fetch +

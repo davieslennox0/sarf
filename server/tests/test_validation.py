@@ -7,7 +7,7 @@ send as tool arguments.
 
 import pytest
 
-from suiflow.validation import (
+from sarf.validation import (
     AssetInfo,
     OwnershipError,
     ValidationError,
@@ -20,7 +20,7 @@ from suiflow.validation import (
     validate_multiplier,
     validate_usd_cap,
 )
-from suiflow.config import LEVERAGE_ABSOLUTE_MAX
+from sarf.config import LEVERAGE_ABSOLUTE_MAX
 
 ADDR = "0x" + "ab" * 32
 OTHER = "0x" + "cd" * 32

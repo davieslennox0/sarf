@@ -38,7 +38,7 @@ from ..validation import (
     validate_usd_cap,
 )
 
-_PROPOSAL_ID_RE = re.compile(r"^sfp_[0-9a-f]{32}$")
+_PROPOSAL_ID_RE = re.compile(r"^sarf_[0-9a-f]{32}$")
 
 MarketName = Literal["MainMarket", "AltCoinMarket", "EmberMarket", "MatrixGoldMarket", "EthenaMarket"]
 
@@ -128,6 +128,7 @@ class CurrentFinanceProvider:
     ) -> dict[str, Any]:
         sim = build["simulation"]
         sim_ok = sim["status"] == "success"
+        self.db.upsert_user(user_address, "mcp")
         prop = self.db.create_proposal(
             user_address=user_address,
             tool=tool,
@@ -136,9 +137,24 @@ class CurrentFinanceProvider:
             simulation=sim,
             risk=build.get("risk"),
             ttl_seconds=settings.proposal_ttl_seconds,
+            summary_text=summary,
+            risk_notes=risk_notes,
         )
         if not sim_ok:
             self.db.mark_proposal(prop.proposal_id, "simulation_failed")
+        sign_url = (
+            f"{settings.public_url}/sign?p={prop.proposal_id}" if settings.public_url else None
+        )
+        next_step = _SIGN_STEP
+        if sign_url:
+            # Inline signing as a Claude artifact is not possible — the
+            # Artifacts sandbox CSP blocks all external network calls — so the
+            # signer is a self-hosted page linked from chat (see README).
+            next_step = (
+                "Present this proposal to the user, then link them to the Sarf "
+                f"signer to review and sign in their own wallet: {sign_url} "
+                "This server never sees keys."
+            )
         return {
             "proposal_id": prop.proposal_id,
             "status": "proposed" if sim_ok else "simulation_failed",
@@ -147,14 +163,75 @@ class CurrentFinanceProvider:
                 f"Original intent: {summary}"
             ),
             "ptb_base64": build["txBytesBase64"] if sim_ok else None,
+            "sign_url": sign_url if sim_ok else None,
             "gas_estimate_sui": sim.get("gasUsedSui"),
             "estimated_usd_value": build.get("estUsd"),
             "risk_notes": risk_notes,
             "simulation": sim,
             "expires_at": _iso(prop.expires_at),
-            "next_step": _SIGN_STEP if sim_ok else
+            "next_step": next_step if sim_ok else
                 "Do not proceed; adjust the request and propose again.",
         }
+
+    async def execute_submit(
+        self, proposal_id: str, signed_tx_bytes_base64: str, signatures: list[str],
+    ) -> dict[str, Any]:
+        """Shared write path for the MCP tool and the signer page's REST call.
+
+        All submit invariants live here exactly once: proposal must exist, be
+        'proposed', unexpired, and the signed bytes must byte-match the PTB we
+        built and simulated. This server is not an open relay.
+        """
+        if not isinstance(proposal_id, str) or not _PROPOSAL_ID_RE.match(proposal_id.strip()):
+            raise ValidationError("proposal_id must look like sarf_<32 hex>")
+        pid = proposal_id.strip()
+        tx_b64 = validate_base64(signed_tx_bytes_base64, what="signed_tx_bytes_base64")
+        if not isinstance(signatures, list) or not (1 <= len(signatures) <= 16):
+            raise ValidationError("signatures must be a list of 1-16 base64 strings")
+        sigs = [validate_base64(s, what="signature", max_bytes=8192) for s in signatures]
+
+        prop = self.db.get_proposal(pid)
+        if prop is None:
+            raise ValidationError(f"unknown proposal {pid}")
+        if prop.status != "proposed":
+            raise ValidationError(f"proposal {pid} is not executable (status: {prop.status})")
+        if time.time() > prop.expires_at:
+            self.db.mark_proposal(pid, "expired")
+            raise ValidationError(
+                f"proposal {pid} expired at {_iso(prop.expires_at)}; market state may have "
+                f"moved — request a fresh proposal"
+            )
+        # Byte-for-byte binding to what we proposed (and simulated). A wallet
+        # returns exactly the bytes it was given; any difference means the
+        # payload was altered somewhere between proposal and signing.
+        if base64.b64decode(tx_b64) != base64.b64decode(prop.ptb_base64):
+            self.db.mark_proposal(pid, "rejected")
+            raise ValidationError(
+                "signed bytes do not match the proposed transaction; refusing to broadcast"
+            )
+
+        result = await self.tx.broadcast(prop.ptb_base64, sigs)
+        ok = result.get("status") == "success"
+        self.db.mark_proposal(pid, "submitted" if ok else "failed",
+                              tx_digest=result.get("digest"), result=result)
+
+        response: dict[str, Any] = {
+            "tx_digest": result.get("digest"),
+            "status": result.get("status"),
+            "error": result.get("error"),
+            "balance_changes": result.get("balanceChanges", []),
+        }
+        # Surface a newly created ObligationOwnerCap (enter-market flow) and
+        # remember it for this user.
+        for obj in result.get("createdObjects", []):
+            if "ObligationOwnerCap" in obj.get("objectType", ""):
+                response["obligation_cap_id"] = obj["objectId"]
+                self.db.upsert_cap(prop.user_address, obj["objectId"], "", "", None)
+                response["note"] = (
+                    "New ObligationOwnerCap created — use this ID for future "
+                    "deposit/borrow/repay/withdraw proposals."
+                )
+        return response
 
     # ------------------------------------------------------------------ tools
 
@@ -171,6 +248,7 @@ class CurrentFinanceProvider:
             per-asset liquidation prices. No auth required — this is public
             on-chain state."""
             addr = validate_address(user_address)
+            db.upsert_user(addr, "mcp")
             data = await tx.portfolio(addr)
             for p in data.get("positions", []):
                 if "obligationId" in p:
@@ -381,60 +459,11 @@ class CurrentFinanceProvider:
 
         @mcp.tool()
         async def submit_signed_transaction(
-            proposal_id: Annotated[str, Field(description="The proposal being executed (sfp_...)")],
+            proposal_id: Annotated[str, Field(description="The proposal being executed (sarf_...)")],
             signed_tx_bytes_base64: Annotated[str, Field(description="Transaction bytes the wallet signed (must match the proposal's ptb_base64)")],
             signatures: Annotated[list[str], Field(description="Base64 Sui signatures from the user's wallet")],
         ) -> dict[str, Any]:
             """Broadcast a transaction the user already signed in their own wallet.
             The ONLY write path to the chain. Refuses anything that does not
             byte-match a live proposal from this server — it is not a relay."""
-            if not isinstance(proposal_id, str) or not _PROPOSAL_ID_RE.match(proposal_id.strip()):
-                raise ValidationError("proposal_id must look like sfp_<32 hex>")
-            pid = proposal_id.strip()
-            tx_b64 = validate_base64(signed_tx_bytes_base64, what="signed_tx_bytes_base64")
-            if not isinstance(signatures, list) or not (1 <= len(signatures) <= 16):
-                raise ValidationError("signatures must be a list of 1-16 base64 strings")
-            sigs = [validate_base64(s, what="signature", max_bytes=8192) for s in signatures]
-
-            prop = db.get_proposal(pid)
-            if prop is None:
-                raise ValidationError(f"unknown proposal {pid}")
-            if prop.status != "proposed":
-                raise ValidationError(f"proposal {pid} is not executable (status: {prop.status})")
-            if time.time() > prop.expires_at:
-                db.mark_proposal(pid, "expired")
-                raise ValidationError(
-                    f"proposal {pid} expired at {_iso(prop.expires_at)}; market state may have "
-                    f"moved — request a fresh proposal"
-                )
-            # Byte-for-byte binding to what we proposed (and simulated). A wallet
-            # returns exactly the bytes it was given; any difference means the
-            # payload was altered somewhere between proposal and signing.
-            if base64.b64decode(tx_b64) != base64.b64decode(prop.ptb_base64):
-                db.mark_proposal(pid, "rejected")
-                raise ValidationError(
-                    "signed bytes do not match the proposed transaction; refusing to broadcast"
-                )
-
-            result = await tx.broadcast(prop.ptb_base64, sigs)
-            ok = result.get("status") == "success"
-            db.mark_proposal(pid, "submitted" if ok else "failed",
-                             tx_digest=result.get("digest"), result=result)
-
-            response: dict[str, Any] = {
-                "tx_digest": result.get("digest"),
-                "status": result.get("status"),
-                "error": result.get("error"),
-                "balance_changes": result.get("balanceChanges", []),
-            }
-            # Surface a newly created ObligationOwnerCap (enter-market flow) and
-            # remember it for this user.
-            for obj in result.get("createdObjects", []):
-                if "ObligationOwnerCap" in obj.get("objectType", ""):
-                    response["obligation_cap_id"] = obj["objectId"]
-                    db.upsert_cap(prop.user_address, obj["objectId"], "", "", None)
-                    response["note"] = (
-                        "New ObligationOwnerCap created — use this ID for future "
-                        "deposit/borrow/repay/withdraw proposals."
-                    )
-            return response
+            return await provider.execute_submit(proposal_id, signed_tx_bytes_base64, signatures)

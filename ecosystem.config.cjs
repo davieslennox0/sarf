@@ -4,7 +4,7 @@
 module.exports = {
   apps: [
     {
-      name: 'suiflow-txbuilder',
+      name: 'sarf-txbuilder',
       cwd: __dirname + '/txbuilder',
       script: 'npx',
       args: 'tsx src/index.ts', // vendor SDK ships Bundler-style ESM; tsx is the supported runtime (see txbuilder/tsconfig.json)
@@ -13,10 +13,10 @@ module.exports = {
       restart_delay: 3000,
     },
     {
-      name: 'suiflow-server',
+      name: 'sarf-server',
       cwd: __dirname + '/server',
       script: '.venv/bin/python',
-      args: '-m suiflow.main',
+      args: '-m sarf.main',
       env_file: __dirname + '/.env',
       max_restarts: 10,
       restart_delay: 3000,
