@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -127,9 +128,29 @@ app.include_router(build_api(db, txbuilder, provider))
 # Dashboard + signer static bundle (built by `npm run build` in frontend/).
 # Explicit routes/mounts win over the catch-all MCP mount below; /dashboard
 # serves the SPA and /sign deep-links into it (SPA router handles the path).
+class _SPAStaticFiles(StaticFiles):
+    """StaticFiles with SPA fallback: unknown paths (deep links like
+    /dashboard/sign, /dashboard/activity) serve index.html so the client
+    router can take over. Real assets still 404 honestly if missing."""
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        # Starlette signals "not found" either by raising HTTPException(404)
+        # or (older versions) returning a 404 response — handle both.
+        looks_like_route = "." not in path.rsplit("/", 1)[-1]
+        try:
+            resp = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or not looks_like_route:
+                raise
+            return await super().get_response("index.html", scope)
+        if resp.status_code == 404 and looks_like_route:
+            resp = await super().get_response("index.html", scope)
+        return resp
+
+
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if _FRONTEND_DIST.is_dir():
-    app.mount("/dashboard", StaticFiles(directory=_FRONTEND_DIST, html=True), name="dashboard")
+    app.mount("/dashboard", _SPAStaticFiles(directory=_FRONTEND_DIST, html=True), name="dashboard")
 
     @app.get("/")
     async def index():
