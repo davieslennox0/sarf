@@ -242,6 +242,38 @@ class Database:
                 (status, tx_digest, json.dumps(result) if result is not None else None, proposal_id),
             )
 
+    def refresh_proposal_bytes(
+        self, proposal_id: str, *, ptb_base64: str,
+        simulation: dict[str, Any] | None, risk: dict[str, Any] | None,
+        risk_notes: list[str] | None = None,
+    ) -> bool:
+        """Replace a live proposal's PTB with a rebuild of the same params.
+
+        Oracle attestations (Pyth VAAs) are baked into the bytes at build time
+        and go stale faster than a human can review and sign, so the signer
+        refreshes the bytes immediately before the wallet prompt. Identity is
+        unchanged on purpose: same proposal_id, same params, same expires_at —
+        only bytes/simulation/risk move, and only while status is 'proposed'
+        (a consumed or expired proposal can never be resurrected this way).
+        risk_notes=None keeps the stored notes (used where they can't be
+        regenerated faithfully)."""
+        sets = "ptb_base64=?, simulation_json=?, risk_json=?"
+        args: list[Any] = [
+            ptb_base64,
+            json.dumps(simulation) if simulation is not None else None,
+            json.dumps(risk) if risk is not None else None,
+        ]
+        if risk_notes is not None:
+            sets += ", risk_notes_json=?"
+            args.append(json.dumps(risk_notes))
+        args.append(proposal_id)
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                f"UPDATE proposals SET {sets} WHERE proposal_id=? AND status='proposed'",
+                args,
+            )
+            return cur.rowcount == 1
+
     def audit_trail(self, user_address: str, limit: int = 50) -> list[dict[str, Any]]:
         cur = self._conn.execute(
             """SELECT proposal_id, created_at, tool, status, tx_digest, summary_text, expires_at

@@ -244,6 +244,120 @@ class CurrentFinanceProvider:
                 )
         return response
 
+    _SIMPLE_ACTIONS = {
+        "propose_deposit": "deposit",
+        "propose_borrow": "borrow",
+        "propose_repay": "repay",
+        "propose_withdraw": "withdraw",
+    }
+
+    async def rebuild_proposal(
+        self, proposal_id: str, *, session_address: str
+    ) -> dict[str, Any]:
+        """Rebuild a live proposal's bytes from its stored params, with fresh
+        oracle attestations.
+
+        Why this exists: the SDK embeds Pyth VAAs into the PTB at build time,
+        and the protocol's on-chain assert_price_not_stale rejects them within
+        ~a minute — less time than a human takes to review and sign (observed
+        56–89 s on four consecutive mainnet withdraw failures). The signer
+        page calls this immediately before the wallet prompt so the chain
+        sees attestations that are seconds old.
+
+        Invariants: same proposal_id, same params, same expiry — nothing the
+        user reviewed changes except the freshness of prices and object
+        references. Every original check re-runs (session ownership, live cap
+        ownership, asset/amount validation, USD cap, dry-run), and the
+        byte-match on submit now binds to the refreshed bytes, so a stale
+        signature can never broadcast. A proposal that is expired or already
+        consumed is not refreshable — this cannot resurrect anything.
+        """
+        if not isinstance(proposal_id, str) or not _PROPOSAL_ID_RE.match(proposal_id.strip()):
+            raise ValidationError("proposal_id must look like sarf_<32 hex>")
+        pid = proposal_id.strip()
+        prop = self.db.get_proposal(pid)
+        if prop is None:
+            raise ValidationError(f"unknown proposal {pid}")
+        if prop.user_address != session_address:
+            raise ValidationError(
+                f"proposal {pid} does not belong to the authenticated account"
+            )
+        if prop.status != "proposed":
+            raise ValidationError(f"proposal {pid} is not refreshable (status: {prop.status})")
+        if time.time() > prop.expires_at:
+            self.db.mark_proposal(pid, "expired")
+            raise ValidationError(
+                f"proposal {pid} expired at {_iso(prop.expires_at)}; request a fresh proposal"
+            )
+
+        await self.registry.ensure_loaded()
+        addr, params, notes = prop.user_address, prop.params, None
+
+        if prop.tool == "propose_enter_market":
+            m = validate_market(params["market"], self.registry.markets)
+            a = validate_asset(params["asset"], m, self.registry.assets, settings.asset_whitelist)
+            min_units = validate_amount(params["amount"], a.decimals)
+            build = await self.tx.build(
+                action="enter_deposit", sender=addr, coinType=a.coin_type,
+                amountMinUnits=str(min_units), marketName=m,
+            )
+            validate_usd_cap(build.get("estUsd"), settings.max_proposal_usd,
+                             what=f"enter {m} with {params['amount']} {a.symbol}")
+            notes = self._risk_notes(build, "deposit")
+        elif prop.tool in self._SIMPLE_ACTIONS:
+            action = self._SIMPLE_ACTIONS[prop.tool]
+            cap_id = validate_object_id(params["cap"], what="obligation_cap_id")
+            cap = await self._verify_cap(addr, cap_id)  # live on-chain owner, again
+            a = validate_asset(params["asset"], cap["marketName"],
+                               self.registry.assets, settings.asset_whitelist)
+            min_units = validate_amount(params["amount"], a.decimals)
+            build = await self.tx.build(
+                action=action, sender=addr, coinType=a.coin_type,
+                amountMinUnits=str(min_units), obligationCapId=cap_id,
+            )
+            if build.get("capOwner") and build["capOwner"].lower() != addr:
+                raise OwnershipError(f"cap {cap_id} changed owner while rebuilding; aborting")
+            validate_usd_cap(build.get("estUsd"), settings.max_proposal_usd,
+                             what=f"{action} {params['amount']} {a.symbol}")
+            notes = self._risk_notes(build, action)
+        elif prop.tool == "propose_leverage_position":
+            mult = validate_multiplier(params["multiplier"], settings.leverage_max_multiplier)
+            a = validate_asset(params["asset"], "MainMarket",
+                               self.registry.assets, settings.asset_whitelist)
+            min_units = validate_amount(params["principal"], a.decimals)
+            build = await self.tx.build_leverage(
+                sender=addr, collateralSymbol=a.symbol,
+                principalMinUnits=str(min_units), multiplier=mult,
+            )
+            est_usd = None
+            if build.get("currentPriceUsd"):
+                est_usd = (min_units / 10 ** a.decimals) * build["currentPriceUsd"]
+            validate_usd_cap(est_usd, settings.max_proposal_usd,
+                             what=f"leverage {params['principal']} {a.symbol} at {mult}x")
+            # Leverage risk notes carry quote-specific numbers we can't
+            # regenerate from _risk_notes; the stored ones stay (notes=None)
+            # and the refreshed dry-run below remains authoritative.
+        else:
+            raise ValidationError(f"proposal tool {prop.tool} does not support refresh")
+
+        sim = build["simulation"]
+        self.db.refresh_proposal_bytes(
+            pid, ptb_base64=build["txBytesBase64"], simulation=sim,
+            risk=build.get("risk"), risk_notes=notes,
+        )
+        if sim["status"] != "success":
+            # Market moved against the proposal since it was built; the old
+            # bytes would fail on-chain too, so fail closed rather than let
+            # either version be signed.
+            self.db.mark_proposal(pid, "simulation_failed")
+            raise ValidationError(
+                f"the refreshed dry-run failed: {sim.get('error') or 'unknown error'}; "
+                f"market state moved — request a fresh proposal"
+            )
+        view = self.db.proposal_view(pid)
+        view["expired"] = False
+        return view
+
     # ------------------------------------------------------------------ tools
 
     def register_tools(self, mcp: FastMCP) -> None:  # noqa: C901 - tool bundle

@@ -63,6 +63,11 @@ async function req(path, opts = {}) {
 export const api = {
   stats: () => req('/api/stats'),
   proposal: (id) => req(`/api/proposal/${encodeURIComponent(id)}`),
+  // Rebuilds the proposal's bytes with fresh oracle prices (same id, params
+  // and expiry) — called right before the wallet prompt, because Pyth
+  // attestations baked in at build time go stale in under a minute.
+  refreshProposal: (id) =>
+    req(`/api/proposal/${encodeURIComponent(id)}/refresh`, { method: 'POST' }),
   submit: (proposalId, bytesB64, signatures) =>
     req('/api/submit', {
       method: 'POST',

@@ -168,6 +168,22 @@ def build_api(db: Database, tx: TxBuilder, provider: CurrentFinanceProvider) -> 
         view["expired"] = time.time() > view["expires_at"]
         return view
 
+    @r.post("/proposal/{proposal_id}/refresh")
+    async def proposal_refresh(
+        proposal_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        # Pyth attestations embedded in the PTB go stale in under a minute;
+        # the signer page calls this right before the wallet prompt so the
+        # signed bytes carry fresh prices. Owner-session only, like /submit —
+        # the rebuild re-runs every proposal-time check.
+        addr = _session_addr(authorization)
+        try:
+            return await provider.rebuild_proposal(proposal_id.strip(), session_address=addr)
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        except TxBuilderError as e:
+            raise HTTPException(502, str(e))
+
     @r.post("/submit")
     async def submit(
         body: dict[str, Any], authorization: str | None = Header(default=None)

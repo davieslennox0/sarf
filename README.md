@@ -169,11 +169,15 @@ inline artifact could neither fetch the proposal nor reach a wallet/fullnode
 
 The `/sign` page: fetches the stored proposal (simulated outcome, gas, risk
 notes — the same simulate-and-summarize data, never just raw parameters),
-enforces that the connected wallet matches the proposal's address, lets the
-user sign **the exact server-built bytes** in their own wallet
-(`@mysten/dapp-kit` — includes zkLogin wallets like Slush), and POSTs the
-signature to `/api/submit`, which shares every invariant with the MCP
-`submit_signed_transaction` tool (byte-match, TTL, single-use).
+enforces that the connected wallet matches the proposal's address, refreshes
+the transaction bytes with **current oracle prices immediately before the
+wallet prompt** (Pyth attestations embedded at build time go stale on-chain
+in under a minute — same proposal, same params, fully re-validated and
+re-simulated server-side), lets the user sign **the exact server-built
+bytes** in their own wallet (`@mysten/dapp-kit` — includes zkLogin wallets
+like Slush), and POSTs the signature to `/api/submit`, which shares every
+invariant with the MCP `submit_signed_transaction` tool (byte-match, TTL,
+single-use).
 
 ### Session & ephemeral key lifecycle
 

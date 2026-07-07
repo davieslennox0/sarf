@@ -34,6 +34,7 @@ sending anything. Enforced server-side on every call:
 | Simulation | every PTB is dry-run before being returned; failed simulations are marked non-executable and cannot be submitted |
 | Submit binding | broadcast requires an unexpired stored proposal and **byte-for-byte equality** with its PTB — the server is not an open relay |
 | Proposal TTL | default 10 min; expired proposals are refused (prices/rates move) |
+| Sign-time refresh | Pyth attestations are baked into the PTB at build time and the chain rejects them as stale in under a minute — less than a human review takes. The signer page therefore rebuilds the proposal immediately before the wallet prompt (`/api/proposal/{id}/refresh`): same id, params and expiry; owner session required; every proposal-time check re-runs (live cap ownership, amounts, USD cap, dry-run). Byte-match then binds to the refreshed bytes — a signature over pre-refresh bytes cannot broadcast, and an expired or consumed proposal is never resurrected |
 
 Not validated server-side (by design): whether the action is *wise*. The
 risk notes (LTV, liquidation prices, worst-case loss) exist so the human can

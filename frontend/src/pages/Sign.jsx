@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ConnectButton,
   useCurrentAccount,
@@ -42,7 +42,8 @@ export default function Sign() {
   const account = useCurrentAccount();
   const { mutateAsync: signTransaction } = useSignTransaction();
   const { mutateAsync: signMessage } = useSignPersonalMessage();
-  const [phase, setPhase] = useState('review'); // review | signing | done
+  const queryClient = useQueryClient();
+  const [phase, setPhase] = useState('review'); // review | refreshing | signing | done
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
 
@@ -63,20 +64,28 @@ export default function Sign() {
 
   const approve = async () => {
     setErr(null);
-    setPhase('signing');
+    setPhase('refreshing');
     try {
       // Submitting requires an authenticated session for the proposal's
       // address (the server refuses proposals that belong to another
       // account). If none is live, the wallet first asks for a sign-in
       // message — that's the extra prompt before the transaction itself.
       await ensureSession(account.address, signMessage);
+      // Oracle prices are baked into the bytes when the proposal is BUILT,
+      // and the chain rejects them as stale within about a minute — less
+      // than a human review takes. Rebuild the same proposal (same id,
+      // params, expiry; re-validated server-side) so the wallet signs bytes
+      // whose prices are seconds old.
+      const fresh = await api.refreshProposal(prop.proposal_id);
+      queryClient.setQueryData(['proposal', pid], fresh);
+      setPhase('signing');
       // Sign the exact server-built bytes. The wallet shows its own review UI
       // on top of ours; the server re-checks byte equality on submit.
       const signed = await signTransaction({
-        transaction: prop.ptb_base64,
+        transaction: fresh.ptb_base64,
         chain: 'sui:mainnet',
       });
-      const out = await api.submit(prop.proposal_id, signed.bytes ?? prop.ptb_base64, [
+      const out = await api.submit(fresh.proposal_id, signed.bytes ?? fresh.ptb_base64, [
         signed.signature,
       ]);
       setResult(out);
@@ -164,8 +173,12 @@ export default function Sign() {
         </div>
       ) : (
         <div className="cta">
-          <button className="primary big" disabled={phase === 'signing'} onClick={approve}>
-            {phase === 'signing' ? 'Confirm in your wallet…' : 'Sign in wallet & broadcast'}
+          <button className="primary big" disabled={phase !== 'review'} onClick={approve}>
+            {phase === 'refreshing'
+              ? 'Refreshing prices…'
+              : phase === 'signing'
+                ? 'Confirm in your wallet…'
+                : 'Sign in wallet & broadcast'}
           </button>
           {!getSession() && (
             <p className="muted small">
