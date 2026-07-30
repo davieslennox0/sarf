@@ -12,6 +12,7 @@
  * unsigned bytes, dry-runs them, and relays signatures produced elsewhere.
  */
 import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 import {
   LendingClient,
   Market,
@@ -23,15 +24,26 @@ import {
   type TypeName,
 } from '@current-finance/current-sdk';
 
-export const SUI_RPC_URL = process.env.SUI_RPC_URL ?? 'https://fullnode.mainnet.sui.io:443';
+// Sui deprecated JSON-RPC on the official public fullnode (2026-07); it now
+// serves only gRPC/GraphQL, while community nodes like publicnode serve only
+// JSON-RPC. The SDK needs both transports, so they are configured separately:
+// SUI_RPC_URL for the classic JSON-RPC surface, SUI_GRPC_URL for the SDK's
+// gRPC provider (object/market queries).
+export const SUI_RPC_URL = process.env.SUI_RPC_URL ?? 'https://sui-rpc.publicnode.com';
+export const SUI_GRPC_URL = process.env.SUI_GRPC_URL ?? 'https://fullnode.mainnet.sui.io:443';
 export const PYTH_HERMES_URL = process.env.PYTH_HERMES_URL ?? 'https://hermes.pyth.network';
 export const QUOTE_SERVER_URL = process.env.CURRENT_QUOTE_SERVER_URL ?? '';
 
-export const lending = LendingClient.fromConfig({
-  network: 'mainnet',
-  suiEndpoint: SUI_RPC_URL,
-  pythEndpoint: PYTH_HERMES_URL,
-});
+export const lending = LendingClient.from(
+  {
+    network: 'mainnet',
+    suiEndpoint: SUI_RPC_URL,
+    pythEndpoint: PYTH_HERMES_URL,
+  },
+  // Cast across the duplicated @mysten/sui instance (txbuilder's copy vs the
+  // vendor SDK's pnpm-nested one) — same wire protocol, nominal-type clash only.
+  new SuiGrpcClient({ baseUrl: SUI_GRPC_URL, network: 'mainnet' }) as any,
+);
 
 // JSON-RPC client for object queries, dry-runs and broadcasting; the classic
 // fullnode surface (getObject/getOwnedObjects/dryRunTransactionBlock/...).
