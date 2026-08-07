@@ -10,8 +10,18 @@ MCP does support ImageContent, so we render the card ourselves and return it
 alongside the text. The image is presentation only: every fact on it is also
 in the JSON, so a client that cannot display images loses nothing.
 
-Design tokens are the website's, so a card in chat and the signer page it
-links to are visibly the same product.
+...except the presentation, which was the whole point. Verified end to end:
+the server does emit `image/png` in the tool result content, but not every
+chat host displays image blocks that come back from a tool — and we cannot
+make one that doesn't. So `render_order_card_text` renders the same card in
+monospace, which travels as text and therefore renders everywhere. The tool
+asks the model to print it verbatim; a fenced block is the one thing a model
+reliably reproduces without rewording it, which is how the fee line and the
+disclosure survive in the words we wrote them in.
+
+Both are shipped on every order: the image where it works, the text card
+always. Design tokens are the website's, so a card in chat and the signer
+page it links to are visibly the same product.
 """
 
 from __future__ import annotations
@@ -61,6 +71,86 @@ def _wrap(s: str, width: int) -> list[str]:
     if cur:
         lines.append(cur)
     return lines
+
+
+# --- Text card ---------------------------------------------------------------
+# 66 columns: wide enough for "0.31809375 AAPLx" next to its label, narrow
+# enough not to wrap in a chat column or on a phone. Box-drawing characters
+# rather than ASCII pipes because every surface that shows a monospace block
+# renders them, and they make the panel read as one object.
+
+TW = 66
+
+
+def _row(left: str, right: str = "") -> str:
+    """One bordered line, padded to TW. Truncates rather than wrapping: a
+    broken border reads as a rendering bug, which undermines the card."""
+    space = TW - 4 - len(right)
+    if len(left) > space:
+        left = left[: max(0, space - 1)] + "…"
+    return f"│ {left.ljust(space)}{right} │"
+
+
+def _rule(l: str = "├", r: str = "┤") -> str:
+    return f"{l}{'─' * (TW - 2)}{r}"
+
+
+def render_order_card_text(o: dict[str, Any]) -> str:
+    """-> the order card as a fenced monospace block, or "" if it cannot be
+    built. Same facts as the PNG and the JSON; this is the copy that renders
+    on every host."""
+    try:
+        return _render_text(o)
+    except Exception:  # pragma: no cover - cosmetic path
+        return ""
+
+
+def _render_text(o: dict[str, Any]) -> str:
+    side = str(o.get("side", "")).upper()
+    symbol = str(o.get("symbol", ""))
+    name = (o.get("name") or "").replace(" xStock", "")
+    fee = o.get("platform_fee") or {}
+    charged = bool(fee.get("charged"))
+    usd = o.get("estimated_usd")
+
+    lines = [
+        f"┌{'─' * (TW - 2)}┐",
+        _row("SARF · X LAYER RWA", "REVIEW & SIGN"),
+        _rule(),
+        _row(f"{side} {symbol}" + (f" — {name}" if name else "")),
+        _row(""),
+        _row("You pay", str(o.get("spending") or "—")),
+        _row("You receive (est.)", str(o.get("receiving_estimated") or "—")),
+        _row("Minimum received", str(o.get("minimum_received") or "—")),
+        _row(""),
+        _row("Order value", f"${float(usd):,.2f}" if usd is not None else "—"),
+        # Always printed, charged or not — "no fee" is information too, and
+        # leaving the row out is how a user starts assuming there is one.
+        _row("Platform fee",
+             f"${float(fee.get('usd', 0)):.2f} {fee.get('denominated_in', '')}".strip()
+             if charged else "none"),
+        _row("Network", f"X Layer · {o.get('chain_id', 196)} · gas in OKB"),
+        _rule(),
+        _row("READ BEFORE SIGNING"),
+    ]
+    for n in [n for n in (o.get("risk_notes") or []) if n][:4]:
+        # Three lines, and an ellipsis if a note runs past them. Cutting a
+        # disclosure off mid-clause reads as a rendering fault and quietly
+        # drops the half that matters; the full text is in risk_notes either
+        # way, so the truncation has to be visible.
+        wrapped = _wrap(n, TW - 6)
+        shown, clipped = wrapped[:3], len(wrapped) > 3
+        if clipped:
+            shown[-1] = shown[-1] + " …"
+        for i, seg in enumerate(shown):
+            lines.append(_row(("• " if i == 0 else "  ") + seg))
+    lines += [
+        _rule(),
+        _row("UNSIGNED — you sign this in your own wallet."),
+        _row("Sarf holds no keys and cannot execute it."),
+        f"└{'─' * (TW - 2)}┘",
+    ]
+    return "```\n" + "\n".join(lines) + "\n```"
 
 
 def render_order_card(order: dict[str, Any]) -> str:

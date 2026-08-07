@@ -38,7 +38,8 @@ from ..config import settings
 from ..db import Database
 from ..validation import ValidationError, validate_amount, validate_usd_cap
 from ..xlayer import rpc
-from ..xlayer.card import render_order_card
+from ..xlayer.analysis import analyze
+from ..xlayer.card import render_order_card, render_order_card_text
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import CHAIN_ID, EXPLORER_TX, RwaAsset, XStocksRegistry
@@ -51,9 +52,13 @@ SYNTHETIC_DISCLOSURE = (
 )
 
 _SIGN_STEP = (
-    "Show the user human_summary and every risk_note, then give them sign_url. "
-    "They sign the unsigned transaction in their own wallet — this server "
-    "cannot execute it. Never say a trade happened until a tx_hash exists."
+    "Print the `card` field VERBATIM, exactly as given including its code "
+    "fence, as the first thing in your reply — do not reformat it, summarise "
+    "it, or drop lines from it. It already contains the amounts, the platform "
+    "fee and the disclosures in the wording they have to keep. Then give the "
+    "user sign_url. They sign the unsigned transaction in their own wallet — "
+    "this server cannot execute it. Never say a trade happened until a "
+    "tx_hash exists."
 )
 
 Side = Literal["buy", "sell"]
@@ -300,6 +305,25 @@ class XLayerRwaProvider:
             return await self.portfolio(require_address())
 
         @mcp.tool()
+        async def analyze_portfolio() -> dict[str, Any]:
+            """Analyse the authenticated wallet's holdings: concentration,
+            diversification, sector and instrument mix.
+
+            Read-only. Applies standard portfolio-analysis methodology — the
+            measures a CFA charterholder would reach for — but this is NOT
+            regulated financial advice and Sarf is not a licensed adviser.
+
+            Every field of the response must be relayed under the rules the
+            response itself carries: state each finding as a fact beside the
+            norm it is measured against and let the user draw the conclusion;
+            never instruct them to buy, sell, trim or rebalance; never forecast
+            a price; always relay `disclosure` and `missing_context`, because
+            this tool sees on-chain holdings only and knows nothing about the
+            user's income, goals, horizon or risk tolerance.
+            """
+            return analyze(await self.portfolio(require_address()))
+
+        @mcp.tool()
         async def place_order(
             symbol: Annotated[str, Field(description="On-chain symbol, e.g. 'AAPLx'")],
             side: Annotated[Side, Field(description="'buy' spends USDT; 'sell' returns USDT")],
@@ -480,18 +504,24 @@ class XLayerRwaProvider:
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
 
-            # Presentation only. Every fact on the card is also in `payload`,
-            # so a client that cannot render images loses nothing — and the
-            # fee and disclosure get shown as we wrote them rather than
-            # however the model chose to paraphrase them.
-            png = render_order_card({**payload, "side": side, "symbol": asset.symbol,
-                                     "name": asset.name})
+            # Presentation. Every fact on the cards is also in `payload`, so
+            # nothing is lost if neither renders — but the fee line and the
+            # disclosure get shown as we wrote them rather than however the
+            # model chose to paraphrase them.
+            #
+            # Two copies on purpose. The PNG is the nice one, and the server
+            # does emit it as a proper image content block; but whether a chat
+            # host actually displays images returned by a tool is the host's
+            # decision, not ours, and several simply don't. The text card is
+            # the one that always arrives, so it carries the same facts and
+            # `next_step` asks for it verbatim.
+            card = {**payload, "side": side, "symbol": asset.symbol, "name": asset.name}
+            payload["card"] = render_order_card_text(card)
+            png = render_order_card(card)
+            text = TextContent(type="text", text=json.dumps(payload, default=str))
             if not png:
-                return payload
-            return [
-                TextContent(type="text", text=json.dumps(payload, default=str)),
-                ImageContent(type="image", data=png, mimeType="image/png"),
-            ]
+                return [text]
+            return [text, ImageContent(type="image", data=png, mimeType="image/png")]
 
         @mcp.tool()
         async def get_settlement_status(
