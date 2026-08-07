@@ -23,11 +23,13 @@ will actually read.
 
 from __future__ import annotations
 
+import json
 import time
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ImageContent, TextContent
 from pydantic import Field
 
 from .. import passkey
@@ -36,6 +38,7 @@ from ..config import settings
 from ..db import Database
 from ..validation import ValidationError, validate_amount, validate_usd_cap
 from ..xlayer import rpc
+from ..xlayer.card import render_order_card
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import CHAIN_ID, EXPLORER_TX, RwaAsset, XStocksRegistry
@@ -307,7 +310,10 @@ class XLayerRwaProvider:
             slippage_percent: Annotated[float | None, Field(
                 default=None, description="Optional slippage tolerance, 0.05-5.0"
             )] = None,
-        ) -> dict[str, Any]:
+            # Returns TextContent + ImageContent (the rendered card), so the
+            # annotation cannot be dict -- FastMCP validates the return value
+            # against it and rejects a content list.
+        ) -> Any:
             """Build an UNSIGNED buy/sell order for a tokenized stock on X Layer.
 
             This does NOT execute anything. It returns an unsigned transaction
@@ -441,7 +447,7 @@ class XLayerRwaProvider:
                     "disclosure": SYNTHETIC_DISCLOSURE,
                 },
             )
-            return {
+            payload = {
                 "order_id": order_id,
                 "chain_id": CHAIN_ID,
                 "side": side,
@@ -473,6 +479,19 @@ class XLayerRwaProvider:
                 "next_step": _SIGN_STEP,
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
+
+            # Presentation only. Every fact on the card is also in `payload`,
+            # so a client that cannot render images loses nothing — and the
+            # fee and disclosure get shown as we wrote them rather than
+            # however the model chose to paraphrase them.
+            png = render_order_card({**payload, "side": side, "symbol": asset.symbol,
+                                     "name": asset.name})
+            if not png:
+                return payload
+            return [
+                TextContent(type="text", text=json.dumps(payload, default=str)),
+                ImageContent(type="image", data=png, mimeType="image/png"),
+            ]
 
         @mcp.tool()
         async def get_settlement_status(
