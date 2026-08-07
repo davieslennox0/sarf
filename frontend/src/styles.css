@@ -289,3 +289,9 @@ footer {
   .flap .digit { font-size: 19px; }
   table { display: block; overflow-x: auto; }
 }
+
+.copyright {
+  margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
+  color: var(--paper-dim); text-align: center;
+}

@@ -107,6 +107,11 @@ export default function App() {
           <Route path="/authorize" element={<Authorize />} />
         </Routes>
       </main>
+      {/* Site-wide, so it appears on the signer and consent pages too — not
+          just the landing page. Year is derived, so it never goes stale. */}
+      <div className="copyright">
+        © {new Date().getFullYear()} Syketec Technologies. All rights reserved.
+      </div>
     </div>
   );
 }
