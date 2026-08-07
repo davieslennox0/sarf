@@ -1,16 +1,20 @@
-// Thin API client. Session token lives in sessionStorage only (cleared on
-// tab close and by "End session"); it is a server-minted bearer token, never
-// key material.
+/**
+ * API client. The session token is the same credential the MCP connector
+ * uses, so it lives in sessionStorage only — never localStorage, never a
+ * cookie — and dies with the tab.
+ */
 
-const TOKEN_KEY = 'sarf.session';
+import { signMessage } from './wallet.js';
+
+const KEY = 'sarf.session';
 
 export function getSession() {
   try {
-    const raw = sessionStorage.getItem(TOKEN_KEY);
+    const raw = sessionStorage.getItem(KEY);
     if (!raw) return null;
     const s = JSON.parse(raw);
-    if (Date.now() > s.expiresAt) {
-      sessionStorage.removeItem(TOKEN_KEY);
+    if (!s.expiresAt || s.expiresAt < Date.now()) {
+      sessionStorage.removeItem(KEY);
       return null;
     }
     return s;
@@ -19,75 +23,144 @@ export function getSession() {
   }
 }
 
-export function setSession(token, address, expiresInSeconds, mcpUrl) {
-  sessionStorage.setItem(
-    TOKEN_KEY,
-    JSON.stringify({ token, address, expiresAt: Date.now() + expiresInSeconds * 1000, mcpUrl }),
-  );
+export function setSession(s) {
+  sessionStorage.setItem(KEY, JSON.stringify(s));
 }
 
 export function clearSession() {
-  sessionStorage.removeItem(TOKEN_KEY);
-}
-
-// Challenge → wallet personal-message signature → server verification →
-// short-lived session token. The server verifies the signature with the Sui
-// SDK (full zkLogin proof checks for zkLogin wallets) before minting; every
-// API call and MCP tool call is bound to this session's address. Re-runs
-// automatically once the token expires — expiry means signing in again, by
-// design (no silent renewal).
-export async function ensureSession(address, signMessage) {
-  const existing = getSession();
-  if (existing && existing.address === address) return existing;
-  // Discarding a token (e.g. the wallet address changed) must void it
-  // server-side too — a token we abandon is still a live MCP credential.
-  if (existing) api.logout(existing.token);
-  clearSession();
-  const { message } = await api.authChallenge(address);
-  const res = await signMessage({ message: new TextEncoder().encode(message) });
-  const out = await api.authVerify(address, res.signature);
-  setSession(out.token, out.address, out.expires_in, out.mcp_url);
-  return getSession();
+  sessionStorage.removeItem(KEY);
 }
 
 async function req(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   const s = getSession();
-  if (s && !headers.Authorization) headers.Authorization = `Bearer ${s.token}`;
-  const r = await fetch(path, { ...opts, headers });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail || body.error || `HTTP ${r.status}`);
+  const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
+  if (s?.token) headers.authorization = `Bearer ${s.token}`;
+  const res = await fetch(path, { ...opts, headers });
+  const text = await res.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { detail: text };
+  }
+  if (!res.ok) {
+    if (res.status === 401) clearSession();
+    throw new Error(body.detail || body.message || `Request failed (${res.status})`);
+  }
   return body;
 }
 
 export const api = {
+  health: () => req('/healthz'),
   stats: () => req('/api/stats'),
-  proposal: (id) => req(`/api/proposal/${encodeURIComponent(id)}`),
-  // Rebuilds the proposal's bytes with fresh oracle prices (same id, params
-  // and expiry) — called right before the wallet prompt, because Pyth
-  // attestations baked in at build time go stale in under a minute.
-  refreshProposal: (id) =>
-    req(`/api/proposal/${encodeURIComponent(id)}/refresh`, { method: 'POST' }),
-  submit: (proposalId, bytesB64, signatures) =>
-    req('/api/submit', {
-      method: 'POST',
-      body: JSON.stringify({
-        proposal_id: proposalId,
-        signed_tx_bytes_base64: bytesB64,
-        signatures,
-      }),
-    }),
-  authChallenge: (address) => req(`/api/auth/challenge?address=${address}`),
-  authVerify: (address, signature) =>
+  list: () => req('/api/rwa/list'),
+  price: (symbol) => req(`/api/rwa/price/${encodeURIComponent(symbol)}`),
+
+  challenge: (address) => req(`/api/auth/challenge?address=${encodeURIComponent(address)}`),
+  verify: (address, signature) =>
     req('/api/auth/verify', { method: 'POST', body: JSON.stringify({ address, signature }) }),
-  // Token passed explicitly: callers revoke while (or after) clearing local
-  // state, so logout must not depend on the token still being in storage.
-  logout: (token) =>
-    req('/api/auth/logout', {
+  logout: () => req('/api/auth/logout', { method: 'POST' }),
+
+  order: (id) => req(`/api/order/${encodeURIComponent(id)}`),
+  orderStatus: (id) => req(`/api/order/${encodeURIComponent(id)}/status`),
+  orderSubmitted: (id, txHash) =>
+    req(`/api/order/${encodeURIComponent(id)}/submitted`, {
       method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    }).catch(() => {}),
-  myActivity: () => req('/api/me/activity'),
-  oauthApprove: (body) =>
-    req('/api/oauth/approve', { method: 'POST', body: JSON.stringify(body) }),
+      body: JSON.stringify({ tx_hash: txHash }),
+    }),
+  myOrders: () => req('/api/me/orders'),
+
+  passkeyStatus: () => req('/api/passkey/status'),
+  passkeyRegisterOptions: () => req('/api/passkey/register/options', { method: 'POST' }),
+  passkeyRegisterVerify: (cred) =>
+    req('/api/passkey/register/verify', { method: 'POST', body: JSON.stringify(cred) }),
+  passkeyAuthOptions: () => req('/api/passkey/auth/options', { method: 'POST' }),
+  passkeyAuthVerify: (cred) =>
+    req('/api/passkey/auth/verify', { method: 'POST', body: JSON.stringify(cred) }),
 };
+
+/**
+ * Establish a session if there isn't a live one for this address.
+ * Costs one wallet signature over a server nonce; authorizes no transaction.
+ */
+export async function ensureSession(address) {
+  const s = getSession();
+  if (s && s.address?.toLowerCase() === address.toLowerCase()) return s;
+  const { message } = await api.challenge(address);
+  const signature = await signMessage(address, message);
+  const out = await api.verify(address, signature);
+  const session = {
+    token: out.token,
+    address: out.address,
+    expiresAt: Date.now() + out.expires_in * 1000,
+    mcpUrl: out.mcp_url,
+    hasPasskey: out.has_passkey,
+  };
+  setSession(session);
+  return session;
+}
+
+// --- WebAuthn helpers -------------------------------------------------------
+// The browser API speaks ArrayBuffers; the server speaks base64url. These two
+// functions are the whole translation layer.
+
+const b64uToBuf = (s) => {
+  const pad = s.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(pad + '==='.slice((pad.length + 3) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
+};
+
+const bufToB64u = (b) =>
+  btoa(String.fromCharCode(...new Uint8Array(b)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+
+export async function registerPasskey() {
+  const opts = await api.passkeyRegisterOptions();
+  const cred = await navigator.credentials.create({
+    publicKey: {
+      ...opts,
+      challenge: b64uToBuf(opts.challenge),
+      user: { ...opts.user, id: b64uToBuf(opts.user.id) },
+      excludeCredentials: (opts.excludeCredentials || []).map((c) => ({
+        ...c,
+        id: b64uToBuf(c.id),
+      })),
+    },
+  });
+  return api.passkeyRegisterVerify({
+    id: cred.id,
+    rawId: bufToB64u(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+      attestationObject: bufToB64u(cred.response.attestationObject),
+    },
+  });
+}
+
+export async function verifyPasskey() {
+  const opts = await api.passkeyAuthOptions();
+  const cred = await navigator.credentials.get({
+    publicKey: {
+      ...opts,
+      challenge: b64uToBuf(opts.challenge),
+      allowCredentials: (opts.allowCredentials || []).map((c) => ({
+        ...c,
+        id: b64uToBuf(c.id),
+      })),
+    },
+  });
+  return api.passkeyAuthVerify({
+    id: cred.id,
+    rawId: bufToB64u(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+      authenticatorData: bufToB64u(cred.response.authenticatorData),
+      signature: bufToB64u(cred.response.signature),
+      userHandle: cred.response.userHandle ? bufToB64u(cred.response.userHandle) : null,
+    },
+  });
+}

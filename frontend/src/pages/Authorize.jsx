@@ -1,86 +1,98 @@
-import React, { useMemo, useState } from 'react';
-import { useCurrentAccount, useSignPersonalMessage } from '@mysten/dapp-kit';
+import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
+import { connect, currentAccount, short, signMessage } from '../wallet.js';
 
-// OAuth consent page: an MCP client (Claude) sent the user here from
-// GET /authorize. Approving = the same one-time wallet signature used for
-// dashboard sign-in — it proves address ownership and authorizes no
-// transaction. On success we hand the client back an authorization code;
-// it exchanges that for a 30-minute session token out of band. Keys never
-// leave the wallet; this page never sees a token at all.
-
+/**
+ * OAuth consent. This is a functional requirement, not marketing: Claude and
+ * ChatGPT land here to link a wallet, and without it there is no way to
+ * authenticate an MCP session.
+ *
+ * The approval is one wallet signature over a server nonce. It authorizes no
+ * transaction and moves no funds — the page says so plainly, because a wallet
+ * prompt on a trading site otherwise looks like a trade.
+ */
 export default function Authorize() {
-  const account = useCurrentAccount();
-  const { mutateAsync: signMessage } = useSignPersonalMessage();
+  const [params] = useSearchParams();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [address, setAddress] = useState(null);
 
-  const params = useMemo(() => Object.fromEntries(new URLSearchParams(window.location.search)), []);
-  const clientName = params.client_name || 'An MCP client';
-  const valid = params.client_id && params.redirect_uri && params.code_challenge;
+  React.useEffect(() => { currentAccount().then(setAddress).catch(() => {}); }, []);
 
-  const deny = () => {
-    const q = new URLSearchParams({ error: 'access_denied' });
-    if (params.state) q.set('state', params.state);
-    window.location.replace(`${params.redirect_uri}${params.redirect_uri.includes('?') ? '&' : '?'}${q}`);
-  };
+  const clientId = params.get('client_id');
+  const redirectUri = params.get('redirect_uri');
+  const codeChallenge = params.get('code_challenge');
+  const state = params.get('state');
 
-  const approve = async () => {
-    setErr(null);
-    setBusy(true);
-    try {
-      const { message } = await api.authChallenge(account.address);
-      const res = await signMessage({ message: new TextEncoder().encode(message) });
-      const out = await api.oauthApprove({
-        address: account.address,
-        signature: res.signature,
-        client_id: params.client_id,
-        redirect_uri: params.redirect_uri,
-        code_challenge: params.code_challenge,
-        state: params.state,
-      });
-      window.location.replace(out.redirect);
-    } catch (e) {
-      setErr(e.message);
-      setBusy(false);
-    }
-  };
-
-  if (!valid) {
+  if (!clientId || !redirectUri || !codeChallenge) {
     return (
       <section>
-        <h1>Connect to Sarf</h1>
-        <p className="error">Malformed authorization request — missing OAuth parameters.</p>
+        <h1>Authorize</h1>
+        <p className="error">
+          This link is missing OAuth parameters. Start from your AI client's
+          “Add connector” flow rather than opening this page directly.
+        </p>
       </section>
     );
   }
 
+  const approve = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const addr = address || (await connect());
+      setAddress(addr);
+      const { message } = await api.challenge(addr);
+      const signature = await signMessage(addr, message);
+      const res = await fetch('/api/oauth/approve', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          address: addr, signature, client_id: clientId,
+          redirect_uri: redirectUri, code_challenge: codeChallenge, state,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.detail || 'authorization failed');
+      window.location.href = body.redirect;
+    } catch (e) {
+      setErr(e.message || String(e));
+      setBusy(false);
+    }
+  };
+
+  let host = redirectUri;
+  try { host = new URL(redirectUri).host; } catch { /* show it raw */ }
+
   return (
-    <section>
-      <h1>Connect to Sarf</h1>
-      <p className="muted">
-        <b>{clientName}</b> is asking to use Sarf with your wallet. Approving signs a one-time
-        message that proves address ownership — it authorizes <b>no transaction</b> and shares no
-        keys. The connection lasts 30 minutes and only ever reads your positions and builds
-        unsigned proposals; anything that moves funds still requires your wallet signature on the
-        specific transaction.
+    <section className="sign-card">
+      <h1>Connect your wallet to Sarf</h1>
+      <p>
+        <b>{host}</b> is asking to connect to Sarf on your behalf, so your AI
+        assistant can read your X Layer positions and prepare trades for you.
       </p>
-      {!account ? (
-        <p className="muted">Connect your wallet (top right) to continue.</p>
-      ) : (
-        <>
-          <p className="muted small">
-            Connecting as <code>{account.address.slice(0, 12)}…{account.address.slice(-6)}</code>
-          </p>
-          <div className="token-row">
-            <button className="primary" disabled={busy} onClick={approve}>
-              {busy ? 'Waiting for wallet…' : 'Approve with wallet signature'}
-            </button>
-            <button disabled={busy} onClick={deny}>Deny</button>
-          </div>
-        </>
-      )}
-      {err && <div className="error">{err}</div>}
+
+      <div className="kv">
+        <div><span>Wallet</span><b>{address ? short(address) : 'not connected'}</b></div>
+        <div><span>Redirect</span><b>{host}</b></div>
+        <div><span>Network</span><b>X Layer (196)</b></div>
+      </div>
+
+      <div className="risk">
+        <div className="risk-title">What you are approving</div>
+        <ul>
+          <li>A signature proving you control this address. It <b>authorizes no transaction and moves no funds.</b></li>
+          <li>The assistant may read your holdings and <b>build</b> trades — every trade still needs a separate signature from you.</li>
+          <li>The session expires on its own, and <b>End session</b> here revokes it everywhere, including the connector.</li>
+        </ul>
+      </div>
+
+      <div className="cta">
+        <button className="primary big" onClick={approve} disabled={busy}>
+          {busy ? 'Check your wallet…' : address ? 'Approve with wallet signature' : 'Connect wallet & approve'}
+        </button>
+      </div>
+      {err && <p className="error">{err}</p>}
     </section>
   );
 }

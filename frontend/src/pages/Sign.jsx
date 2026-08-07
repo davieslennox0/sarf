@@ -1,24 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  ConnectButton,
-  useCurrentAccount,
-  useSignPersonalMessage,
-  useSignTransaction,
-} from '@mysten/dapp-kit';
-import { api, ensureSession, getSession } from '../api.js';
+import { api, ensureSession, verifyPasskey } from '../api.js';
+import { connect, currentAccount, sendTransaction, short, txUrl } from '../wallet.js';
 
 /**
- * The in-chat signer. Claude links here (sign_url on every proposal); the
- * page shows the SIMULATED outcome — summary, gas, risk notes — and only
- * then lets the user sign, in their own wallet, the exact bytes the server
- * proposed. The signed bytes go back to /api/submit, which refuses anything
- * that doesn't byte-match the stored proposal.
- *
- * This page is self-hosted (not a Claude artifact) because the Artifacts
- * sandbox CSP blocks all external network calls — it could neither fetch the
- * proposal nor reach a wallet/fullnode from inside chat.
+ * The order signer. Claude links here (sign_url on every order). The page
+ * shows what the server actually quoted — amounts, fee, price impact, risk
+ * notes — and only then lets the user sign the exact transaction the server
+ * built. Sarf cannot execute it; the wallet broadcasts and returns the hash,
+ * which we record against the order for the audit trail.
  */
 
 function Countdown({ until }) {
@@ -29,172 +19,138 @@ function Countdown({ until }) {
   }, []);
   const ms = until * 1000 - now;
   if (ms <= 0) return <span className="chip red">expired</span>;
-  return (
-    <span className="chip amber">
-      expires in {Math.floor(ms / 60000)}m {String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}s
-    </span>
-  );
+  const m = Math.floor(ms / 60000);
+  const s = String(Math.floor((ms % 60000) / 1000)).padStart(2, '0');
+  return <span className="chip amber">expires in {m}m {s}s</span>;
 }
 
 export default function Sign() {
   const [params] = useSearchParams();
-  const pid = params.get('p');
-  const account = useCurrentAccount();
-  const { mutateAsync: signTransaction } = useSignTransaction();
-  const { mutateAsync: signMessage } = useSignPersonalMessage();
-  const queryClient = useQueryClient();
-  const [phase, setPhase] = useState('review'); // review | refreshing | signing | done
+  const orderId = params.get('o');
+  const [order, setOrder] = useState(null);
+  const [account, setAccount] = useState(null);
+  const [phase, setPhase] = useState('review'); // review | signing | done
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
 
-  const { data: prop, isLoading, error } = useQuery({
-    queryKey: ['proposal', pid],
-    queryFn: () => api.proposal(pid),
-    enabled: Boolean(pid),
-    refetchInterval: phase === 'review' ? 30_000 : false,
-  });
+  useEffect(() => {
+    currentAccount().then(setAccount).catch(() => {});
+  }, []);
 
-  if (!pid) return <section><h1>Sign</h1><p className="error">Missing proposal id (?p=sarf_…)</p></section>;
-  if (isLoading) return <section><p className="muted">Loading proposal…</p></section>;
-  if (error) return <section><p className="error">{error.message}</p></section>;
+  useEffect(() => {
+    if (!orderId) return;
+    api.order(orderId).then(setOrder).catch((e) => setErr(e.message));
+  }, [orderId]);
 
-  const expired = prop.expired || prop.expires_at * 1000 < Date.now();
-  const notSignable = prop.status !== 'proposed' || expired;
-  const wrongAccount = account && account.address !== prop.user_address;
+  if (!orderId) return <section><h1>Sign</h1><p className="error">Missing order id (?o=sarf_ord_…)</p></section>;
+  if (err && !order) return <section><p className="error">{err}</p></section>;
+  if (!order) return <section><p className="muted">Loading order…</p></section>;
+
+  const expired = order.expired;
+  const notSignable = !['proposed', 'awaiting_signature'].includes(order.status) || expired;
+  const wrongAccount = account && order.address && account !== order.address.toLowerCase();
 
   const approve = async () => {
     setErr(null);
-    setPhase('refreshing');
     try {
-      // Submitting requires an authenticated session for the proposal's
-      // address (the server refuses proposals that belong to another
-      // account). If none is live, the wallet first asks for a sign-in
-      // message — that's the extra prompt before the transaction itself.
-      await ensureSession(account.address, signMessage);
-      // Oracle prices are baked into the bytes when the proposal is BUILT,
-      // and the chain rejects them as stale within about a minute — less
-      // than a human review takes. Rebuild the same proposal (same id,
-      // params, expiry; re-validated server-side) so the wallet signs bytes
-      // whose prices are seconds old.
-      const fresh = await api.refreshProposal(prop.proposal_id);
-      queryClient.setQueryData(['proposal', pid], fresh);
+      const addr = account || (await connect());
+      setAccount(addr);
       setPhase('signing');
-      // Sign the exact server-built bytes. The wallet shows its own review UI
-      // on top of ours; the server re-checks byte equality on submit.
-      const signed = await signTransaction({
-        transaction: fresh.ptb_base64,
-        chain: 'sui:mainnet',
-      });
-      const out = await api.submit(fresh.proposal_id, signed.bytes ?? fresh.ptb_base64, [
-        signed.signature,
-      ]);
-      setResult(out);
+      // Session first: recording the hash afterwards is an authenticated call,
+      // and asking for the wallet signature after the transaction would be a
+      // confusing second prompt.
+      await ensureSession(addr);
+
+      // Step-up if the server says this order needs it. Doing it here rather
+      // than at order-build time means the assertion is fresh at signing.
+      const st = await api.passkeyStatus().catch(() => null);
+      const needsStepUp =
+        st?.registered && order.est_usd != null && order.est_usd > (st.stepup_threshold_usd ?? Infinity);
+      if (needsStepUp) await verifyPasskey();
+
+      const hash = await sendTransaction(addr, order.tx);
+      await api.orderSubmitted(orderId, hash);
+      setResult({ hash });
       setPhase('done');
     } catch (e) {
-      setErr(e.message);
+      setErr(e.message || String(e));
       setPhase('review');
     }
   };
 
   if (phase === 'done' && result) {
-    const ok = result.status === 'success';
     return (
-      <section>
-        <h1>{ok ? 'Transaction broadcast ✓' : 'Broadcast failed'}</h1>
-        {result.tx_digest && (
-          <p>
-            Digest: <code>{result.tx_digest}</code>{' '}
-            <a href={`https://suivision.xyz/txblock/${result.tx_digest}`} target="_blank" rel="noreferrer">
-              view on explorer ↗
-            </a>
-          </p>
-        )}
-        {result.obligation_cap_id && (
-          <p className="ok">
-            New ObligationOwnerCap: <code>{result.obligation_cap_id}</code> — Sarf will use it for
-            your next actions automatically.
-          </p>
-        )}
-        {!ok && <p className="error">{result.error}</p>}
-        <p className="muted">You can close this tab and return to the chat.</p>
+      <section className="sign-card">
+        <h1>Broadcast to X Layer ✓</h1>
+        <p>
+          Transaction: <code>{short(result.hash)}</code>{' '}
+          <a href={txUrl(result.hash)} target="_blank" rel="noreferrer">view on explorer ↗</a>
+        </p>
+        <p className="muted">
+          Settlement is final once mined. You can close this tab and return to the chat —
+          ask for <i>settlement status</i> to confirm it there.
+        </p>
       </section>
     );
   }
 
+  const fee = order.platform_fee;
   return (
     <section className="sign-card">
       <h1>Review &amp; sign</h1>
-
-      <div className="summary">{prop.human_summary}</div>
-
-      <div className="kv">
-        <div><span>Action</span><b>{prop.tool.replace('propose_', '')}</b></div>
-        {Object.entries(prop.params).map(([k, v]) => (
-          <div key={k}><span>{k}</span><b>{String(v)}</b></div>
-        ))}
-        <div>
-          <span>Simulated gas</span>
-          <b>{prop.simulation ? `${prop.simulation.gasUsedSui.toFixed(4)} SUI` : 'n/a'}</b>
-        </div>
-        <div>
-          <span>Simulation</span>
-          <b className={prop.simulation?.status === 'success' ? 'ok' : 'error'}>
-            {prop.simulation?.status ?? 'unknown'}
-          </b>
-        </div>
-        <div><span>Validity</span><Countdown until={prop.expires_at} /></div>
+      <div className="summary">
+        {order.side?.toUpperCase()} {order.symbol} on X Layer
       </div>
 
-      {prop.risk_notes?.length > 0 && (
+      <div className="kv">
+        <div><span>Action</span><b>{order.side} {order.symbol}</b></div>
+        <div><span>Spending</span><b>{order.spending ?? order.amount_in}</b></div>
+        {order.receiving_estimated && (
+          <div><span>You receive (est.)</span><b>{order.receiving_estimated}</b></div>
+        )}
+        {order.minimum_received && (
+          <div><span>Minimum received</span><b>{order.minimum_received}</b></div>
+        )}
+        <div><span>Order value</span><b>{order.est_usd != null ? `$${Number(order.est_usd).toFixed(2)}` : 'n/a'}</b></div>
+        {fee && (
+          <div>
+            <span>Platform fee</span>
+            <b>{fee.charged ? `$${Number(fee.usd).toFixed(2)} ${fee.denominated_in}` : 'none'}</b>
+          </div>
+        )}
+        <div><span>Validity</span><Countdown until={order.expires_at} /></div>
+      </div>
+
+      {order.risk_notes?.length > 0 && (
         <div className="risk">
           <div className="risk-title">Risk notes — read before signing</div>
-          <ul>
-            {prop.risk_notes.map((n, i) => (
-              <li key={i}>{n}</li>
-            ))}
-          </ul>
+          <ul>{order.risk_notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
         </div>
       )}
 
       {notSignable ? (
         <div className="error">
-          This proposal is no longer signable ({expired ? 'expired' : prop.status}). Ask the
-          assistant for a fresh one — prices and rates move.
-        </div>
-      ) : !account ? (
-        <div className="cta">
-          <p className="muted">Connect the wallet that owns {prop.user_address.slice(0, 10)}…</p>
-          <ConnectButton connectText="Connect wallet to sign" />
+          This order is no longer signable ({expired ? 'expired' : order.status}). Ask the
+          assistant for a fresh quote — prices move.
         </div>
       ) : wrongAccount ? (
         <div className="error">
-          Connected wallet {account.address.slice(0, 10)}… does not match this proposal&apos;s
-          address {prop.user_address.slice(0, 10)}… Switch accounts to sign.
+          Connected wallet {short(account)} does not match this order's wallet{' '}
+          {short(order.address)}. Switch accounts to sign.
         </div>
       ) : (
         <div className="cta">
           <button className="primary big" disabled={phase !== 'review'} onClick={approve}>
-            {phase === 'refreshing'
-              ? 'Refreshing prices…'
-              : phase === 'signing'
-                ? 'Confirm in your wallet…'
-                : 'Sign in wallet & broadcast'}
+            {phase === 'signing' ? 'Confirm in your wallet…' : account ? 'Sign & broadcast' : 'Connect wallet & sign'}
           </button>
-          {!getSession() && (
-            <p className="muted small">
-              Your wallet will ask for two confirmations: a one-time sign-in message (proves
-              address ownership, authorizes nothing), then the transaction itself.
-            </p>
-          )}
         </div>
       )}
 
       {err && <div className="error">{err}</div>}
 
       <p className="muted small">
-        Sarf built and simulated this transaction but cannot execute it: signing happens only in
-        your wallet, and the server will refuse any bytes that differ from what you see simulated
-        here.
+        Sarf built and priced this transaction but cannot execute it — only your wallet
+        can. The bytes you sign are exactly what is shown above.
       </p>
     </section>
   );
