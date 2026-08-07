@@ -7,7 +7,8 @@ Sarf has always had. Nothing here touches a keyring.
 Transport: OKX's DEX REST API refuses anonymous calls (`50103 OK-ACCESS-KEY
 can not be empty`), so calls go through one of two transports:
 
-  * `http`  — OKX DEX API v5 with the operator's own credentials from env.
+  * `http`  — OKX DEX API v6 with the operator's own credentials from env.
+              (v5 is deprecated and answers 50050.)
               The production path; set OKX_API_KEY / OKX_API_SECRET /
               OKX_API_PASSPHRASE.
   * `cli`   — the locally-installed, already-authenticated `onchainos`
@@ -200,7 +201,7 @@ class OkxDexClient:
             "amount": amount_min_units,
         }
         if t == "http":
-            raw = await self._http("/api/v5/dex/aggregator/quote", params)
+            raw = await self._http("/api/v6/dex/aggregator/quote", params)
         else:
             raw = await self._cli([
                 "swap", "quote", "--chain", str(CHAIN_ID),
@@ -271,7 +272,9 @@ class OkxDexClient:
                 "chainIndex": CHAIN_ID, "chainId": CHAIN_ID,
                 "fromTokenAddress": from_address, "toTokenAddress": to_address,
                 "amount": amount_min_units, "userWalletAddress": user_address,
-                "slippage": slippage_pct / 100.0,
+                # v6 renamed this and takes PERCENT ("1" = 1%), not the
+                # fraction v5 wanted. Sending the old name 400s (50014).
+                "slippagePercent": slippage_pct,
             }
             if want_fee:
                 # OKX allows commission on the from-token OR the to-token, not
@@ -282,7 +285,7 @@ class OkxDexClient:
                        else "toTokenReferrerWalletAddress")
                 params[key] = fee_recipient
                 fee_applied = True
-            raw = await self._http("/api/v5/dex/aggregator/swap", params)
+            raw = await self._http("/api/v6/dex/aggregator/swap", params)
         else:
             raw = await self._cli([
                 "swap", "swap", "--chain", str(CHAIN_ID),
