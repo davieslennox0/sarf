@@ -32,7 +32,11 @@ body {
 a { color: var(--amber); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-.app { max-width: 720px; margin: 0 auto; padding: 0 20px 72px; }
+/* Fill the viewport, never closer than 3% to either edge. Prose blocks keep
+   their own max-width in ch below — a paragraph stretched across a wide
+   monitor is technically full-bleed and practically unreadable, so the page
+   fills the screen while the reading measure stays fixed. */
+.app { width: 100%; max-width: none; margin: 0 auto; padding: 0 3% 72px; }
 
 /* ---- chrome ------------------------------------------------------------ */
 
@@ -224,7 +228,26 @@ td { padding: 12px 10px 12px 4px; border-bottom: 1px solid var(--line); font-fam
 footer { margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
 .fine { font-size: 11px; color: var(--paper-dim); line-height: 1.65; max-width: 60ch; }
 
+/* Wide screens: use the width instead of stretching one column across it.
+   The ledger becomes multi-column and the board grows, while paragraphs stay
+   at their reading measure. */
+@media (min-width: 1000px) {
+  .ledger { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 36px; }
+  /* Flaps left, session delta pinned right, rather than a lone cluster with
+     dead space beside it. */
+  .board-row { justify-content: space-between; }
+  h1 { font-size: 38px; max-width: 24ch; }
+  .flap { width: 42px; height: 58px; }
+  .flap .digit { font-size: 30px; }
+}
+@media (min-width: 1500px) {
+  .ledger { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .flap { width: 48px; height: 66px; }
+  .flap .digit { font-size: 34px; }
+}
+
 @media (max-width: 620px) {
+  .app { padding: 0 4% 60px; }
   h1 { font-size: 23px; }
   .stats { gap: 20px; }
   .flap { width: 27px; height: 40px; }
