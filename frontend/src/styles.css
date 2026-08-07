@@ -77,6 +77,15 @@ h1 {
   font-family: var(--mono); font-weight: 600; font-size: 30px;
   line-height: 1.25; max-width: 20ch; margin: 6px 0 0;
 }
+/* The hero headline stays on ONE line at every width. The size is tied to the
+   viewport rather than fixed, because the line is a known length (the ghost
+   span pins it to the longest role word) — so scaling the type is what keeps
+   it unbroken, instead of letting it wrap. */
+.hero h1 {
+  max-width: none;
+  white-space: nowrap;
+  font-size: clamp(15px, 3.9vw, 44px);
+}
 h2 {
   font-family: var(--mono); font-size: 11px; font-weight: 500;
   letter-spacing: .1em; text-transform: uppercase; color: var(--paper-dim);
@@ -259,7 +268,6 @@ footer { margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--line);
   /* Flaps left, session delta pinned right, rather than a lone cluster with
      dead space beside it. */
   .board-row { justify-content: space-between; }
-  h1 { font-size: 38px; max-width: 24ch; }
   .flap { width: 42px; height: 58px; }
   .flap .digit { font-size: 30px; }
 }
@@ -271,7 +279,6 @@ footer { margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--line);
 
 @media (max-width: 620px) {
   .app { padding: 0 4% 60px; }
-  h1 { font-size: 23px; }
   .stats { gap: 20px; }
   .flap { width: 27px; height: 40px; }
   .flap .digit { font-size: 19px; }

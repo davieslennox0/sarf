@@ -189,9 +189,7 @@ export default function Home() {
     <>
       <section className="hero">
         <div className="eyebrow">Tokenized equities on X Layer</div>
-        <h1>
-          Sarf, your AI-RWA<br />Portfolio <Rotator words={ROLES} />
-        </h1>
+        <h1>Sarf, your AI-RWA Portfolio <Rotator words={ROLES} /></h1>
         <p className="sub">
           Ask for a position, a price, or a read on what you hold — in Claude or
           ChatGPT. Sarf prices and builds every trade; you sign it in your own
