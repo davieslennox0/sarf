@@ -9,6 +9,39 @@ const MCP_URL = 'https://sarf-mcp.managerx.xyz/mcp';
 // ADBEx/ASMLx and put the deepest, most recognisable markets out of sight.
 const SHORTLIST = ['SPYx', 'QQQx', 'NVDAx', 'AAPLx', 'TSLAx'];
 
+// What the assistant actually is, one facet at a time. Deliberately excludes
+// "Advisor" and "Broker": both are regulated terms for activities Sarf does
+// not perform, and a rotating headline is a bad place to imply otherwise.
+const ROLES = [
+  'Agent',
+  'Manager',
+  'Analyzer',
+  'Strategist',
+  'Copilot',
+  'Tracker',
+  'Desk',
+];
+
+/** Cycles a word every `every` ms, sliding the next one up into place. */
+function Rotator({ words, every = 5000 }) {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setI((n) => (n + 1) % words.length), every);
+    return () => clearInterval(t);
+  }, [words.length, every]);
+  return (
+    <span className="rotator">
+      {/* keyed so React remounts the span and the enter animation re-runs */}
+      <span className="rotator-word" key={i}>{words[i]}</span>
+      {/* Reserves the width of the longest word so the headline never reflows
+          mid-sentence as the word changes. */}
+      <span className="rotator-ghost" aria-hidden="true">
+        {words.reduce((a, b) => (b.length > a.length ? b : a), '')}
+      </span>
+    </span>
+  );
+}
+
 /** One flap. Animates only when its own character changes. */
 function Flap({ ch }) {
   const [flipping, setFlipping] = useState(false);
@@ -155,11 +188,14 @@ export default function Home() {
   return (
     <>
       <section className="hero">
-        <div className="eyebrow">Trade tokenized equities from your chat</div>
-        <h1>The exchange counter for on-chain stocks.</h1>
+        <div className="eyebrow">Tokenized equities on X Layer</div>
+        <h1>
+          Sarf, your AI-RWA<br />Portfolio <Rotator words={ROLES} />
+        </h1>
         <p className="sub">
-          Sarf prices and builds every trade. You sign it in your own wallet — the
-          server holds no keys and cannot move your funds.
+          Ask for a position, a price, or a read on what you hold — in Claude or
+          ChatGPT. Sarf prices and builds every trade; you sign it in your own
+          wallet. The server holds no keys and cannot move your funds.
         </p>
         <div className="stats">
           <div><b>{assets.length || '—'}</b><span>assets</span></div>

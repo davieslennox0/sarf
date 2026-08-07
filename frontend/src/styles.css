@@ -95,6 +95,29 @@ code { font-family: var(--mono); font-size: 12px; color: var(--paper); }
 
 .hero { padding: 38px 0 6px; }
 
+/* Rotating role word. Same mechanic as the flaps: the new word rises into
+   place from below. The ghost span reserves the widest word's width so the
+   headline never reflows mid-sentence. */
+.rotator {
+  position: relative; display: inline-block;
+  overflow: hidden; vertical-align: bottom;
+  color: var(--amber);
+}
+.rotator-word {
+  position: absolute; left: 0; top: 0; white-space: nowrap;
+  animation: rise .5s cubic-bezier(.22, .8, .3, 1) both;
+}
+.rotator-ghost { visibility: hidden; white-space: nowrap; }
+@keyframes rise {
+  from { transform: translateY(105%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+/* Motion here is decorative; anyone who has asked for less shouldn't get a
+   word sliding under their cursor every five seconds. */
+@media (prefers-reduced-motion: reduce) {
+  .rotator-word { animation: none; }
+}
+
 /* ---- buttons ----------------------------------------------------------- */
 
 button {
