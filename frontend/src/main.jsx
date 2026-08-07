@@ -9,7 +9,7 @@ import './styles.css';
 // a signing surface should never silently reconnect.
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter basename="/dashboard">
+    <BrowserRouter>
       <App />
     </BrowserRouter>
   </React.StrictMode>,

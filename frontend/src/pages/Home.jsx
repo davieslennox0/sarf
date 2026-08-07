@@ -269,7 +269,7 @@ export default function Home() {
       <h2>Settlement</h2>
       <p className="muted small" style={{ maxWidth: '58ch', lineHeight: 1.65 }}>
         Every trade is an ordinary on-chain swap. Orders appear under{' '}
-        <a href="/dashboard/activity">activity</a> with their hash linked to the{' '}
+        <a href="/activity">activity</a> with their hash linked to the{' '}
         <a href={EXPLORER} target="_blank" rel="noreferrer">X Layer explorer</a> —
         verifiable by anyone, not a screenshot.
       </p>

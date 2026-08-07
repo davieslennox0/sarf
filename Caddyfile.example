@@ -1,3 +1,199 @@
+managerx.xyz, www.managerx.xyz {
+    encode gzip
+    reverse_proxy localhost:8011
+}
+
+managerx.duckdns.org {
+    redir https://managerx.xyz{uri} permanent
+}
+
+pitchook.xyz, www.pitchook.xyz {
+    encode gzip
+
+    handle /v1/* {
+        reverse_proxy localhost:8008
+    }
+    handle /r/* {
+        reverse_proxy localhost:8008
+    }
+    handle /health {
+        reverse_proxy localhost:8008
+    }
+    handle /metrics {
+        reverse_proxy localhost:8008
+    }
+    handle /docs {
+        reverse_proxy localhost:8008
+    }
+    handle /openapi.json {
+        reverse_proxy localhost:8008
+    }
+
+    @htmlfile path *.html /
+    header @htmlfile Cache-Control "no-cache, no-store, must-revalidate"
+
+    handle {
+        root * /root/meshone/frontend/dist
+        file_server
+        try_files {path} /index.html
+    }
+
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+mcp.pitchook.xyz {
+    reverse_proxy localhost:8009 {
+        flush_interval -1
+    }
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+fanside.xyz, www.fanside.xyz {
+    encode gzip
+
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy localhost:8001
+    }
+
+    @htmlfile path *.html /
+    header @htmlfile Cache-Control "no-cache, no-store, must-revalidate"
+
+    handle {
+        root * /root/fanside/frontend/dist
+        file_server
+        try_files {path} /index.html
+    }
+}
+
+api.fanside.xyz {
+    reverse_proxy localhost:8001
+}
+
+mannyfi.xyz {
+    root * /root/settlr/frontend/dist
+    encode gzip
+
+    @htmlfile path *.html /
+    header @htmlfile Cache-Control "no-cache, no-store, must-revalidate"
+
+    route {
+        @api path /v1/*
+        reverse_proxy @api localhost:8002
+
+        # The facilitator lives on api.mannyfi.xyz. Without this, /facilitator/* fell
+        # through to the SPA catch-all below and returned index.html with a 200, which
+        # every JSON client reads as a broken endpoint. 308 keeps method + body intact
+        # so a POST /verify or /settle survives the hop instead of degrading to GET.
+        @facilitator path /facilitator /facilitator/*
+        redir @facilitator https://api.mannyfi.xyz{uri} 308
+
+        try_files {path} /index.html
+        file_server
+    }
+
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+api.mannyfi.xyz {
+    # Cross-chain x402 facilitator (settlr/facilitator, :8012). handle_path strips the
+    # prefix so the SDK's {url}/verify|/settle|/supported land on the service's own paths.
+    # Sellers point FacilitatorConfig(url="https://api.mannyfi.xyz/facilitator") here.
+    handle_path /facilitator/* {
+        reverse_proxy localhost:8012
+    }
+    handle {
+        reverse_proxy localhost:8002
+    }
+    encode gzip
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+mcp.mannyfi.xyz {
+    reverse_proxy localhost:8003 {
+        flush_interval -1
+    }
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+bondsman.mannyfi.xyz {
+    reverse_proxy localhost:8004
+    encode gzip
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+bondsman-mcp.mannyfi.xyz {
+    reverse_proxy localhost:8005 {
+        flush_interval -1
+    }
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+engram.mannyfi.xyz {
+    encode gzip
+
+    handle /v1/* {
+        reverse_proxy localhost:8006
+    }
+
+    @htmlfile path *.html /
+    header @htmlfile Cache-Control "no-cache, no-store, must-revalidate"
+
+    handle {
+        root * /root/engram/frontend/dist
+        file_server
+        try_files {path} /index.html
+    }
+
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+engram-mcp.mannyfi.xyz {
+    reverse_proxy localhost:8007 {
+        flush_interval -1
+    }
+    log {
+        output file /home/Manny/logs/caddy.log
+    }
+}
+
+alphxc.duckdns.org {
+  handle /fx/* {
+    reverse_proxy localhost:8400
+  }
+  handle /agent/* {
+    reverse_proxy localhost:8400
+  }
+  handle /health {
+    reverse_proxy localhost:8400
+  }
+  handle /trade/* {
+    reverse_proxy localhost:8400
+  }
+  handle {
+    root * /root/alphx/frontend/dist
+    try_files {path} /index.html
+    file_server
+  }
+  encode gzip
+}
+
 # Caddy reverse proxy for Sarf. Both hosts front the same FastAPI process on
 # 127.0.0.1:8760 — the split is a path allowlist per audience, not two
 # deployments. The tx-builder sidecar (8761) must never appear here.
@@ -8,7 +204,7 @@
 sarf.managerx.xyz {
 	encode zstd gzip
 
-	@allowed path / /dashboard /dashboard/* /sign /authorize /api/* /.well-known/* /healthz
+	@allowed path / /assets/* /portfolio /activity /security /sign /connect /authorize /favicon.ico /dashboard /dashboard/* /api/* /.well-known/* /healthz
 	handle @allowed {
 		reverse_proxy 127.0.0.1:8760
 	}
@@ -30,3 +226,29 @@ sarf-mcp.managerx.xyz {
 		respond 404
 	}
 }
+
+# Merchant Agent MiniPay Mini App (Celo hackathon) — /root/papy
+# Static Vite build + Groq agent API (FastAPI on 8010).
+bizpal.duckdns.org {
+    encode gzip
+
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8010
+    }
+    handle /health {
+        reverse_proxy 127.0.0.1:8010
+    }
+    handle {
+        root * /root/papy/miniapp/dist
+        try_files {path} /index.html
+        file_server
+    }
+}
+
+blazeassit.duckdns.org {
+    encode gzip
+    reverse_proxy localhost:8020
+}
+
+# Verdict (veridict.fanside.xyz) removed 2026-08-01 — local deployment deleted.
+# Source remains at github.com/davieslennox0/veridict if it is ever redeployed.

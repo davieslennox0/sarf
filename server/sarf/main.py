@@ -23,9 +23,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.exceptions import HTTPException as StarletteHTTPException
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -211,18 +210,34 @@ class _SPAStaticFiles(StaticFiles):
 
 
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+_SPA_ROUTES = ["/", "/portfolio", "/activity", "/security", "/sign", "/connect"]
+
 if _FRONTEND_DIST.is_dir():
-    app.mount("/dashboard", _SPAStaticFiles(directory=_FRONTEND_DIST, html=True), name="dashboard")
+    # Assets get a real mount; SPA routes are declared explicitly rather than
+    # mounting StaticFiles at "/", which would collide with the MCP app that
+    # owns the catch-all below.
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
 
-    @app.get("/")
-    async def index():
-        return RedirectResponse("/dashboard/")
+    def _index() -> FileResponse:
+        return FileResponse(_FRONTEND_DIST / "index.html")
 
-    @app.get("/sign")
-    async def sign_page(request: Request):
-        # The SPA is served from /dashboard/; forward the ?p=sarf_... param.
+    for _path in _SPA_ROUTES:
+        app.get(_path, include_in_schema=False)(lambda: _index())
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def _favicon():
+        f = _FRONTEND_DIST / "favicon.ico"
+        return FileResponse(f) if f.exists() else Response(status_code=404)
+
+    # The site used to live under /dashboard. Old sign links and bookmarks
+    # still arrive there, so keep them working rather than 404ing.
+    @app.get("/dashboard{rest:path}", include_in_schema=False)
+    async def _legacy_dashboard(rest: str, request: Request):
+        target = (rest or "/").rstrip("/") or "/"
+        if target == "/authorize":
+            target = "/connect"
         qs = request.url.query
-        return RedirectResponse(f"/dashboard/sign{'?' + qs if qs else ''}", status_code=307)
+        return RedirectResponse(f"{target}{'?' + qs if qs else ''}", status_code=308)
 
 
 app.mount("/", mcp.streamable_http_app())

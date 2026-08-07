@@ -384,7 +384,7 @@ class XLayerRwaProvider:
             if stepup.blocked:
                 raise ValueError(
                     f"passkey verification required before this order: {stepup.reason}. "
-                    f"Open {settings.public_url}/dashboard/security to verify, then ask again."
+                    f"Open {settings.public_url}/security to verify, then ask again."
                 )
 
             # Fee always rides on the stablecoin leg so the user is never

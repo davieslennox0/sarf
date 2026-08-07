@@ -104,7 +104,8 @@ export default function App() {
           <Route path="/activity" element={<Activity />} />
           <Route path="/security" element={<Security />} />
           <Route path="/sign" element={<Sign />} />
-          <Route path="/authorize" element={<Authorize />} />
+          {/* /authorize is the OAuth endpoint itself; the consent UI lives here. */}
+          <Route path="/connect" element={<Authorize />} />
         </Routes>
       </main>
       {/* Site-wide, so it appears on the signer and consent pages too — not
