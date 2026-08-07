@@ -1,217 +1,121 @@
-# Sarf
+# Sarf — Your X Layer RWA Assistant
 
-Non-custodial MCP server that lets Claude / ChatGPT act as a trading & lending
-assistant on **Sui**, starting with **Current Finance** (lending, leveraged
-yield). It **builds and simulates** transactions; it never holds keys, never
-signs, and never executes anything without the user signing in their own
-wallet.
-
-```
-User asks Claude to do something
-  → Claude calls the relevant propose_* tool
-  → Server validates inputs, builds the PTB, dry-runs it, returns
-    {proposal_id, human_summary, ptb_base64, gas_estimate, risk_notes}
-  → Claude presents this to the user as a confirmation card, does not act further
-  → User approves in their own wallet UI — wallet signs ptb_base64
-  → Client calls submit_signed_transaction(proposal_id, signed bytes, signatures)
-  → Server verifies the bytes match the proposal, broadcasts, returns tx digest
-```
-
-## Architecture
+Non-custodial MCP server that lets Claude / ChatGPT trade **tokenized stocks
+and ETFs (xStocks)** on **X Layer** (OKX's EVM chain, id `196`). It prices,
+validates and **builds** transactions; it never holds keys, never signs, and
+never executes anything without the user signing in their own wallet.
 
 ```
-Claude / ChatGPT
-      │  streamable-HTTP MCP  (Caddy, TLS)
-      ▼
-server/   Python FastAPI + MCP  ← the security boundary
-      │     validation.py: address/asset/amount/leverage/ownership/USD caps
-      │     SQLite: proposal audit log + obligation-cap index (never funds)
-      │  loopback HTTP only
-      ▼
-txbuilder/  Node sidecar wrapping @current-finance/current-sdk
-      │     builds unsigned PTBs, dry-runs, projects LTV/liquidation,
-      │     broadcasts user-signed bytes
-      ▼
-Sui mainnet fullnode + Pyth Hermes
+User asks Claude to buy a tokenized stock
+  → Claude calls place_order
+  → Server resolves the symbol, quotes the DEX, enforces USD + price-impact
+    caps, applies passkey step-up, builds an UNSIGNED X Layer transaction
+  → Claude shows human_summary + risk_notes + sign_url
+  → User signs in their own wallet → the wallet broadcasts → tx hash
+  → get_settlement_status confirms it on X Layer
 ```
 
-Why a Node sidecar instead of pysui: the vendor SDK embeds the Pyth oracle
-refresh (VAA fetch + `updatePriceFeeds`), underlying→ctoken conversion, and
-the flash-loan leverage PTB assembly. Reimplementing those in Python would be
-error-prone and drift from upstream. Tradeoff documented in
-`txbuilder/src/context.ts`.
+> **xStocks are synthetic exposure.** They track a share price. Holding one
+> gives you **no** share ownership, **no** dividends and **no** voting rights;
+> redemption depends on the issuer (Backed Assets). Sarf repeats this
+> disclosure on every priced response, not just here.
 
-`server/sarf/providers/` is the extension point: Aftermath Finance
-(swaps/perps) lands as `providers/aftermath.py` + its own sidecar module,
-with no change to existing tools or the validation layer.
+## The identifier trap (read this first)
+
+The same underlying has **two different tickers on two different venues**:
+
+| Venue | Form | Example |
+|---|---|---|
+| On-chain, X Layer (what Sarf trades) | `x` **suffix** | `AAPLx`, `TSLAx`, `SPYx` |
+| OKX centralized order book | `X` **prefix** | `XAAPL`, `XTSLA`, `XSPY` |
+
+Searching X Layer for `XAAPL` returns nothing, which reads exactly like
+"xStocks aren't deployed here" — they are. Sarf refuses the CEX form rather
+than silently translating it, and tells the caller the correct on-chain symbol.
+
+## Asset universe
+
+40 xStocks, every contract address verified against X Layer RPC
+(`eth_getCode` non-empty, `symbol()`/`decimals()` matching) before it entered
+`server/sarf/xlayer/xstocks_registry.json`. A wrong address in a trading tool
+costs real money, so none is trusted from an API alone.
+
+Quote asset is **USDT** (`USD₮0`, 6 decimals). Deepest pools at time of build:
+SPYx ~$757k, QQQx ~$500k, NVDAx ~$475k, IWMx ~$470k, GLDx ~$406k.
 
 ## MCP tools
 
 All tools act on **the session's wallet-verified address** — none accepts a
-`user_address` argument (see SECURITY.md "Auth model").
+wallet argument, so a caller (or a model prompted into trying) cannot read or
+trade against an account they have not proven control of.
 
 | Tool | Kind | Notes |
 |---|---|---|
-| `get_portfolio()` | read | the authenticated user's positions, cap IDs, LTVs, liquidation prices |
-| `get_market_info(market?, asset?)` | read | live rates, prices, risk params |
-| `propose_enter_market(asset, amount, market?)` | proposal | creates ObligationOwnerCap |
-| `propose_deposit(obligation_cap_id, asset, amount)` | proposal | |
-| `propose_borrow(...)` | proposal | includes post-borrow LTV + liquidation prices |
-| `propose_repay(...)` | proposal | |
-| `propose_withdraw(...)` | proposal | underlying→ctoken conversion server-side |
-| `propose_leverage_position(collateral_asset, principal_amount, target_multiplier)` | proposal | hard-capped multiplier; states liquidation price & worst case |
-| `submit_signed_transaction(proposal_id, signed_tx_bytes_base64, signatures)` | write | only broadcasts byte-matched, unexpired proposals owned by this session |
+| `get_rwa_list()` | read | the 40 tradable assets, with contracts + explorer links |
+| `get_rwa_price(symbol)` | read | live price quoted from X Layer DEX pools |
+| `get_portfolio()` | read | holdings + USDT + OKB gas balance, read from chain |
+| `place_order(symbol, side, amount, slippage_percent?)` | build | returns an **unsigned** tx + `sign_url`; never executes |
+| `get_settlement_status(tx_hash)` | read | distinguishes unknown / pending / confirmed / reverted |
+| `get_order_history(limit?)` | read | this wallet's orders, with tx hashes |
 
-Deviation from the original tool sketch, on purpose:
-`submit_signed_transaction` also takes `proposal_id` and `signatures`
-(Sui broadcasts take signatures separately from bytes, and binding to a
-stored proposal prevents the server being used as an open relay — see
-SECURITY.md).
+## Where the security boundary is
 
-Amounts are **decimal strings in human units** (`"12.5"`), validated
-strictly server-side; assets are **symbols** resolved against the protocol's
-own market config — raw Move types are never accepted from the model.
+`server/sarf/validation.py` + `server/sarf/xlayer/evm.py`, not the LLM prompt.
+
+| Check | Detail |
+|---|---|
+| Address shape | 20-byte EVM address; a **failing EIP-55 checksum is rejected**, since that is the one cheap signal a paste was corrupted |
+| Symbol resolution | symbols only, resolved against the on-chain-verified registry; raw contract addresses are never accepted from the model |
+| Amount bounds | decimal-string only (JSON numbers rejected), no exponents/signs/separators, sub-minimal-unit precision rejected rather than rounded |
+| Balance precheck | orders the wallet cannot fund are refused before a quote is spent |
+| USD cap | per-order `MAX_ORDER_USD` (default $25k); **fails closed** if the order cannot be priced |
+| Price impact | refuses above `MAX_PRICE_IMPACT_PCT` (default 5%) — these pools are ~$200k–750k deep, so size *is* a risk |
+| Slippage | caller-supplied tolerance hard-bounded to 0.05–5% regardless of config |
+| Passkey step-up | orders over `PASSKEY_STEPUP_USD` need a fresh WebAuthn assertion; an unpriceable order fails closed |
+| Chain guard | server refuses to start in production if `XLAYER_RPC_URL` is not chain 196 |
+| Order binding | a tx hash is only recorded against an unexpired order the session owns |
+
+Not validated: whether a trade is *wise*. Risk notes exist so the human decides.
+
+## Passkeys — what they are and are not for
+
+A passkey is **not** a second signer; the wallet signature is what authorizes
+funds. It closes two different gaps:
+
+1. **Session binding** — a session token is a bearer credential riding in an
+   MCP connector. Stolen alone it is inert if a registered passkey must be present.
+2. **Step-up on size** — above a USD threshold an order needs a fresh
+   assertion, so a compromised session cannot push a large order past a
+   click-fatigued user.
+
+Deliberately **not** per-action: the wallet already prompts on every trade, and
+a second biometric on every small order trains reflexive approval, which costs
+more security than it buys. Verification is delegated to `py_webauthn`.
 
 ## Setup
 
 ```bash
-git clone <this repo> && cd sarf
-./scripts/setup.sh          # vendor SDK, deps, venv, hooks, tests
-cp .env.example .env        # fill in (already done by setup if missing)
+./scripts/setup.sh
+cp .env.example .env
 pm2 start ecosystem.config.cjs
 ```
 
-Environment variables: see `.env.example` (RPC endpoint, ports, risk caps,
-`SARF_ENV`/`SARF_SESSION_SECRET` for the auth layer, optional leverage
-quote-server config). In `SARF_ENV=production` the server refuses to start
-without a session-signing secret.
+Key environment: `XLAYER_RPC_URL` (must be chain 196), `SARF_ENV` /
+`SARF_SESSION_SECRET`, `MAX_ORDER_USD`, `MAX_PRICE_IMPACT_PCT`,
+`PASSKEY_STEPUP_USD`. Quotes need either OKX API credentials
+(`OKX_API_KEY` / `OKX_API_SECRET` / `OKX_API_PASSPHRASE`) or the locally
+installed `onchainos` CLI; with neither, priced calls fail closed rather than
+invent a number.
 
-### Enabling leverage
-
-`propose_leverage_position` needs two operator-supplied values that are not
-derivable from the SDK repo: `CURRENT_QUOTE_SERVER_URL` (the protocol's quote
-backend) and `LEVERAGE_PAIRS` (quote-server pair IDs; format in
-`txbuilder/src/leverage.ts`). Until both are set the tool refuses cleanly
-("leverage disabled") — it does not guess.
-
-### Adding to Claude (custom connector)
-
-1. Deploy behind Caddy (see `Caddyfile.example`). The MCP endpoint lives on
-   its own host: `https://sarf-mcp.managerx.xyz/mcp` (the dashboard/signer
-   host `https://sarf.managerx.xyz` does not expose `/mcp`, and vice versa —
-   both proxy to the same process, split by path allowlist).
-2. Claude → Settings → Connectors → *Add custom connector* → paste the
-   **stable URL** `https://sarf-mcp.managerx.xyz/mcp` (no key). Claude
-   discovers the built-in OAuth server, opens the Sarf authorize page, and
-   you approve with a one-time wallet signature (it authorizes no
-   transaction). Add once, never edit again.
-3. Sessions last 30 minutes with no silent renewal. When one ends — by
-   expiry or by *End session* on the dashboard, which revokes **every**
-   session for your wallet including the connector's — the connector shows
-   **Reconnect**; clicking it re-runs the wallet-signature approval.
-   Unauthenticated connections are refused in production — there is no
-   anonymous mode.
-4. Tools appear under the connector; the assistant is instructed (via server
-   instructions) to always show `human_summary` and `risk_notes` before the
-   user decides.
-
-Clients without OAuth support: sign in on the dashboard (*My activity*) and
-use the legacy key-in-URL connector it offers
-(`…/mcp?key=sarf_sess_…`, dies with the session). ChatGPT: either form via
-*Apps & Connectors* (developer mode) — the transport is standard
-streamable-HTTP MCP.
-
-### Signing (wallet side)
-
-This server returns `ptb_base64` (unsigned `TransactionData` bytes). Any Sui
-wallet flow that can sign raw transaction bytes works, including zkLogin
-wallets (Slush et al.) via the frontend `signTransaction` dapp-kit call; the
-resulting `{bytes, signature}` go straight to `submit_signed_transaction`.
-There is intentionally no signing capability anywhere in this repo.
-
-## Dashboard & in-chat signer
-
-The React/Vite app in `frontend/` is served by the FastAPI process at
-`/dashboard/` (build with `cd frontend && npm run build`). Caddy exposes it
-at **https://sarf.managerx.xyz** while the MCP connector endpoint lives at
-**https://sarf-mcp.managerx.xyz/mcp** — one deployment, one process, two
-hosts with per-audience path allowlists (see `Caddyfile.example`). The
-dashboard, signer, and `/api` share the frontend origin, so there is no CORS
-surface to open up.
-
-- **Stats page (public)** — total users (a `COUNT(*)` over identities that
-  actually connected: wallet sign-ins and MCP tool users) and **TVL supplied
-  through Sarf-tracked positions** — deliberately *not* Current Finance's
-  protocol-wide TVL, and the UI says so. Nothing is mocked: zeros render as
-  zeros with a "last updated" timestamp.
-- **Activity page (authenticated)** — the proposal audit trail for the
-  signed-in address, with outcomes (awaiting signature / broadcast ✓ /
-  simulation failed / expired unsigned / rejected).
-
-### How TVL is computed and refreshed
-
-A background task in the server (interval `STATS_REFRESH_SECONDS`, default
-90s) iterates the distinct addresses holding Sarf-tracked obligation caps,
-reads each obligation live through the Current Finance SDK, prices deposits
-with **Pyth oracle prices at scan time** (never hardcoded), sums supplied
-USD, and writes the snapshot to the `stats` table. `/api/stats` serves only
-that snapshot — page loads never trigger on-chain scans — and reports the
-snapshot's age so freshness is visible instead of faked.
-
-### How the signer is hosted (and why it isn't a Claude artifact)
-
-Every successful `propose_*` response carries a `sign_url`
-(`$SARF_PUBLIC_URL/sign?p=<proposal_id>`). Claude presents the proposal and
-links the user there. **Checked and confirmed:** Claude Artifacts run under a
-CSP that blocks all external network requests from client-side JS, so an
-inline artifact could neither fetch the proposal nor reach a wallet/fullnode
-— the signer therefore lives on our own domain, same origin as the API.
-
-The `/sign` page: fetches the stored proposal (simulated outcome, gas, risk
-notes — the same simulate-and-summarize data, never just raw parameters),
-enforces that the connected wallet matches the proposal's address, refreshes
-the transaction bytes with **current oracle prices immediately before the
-wallet prompt** (Pyth attestations embedded at build time go stale on-chain
-in under a minute — same proposal, same params, fully re-validated and
-re-simulated server-side), lets the user sign **the exact server-built
-bytes** in their own wallet (`@mysten/dapp-kit` — includes zkLogin wallets
-like Slush), and POSTs the signature to `/api/submit`, which shares every
-invariant with the MCP `submit_signed_transaction` tool (byte-match, TTL,
-single-use).
-
-### Session & ephemeral key lifecycle
-
-- **Wallet sessions**: connecting starts a visible session banner
-  ("Signing session active — expires in Xm") with a hard 30-minute cap and an
-  **End session** button that disconnects the wallet, revokes the API
-  session, and wipes any cached material immediately. Auto-connect is off; a
-  signing surface should never silently reconnect. Every action still shows
-  its specific proposal and requires an explicit wallet confirmation — there
-  is no unlocked-signing mode, by design.
-- **Dashboard auth**: sign-in = wallet signs a one-time server nonce (the
-  message states it authorizes no transaction); the server verifies the
-  signature with the Sui SDK (full zkLogin proof checks included) and mints a
-  30-minute HMAC-signed bearer token held in `sessionStorage`. The same token
-  is the MCP connector credential (`?key=…`) and everything the MCP tools act
-  on is bound to its verified address — see SECURITY.md. Expiry means
-  signing in again; there is no silent renewal.
-- **Native zkLogin (config-gated)**: `frontend/src/zklogin.js` implements the
-  ephemeral-key lifecycle — created in-browser on login, stored only in
-  `sessionStorage` with an explicit expiry, wiped on expiry or End-session,
-  never sent anywhere. Activating the full in-page zkLogin flow (OAuth →
-  prover → zkLoginSignature) requires `VITE_GOOGLE_CLIENT_ID` and
-  `VITE_ZKLOGIN_PROVER_URL` (Mysten's mainnet prover needs enrollment; Enoki
-  is the managed path). Until configured the UI never offers it — zkLogin
-  users sign through their zkLogin wallet instead, which is the same
-  custody model.
+There is no Node sidecar — X Layer is reached over plain JSON-RPC and the
+aggregator over HTTP. (The Sui/Current Finance build needed one; it is retired.)
 
 ## Development
 
 ```bash
-cd server && .venv/bin/python -m pytest tests/ -q   # validation suite (offline)
-cd txbuilder && npx tsc                             # typecheck
-cd frontend && npm run dev                          # dashboard w/ /api proxy to :8760
+cd server && .venv/bin/python -m pytest tests/ -q   # offline: no network, no credentials
 ```
 
-Git hooks: `git config core.hooksPath .githooks` (done by setup.sh). Every
-commit runs `scripts/check-secrets.sh`; CI re-checks the whole tree.
+97 tests cover the EVM/EIP-55 layer (against official vectors), registry
+resolution including the CEX-ticker trap, passkey step-up policy, and the
+order audit trail.

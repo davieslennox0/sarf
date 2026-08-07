@@ -87,6 +87,47 @@ CREATE TABLE IF NOT EXISTS oauth_codes (
   expires_at     REAL NOT NULL,
   used           INTEGER NOT NULL DEFAULT 0
 );
+
+-- Passkeys (WebAuthn). Public keys only: a passkey private key never leaves
+-- the user's authenticator, exactly like their wallet key never reaches us.
+CREATE TABLE IF NOT EXISTS passkeys (
+  credential_id TEXT PRIMARY KEY,
+  address       TEXT NOT NULL,
+  public_key    BLOB NOT NULL,
+  sign_count    INTEGER NOT NULL DEFAULT 0,
+  created_at    REAL NOT NULL,
+  last_used_at  REAL
+);
+CREATE INDEX IF NOT EXISTS idx_passkeys_addr ON passkeys(address);
+
+-- Single-use WebAuthn challenges, bound to an address AND a purpose so a
+-- registration challenge can never be replayed as a step-up assertion.
+CREATE TABLE IF NOT EXISTS passkey_challenges (
+  challenge_id TEXT PRIMARY KEY,
+  address      TEXT NOT NULL,
+  purpose      TEXT NOT NULL,
+  expires_at   REAL NOT NULL,
+  used         INTEGER NOT NULL DEFAULT 0
+);
+
+-- X Layer order audit log. Records what was proposed and, once the user's
+-- wallet broadcasts it, the resulting tx hash. Never holds keys or signatures.
+CREATE TABLE IF NOT EXISTS orders (
+  order_id     TEXT PRIMARY KEY,
+  created_at   REAL NOT NULL,
+  expires_at   REAL NOT NULL,
+  address      TEXT NOT NULL,
+  side         TEXT NOT NULL,          -- 'buy' | 'sell'
+  symbol       TEXT NOT NULL,          -- on-chain x-suffix symbol, e.g. AAPLx
+  amount_in    TEXT NOT NULL,          -- minimal units, as string (u256-safe)
+  quoted_out   TEXT NOT NULL,
+  est_usd      REAL,
+  tx_json      TEXT NOT NULL,          -- the unsigned transaction we built
+  status       TEXT NOT NULL DEFAULT 'proposed',
+  tx_hash      TEXT,
+  result_json  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orders_addr ON orders(address, created_at);
 """
 
 # Columns added after the base schema shipped; applied idempotently.
@@ -417,6 +458,131 @@ class Database:
                 return None
             self._conn.execute("UPDATE oauth_codes SET used=1 WHERE code=?", (code,))
         return {"client_id": r[0], "redirect_uri": r[1], "code_challenge": r[2], "address": r[3]}
+
+    # ------------------------------------------------------------- passkeys
+
+    def put_passkey(self, *, credential_id: str, address: str,
+                    public_key: bytes, sign_count: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO passkeys (credential_id,address,public_key,sign_count,created_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(credential_id) DO UPDATE SET
+                       sign_count=excluded.sign_count""",
+                (credential_id, address.lower(), public_key, sign_count, time.time()),
+            )
+
+    def get_passkey(self, credential_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT credential_id,address,public_key,sign_count,last_used_at "
+            "FROM passkeys WHERE credential_id=?", (credential_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {"credential_id": r[0], "address": r[1], "public_key": bytes(r[2]),
+                "sign_count": r[3], "last_used_at": r[4]}
+
+    def passkeys_for_address(self, address: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT credential_id,sign_count,created_at,last_used_at "
+            "FROM passkeys WHERE address=? ORDER BY created_at", (address.lower(),),
+        ).fetchall()
+        return [{"credential_id": r[0], "sign_count": r[1],
+                 "created_at": r[2], "last_used_at": r[3]} for r in rows]
+
+    def touch_passkey(self, credential_id: str, *, sign_count: int, verified_at: float) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE passkeys SET sign_count=?, last_used_at=? WHERE credential_id=?",
+                (sign_count, verified_at, credential_id),
+            )
+
+    def last_passkey_verification(self, address: str) -> float | None:
+        r = self._conn.execute(
+            "SELECT MAX(last_used_at) FROM passkeys WHERE address=?", (address.lower(),),
+        ).fetchone()
+        return r[0] if r and r[0] is not None else None
+
+    def delete_passkeys_for_address(self, address: str) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute("DELETE FROM passkeys WHERE address=?", (address.lower(),))
+        return cur.rowcount
+
+    def put_passkey_challenge(self, *, challenge_id: str, address: str,
+                              purpose: str, expires_at: float) -> None:
+        with self._lock, self._conn:
+            # Opportunistically prune: challenges are worthless once expired.
+            self._conn.execute("DELETE FROM passkey_challenges WHERE expires_at < ?", (time.time(),))
+            self._conn.execute(
+                "INSERT INTO passkey_challenges VALUES (?,?,?,?,0)",
+                (challenge_id, address.lower(), purpose, expires_at),
+            )
+
+    def consume_passkey_challenge(self, challenge_id: str) -> dict[str, Any] | None:
+        """Single-use: returns the row and marks it used in one transaction."""
+        with self._lock, self._conn:
+            r = self._conn.execute(
+                "SELECT address,purpose,expires_at,used FROM passkey_challenges WHERE challenge_id=?",
+                (challenge_id,),
+            ).fetchone()
+            if not r or r[3]:
+                return None
+            self._conn.execute(
+                "UPDATE passkey_challenges SET used=1 WHERE challenge_id=?", (challenge_id,)
+            )
+        return {"address": r[0], "purpose": r[1], "expires_at": r[2]}
+
+    # --------------------------------------------------------------- orders
+
+    def create_order(self, *, address: str, side: str, symbol: str, amount_in: int,
+                     quoted_out: int, est_usd: float | None, tx: dict[str, Any],
+                     ttl_seconds: int) -> str:
+        order_id = "sarf_ord_" + uuid.uuid4().hex
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO orders (order_id,created_at,expires_at,address,side,symbol,
+                                       amount_in,quoted_out,est_usd,tx_json,status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,'proposed')""",
+                (order_id, now, now + ttl_seconds, address.lower(), side, symbol,
+                 str(amount_in), str(quoted_out), est_usd, json.dumps(tx)),
+            )
+        return order_id
+
+    def get_order(self, order_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT order_id,created_at,expires_at,address,side,symbol,amount_in,"
+            "quoted_out,est_usd,tx_json,status,tx_hash,result_json FROM orders WHERE order_id=?",
+            (order_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {
+            "order_id": r[0], "created_at": r[1], "expires_at": r[2], "address": r[3],
+            "side": r[4], "symbol": r[5], "amount_in": r[6], "quoted_out": r[7],
+            "est_usd": r[8], "tx": json.loads(r[9]), "status": r[10],
+            "tx_hash": r[11], "result": json.loads(r[12]) if r[12] else None,
+            "expired": r[2] < time.time(),
+        }
+
+    def mark_order(self, order_id: str, status: str, *, tx_hash: str | None = None,
+                   result: dict[str, Any] | None = None) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE orders SET status=?, tx_hash=COALESCE(?,tx_hash), "
+                "result_json=COALESCE(?,result_json) WHERE order_id=?",
+                (status, tx_hash, json.dumps(result) if result else None, order_id),
+            )
+
+    def orders_for_address(self, address: str, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT order_id,created_at,side,symbol,amount_in,quoted_out,est_usd,status,tx_hash "
+            "FROM orders WHERE address=? ORDER BY created_at DESC LIMIT ?",
+            (address.lower(), int(limit)),
+        ).fetchall()
+        return [{"order_id": r[0], "created_at": r[1], "side": r[2], "symbol": r[3],
+                 "amount_in": r[4], "quoted_out": r[5], "est_usd": r[6],
+                 "status": r[7], "tx_hash": r[8]} for r in rows]
 
     def set_stat(self, key: str, value: dict[str, Any]) -> None:
         with self._lock, self._conn:

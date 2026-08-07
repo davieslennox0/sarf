@@ -30,12 +30,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import auth, oauth
-from .api import build_api, tvl_refresher
 from .config import settings
 from .db import Database
-from .providers.current_finance import CurrentFinanceProvider
-from .registry import AssetRegistry
-from .txclient import txbuilder
+from .providers.xlayer_rwa import XLayerRwaProvider
+from .xlayer.api import build_xlayer_api
+from .xlayer.okx_dex import dex
+from .xlayer.registry import registry as load_registry
 
 # Host-header validation for the MCP transport (DNS-rebinding protection).
 # Loopback always allowed for dev; public hostnames come from
@@ -52,18 +52,22 @@ _transport_security = TransportSecuritySettings(
 mcp = FastMCP(
     "Sarf",
     instructions=(
-        "Non-custodial Sui lending assistant (Current Finance). All tools act "
-        "on the wallet-verified account bound to this connector's session "
-        "token — there is no way (and no need) to pass an address. If tools "
-        "return an authentication error, the session expired: the user "
-        "reconnects this connector (Claude will prompt to re-authenticate) "
-        "or signs in on the Sarf dashboard for a fresh ?key= token. "
-        "propose_* tools only BUILD transactions and return them for the user "
-        "to sign in their own wallet — always show the user the human_summary "
-        "and every risk_note before they decide, and share the sign_url so "
-        "they can review and sign on the Sarf signer page. Never imply an "
-        "action was executed until submit_signed_transaction (or the signer "
-        "page) returns a tx_digest."
+        "Sarf — non-custodial tokenized-stock (xStocks) assistant on X Layer "
+        "(EVM chain 196). All tools act on the wallet-verified account bound "
+        "to this connector's session token — there is no way (and no need) to "
+        "pass an address. If a tool returns an authentication error the "
+        "session expired: the user reconnects this connector (Claude will "
+        "prompt to re-authenticate) or signs in on the Sarf dashboard. "
+        "IMPORTANT — identifiers: on-chain symbols carry an x SUFFIX (AAPLx, "
+        "TSLAx, SPYx). OKX's centralized order book uses an X PREFIX (XAAPL) "
+        "for the same underlying; that form is NOT tradable here. Use "
+        "get_rwa_list to see what exists. place_order only BUILDS an unsigned "
+        "transaction — always show the user human_summary and every risk_note "
+        "before they decide, and give them sign_url so they can review and "
+        "sign in their own wallet. Never imply a trade happened until a "
+        "tx_hash exists; confirm it with get_settlement_status. Always relay "
+        "the synthetic-exposure disclosure: xStocks track a share price and "
+        "convey no ownership, dividends, or voting rights."
     ),
     stateless_http=True,
     json_response=True,
@@ -71,21 +75,26 @@ mcp = FastMCP(
 )
 
 db = Database(settings.db_path)
-registry = AssetRegistry(txbuilder)
-provider = CurrentFinanceProvider(db, txbuilder, registry)
+rwa_registry = load_registry()
+provider = XLayerRwaProvider(db, dex, rwa_registry)
 provider.register_tools(mcp)
-# Extension point: AftermathProvider(db, aftermath_txbuilder, registry)
-# .register_tools(mcp) once providers/aftermath.py exists.
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    tvl_task = asyncio.create_task(tvl_refresher(db, txbuilder))
+    # Refuse to serve a trading surface pointed at the wrong chain: a
+    # misconfigured RPC would otherwise price and build against some other
+    # network's contracts at the same addresses.
+    from .xlayer import rpc as _rpc
+
     try:
-        async with mcp.session_manager.run():
-            yield
-    finally:
-        tvl_task.cancel()
+        await _rpc.assert_chain()
+    except Exception as e:  # pragma: no cover - startup guard
+        logging.getLogger("sarf").error("X Layer RPC check failed: %s", e)
+        if settings.env == "production":
+            raise
+    async with mcp.session_manager.run():
+        yield
 
 
 app = FastAPI(title="Sarf", lifespan=lifespan)
@@ -164,11 +173,19 @@ async def guard(request: Request, call_next):
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True, "service": "sarf", "leverage_max": settings.leverage_max_multiplier}
+    return {
+        "ok": True,
+        "service": "sarf",
+        "chain": "X Layer",
+        "chain_id": 196,
+        "tradable_assets": len(rwa_registry.assets),
+        "quote_transport": dex.transport,
+        "passkey_stepup_usd": settings.passkey_stepup_usd,
+    }
 
 
-app.include_router(build_api(db, txbuilder, provider))
-app.include_router(oauth.build_oauth(db, txbuilder))
+app.include_router(build_xlayer_api(db, dex, rwa_registry))
+app.include_router(oauth.build_oauth(db))
 
 # Dashboard + signer static bundle (built by `npm run build` in frontend/).
 # Explicit routes/mounts win over the catch-all MCP mount below; /dashboard

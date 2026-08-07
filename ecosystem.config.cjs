@@ -26,17 +26,11 @@ function dotenv(file) {
 
 const env = dotenv(__dirname + '/.env');
 
+// X Layer is an ordinary EVM chain reached over JSON-RPC, and the DEX
+// aggregator is an HTTP API — so there is no Node sidecar any more. The Sui
+// build needed one only to host the Current Finance SDK.
 module.exports = {
   apps: [
-    {
-      name: 'sarf-txbuilder',
-      cwd: __dirname + '/txbuilder',
-      script: 'npx',
-      args: 'tsx src/index.ts', // vendor SDK ships Bundler-style ESM; tsx is the supported runtime (see txbuilder/tsconfig.json)
-      env,
-      max_restarts: 10,
-      restart_delay: 3000,
-    },
     {
       name: 'sarf-server',
       cwd: __dirname + '/server',

@@ -42,11 +42,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from . import auth
-from .api import verify_wallet_challenge
+from .xlayer.api import verify_wallet_challenge
 from .config import settings
 from .db import Database
-from .txclient import TxBuilder
-from .validation import validate_address
+from .xlayer.evm import validate_evm_address as validate_address
 
 AUTH_CODE_TTL = 600  # seconds a mint-authorization code stays exchangeable
 
@@ -112,7 +111,7 @@ def _token_error(error: str, desc: str, status: int = 400) -> JSONResponse:
     )
 
 
-def build_oauth(db: Database, tx: TxBuilder) -> APIRouter:
+def build_oauth(db: Database) -> APIRouter:
     r = APIRouter()
 
     # --------------------------------------------------------- discovery
@@ -185,7 +184,7 @@ def build_oauth(db: Database, tx: TxBuilder) -> APIRouter:
         if not client or redirect_uri not in client["redirect_uris"] or not code_challenge:
             raise HTTPException(400, "unknown client_id, redirect_uri, or missing PKCE challenge")
         # The gate: same single-use wallet-signature challenge as sign-in.
-        await verify_wallet_challenge(tx, addr, body.get("signature"))
+        verify_wallet_challenge(addr, body.get("signature"))
         db.upsert_user(addr, "wallet")
         code = secrets.token_urlsafe(32)
         db.put_oauth_code(code, client["client_id"], redirect_uri, code_challenge,

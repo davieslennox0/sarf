@@ -109,6 +109,49 @@ class Settings:
         )
     )
 
+    # --- X Layer RWA trading (xStocks) --------------------------------------
+    # Orders are quotes against live DEX pool state; they go stale faster than
+    # a lending proposal because an AMM price moves with every fill. 5 minutes
+    # covers review-and-sign without letting a stale price reach the chain.
+    order_ttl_seconds: int = field(default_factory=lambda: int(_env("ORDER_TTL_SECONDS", "300")))
+
+    # Per-order USD ceiling, same fail-closed rule as MAX_PROPOSAL_USD.
+    # Lower than the lending cap on purpose: xStocks pools on X Layer are
+    # ~$200k-750k deep, so a large order is a price-impact event, not just size.
+    max_order_usd: float = field(default_factory=lambda: float(_env("MAX_ORDER_USD", "25000")))
+
+    # Slippage tolerance handed to the aggregator, in percent. Hard-capped in
+    # validation so a misconfigured env cannot authorize an unbounded fill.
+    default_slippage_pct: float = field(
+        default_factory=lambda: float(_env("DEFAULT_SLIPPAGE_PCT", "1.0"))
+    )
+
+    # Refuse to build an order whose quoted price impact exceeds this. Thin
+    # pools make a "market buy" quietly become a donation to arbitrageurs.
+    max_price_impact_pct: float = field(
+        default_factory=lambda: float(_env("MAX_PRICE_IMPACT_PCT", "5.0"))
+    )
+
+    # Optional narrowing of the tradable universe ("AAPLx,SPYx"). Empty = all
+    # 40 assets in the on-chain-verified registry.
+    rwa_allowlist: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            s.strip().upper() for s in _env("RWA_ALLOWLIST", "").split(",") if s.strip()
+        )
+    )
+
+    # --- Passkey (WebAuthn) — see passkey.py for the threat model ------------
+    # Orders above this USD value need a fresh passkey assertion. 0 disables
+    # step-up entirely.
+    passkey_stepup_usd: float = field(
+        default_factory=lambda: float(_env("PASSKEY_STEPUP_USD", "1000"))
+    )
+    # When true, an account with no registered passkey cannot place orders at
+    # all (rather than step-up simply not applying).
+    passkey_required: bool = field(
+        default_factory=lambda: _env("PASSKEY_REQUIRED", "false").lower() in ("1", "true", "yes")
+    )
+
     # Simple per-client rate limit for the MCP endpoint.
     rate_limit_per_minute: int = field(default_factory=lambda: int(_env("RATE_LIMIT_PER_MINUTE", "60")))
 
