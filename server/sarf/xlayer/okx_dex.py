@@ -229,6 +229,15 @@ class OkxDexClient:
             fetched_at=time.time(),
         )
 
+    def supports_fee(self) -> bool:
+        """Only the HTTP transport can attach referral fee parameters.
+
+        The CLI does not expose them, so a fee-configured server running on the
+        CLI transport trades WITHOUT a fee rather than pretending to collect
+        one. Callers must surface that instead of assuming the fee applied.
+        """
+        return self.transport == "http"
+
     async def build_swap(
         self,
         *,
@@ -237,23 +246,43 @@ class OkxDexClient:
         amount_min_units: int,
         user_address: str,
         slippage_pct: float,
-    ) -> tuple[UnsignedTx, Quote]:
+        fee_percent: float | None = None,
+        fee_recipient: str | None = None,
+        fee_on: str = "from",
+    ) -> tuple[UnsignedTx, Quote, bool]:
         """Build the unsigned swap transaction for `user_address` to sign.
 
         `user_address` is the session's verified wallet — it comes from the
         auth layer, never from a tool argument, so the built transaction can
         only ever spend from the account that asked for it.
+
+        Returns (tx, quote, fee_applied). `fee_applied` is False whenever the
+        transport could not attach the fee, so the caller can tell the user the
+        truth rather than inferring it from config.
         """
         t = self.transport
         if t == "none":
             raise DexError("no quote backend configured; cannot build a transaction")
+
+        want_fee = bool(fee_percent and fee_recipient and fee_percent > 0)
+        fee_applied = False
         if t == "http":
-            raw = await self._http("/api/v5/dex/aggregator/swap", {
+            params: dict[str, Any] = {
                 "chainIndex": CHAIN_ID, "chainId": CHAIN_ID,
                 "fromTokenAddress": from_address, "toTokenAddress": to_address,
                 "amount": amount_min_units, "userWalletAddress": user_address,
                 "slippage": slippage_pct / 100.0,
-            })
+            }
+            if want_fee:
+                # OKX allows commission on the from-token OR the to-token, not
+                # both. We always pick whichever leg is the stablecoin so the
+                # fee is denominated in dollars, never in a volatile equity.
+                params["feePercent"] = f"{fee_percent:.6f}".rstrip("0").rstrip(".")
+                key = ("fromTokenReferrerWalletAddress" if fee_on == "from"
+                       else "toTokenReferrerWalletAddress")
+                params[key] = fee_recipient
+                fee_applied = True
+            raw = await self._http("/api/v5/dex/aggregator/swap", params)
         else:
             raw = await self._cli([
                 "swap", "swap", "--chain", str(CHAIN_ID),
@@ -298,7 +327,7 @@ class OkxDexClient:
             estimated_gas=unsigned.gas or None,
             fetched_at=time.time(),
         )
-        return unsigned, quote
+        return unsigned, quote, fee_applied
 
 
 dex = OkxDexClient()

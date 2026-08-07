@@ -140,6 +140,29 @@ class Settings:
         )
     )
 
+    # --- Platform fee -------------------------------------------------------
+    # Flat fee per swap, charged in the STABLECOIN leg of the trade (USDT/USDC/
+    # USDG), so the user is never charged in a volatile asset. The aggregator
+    # collects it natively via feePercent + a referrer address, inside the same
+    # transaction the user signs — there is no second transfer and no custody.
+    #
+    # It is expressed in dollars but applied as a percentage, so it needs a
+    # floor on order size: $0.10 on a $2 order is 5%, which would be predatory.
+    # Orders below min_order_usd are refused rather than silently overcharged.
+    platform_fee_usd: float = field(
+        default_factory=lambda: float(_env("PLATFORM_FEE_USD", "0.10"))
+    )
+    # Where the fee lands. No address = no fee is charged at all (fails to
+    # ZERO fee, never to an unowned address).
+    platform_fee_address: str = field(
+        default_factory=lambda: _env("PLATFORM_FEE_ADDRESS", "").strip().lower()
+    )
+    min_order_usd: float = field(default_factory=lambda: float(_env("MIN_ORDER_USD", "20")))
+
+    # OKX caps referral commission at 3%; keep our own ceiling well under it so
+    # a mis-set fee/tiny order can never quietly take a big bite.
+    max_fee_percent: float = field(default_factory=lambda: float(_env("MAX_FEE_PERCENT", "1.0")))
+
     # --- Passkey (WebAuthn) — see passkey.py for the threat model ------------
     # Orders above this USD value need a fresh passkey assertion. 0 disables
     # step-up entirely.

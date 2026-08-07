@@ -93,6 +93,35 @@ class XLayerRwaProvider:
             return None
         return float(Decimal(q.to_amount) / (Decimal(10) ** self.reg.quote.decimals))
 
+    @staticmethod
+    def fee_plan(stable_leg_usd: float | None) -> dict[str, Any]:
+        """Turn the flat dollar fee into a percentage of the stablecoin leg.
+
+        The aggregator charges a percentage, so a fixed $0.10 is only sane
+        above a minimum order size — on a $2 trade it would be 5%. Below
+        min_order_usd we refuse the order rather than quietly overcharge.
+
+        Fails to ZERO fee if no recipient address is configured: an unset
+        address must never mean "send the fee somewhere else".
+        """
+        fee_usd = settings.platform_fee_usd
+        recipient = settings.platform_fee_address
+        if fee_usd <= 0 or not recipient:
+            return {"charge": False, "usd": 0.0, "percent": 0.0, "recipient": None}
+        if stable_leg_usd is None or stable_leg_usd <= 0:
+            # Unpriceable leg — we cannot compute a percentage honestly.
+            return {"charge": False, "usd": 0.0, "percent": 0.0, "recipient": None,
+                    "reason": "order could not be priced"}
+        pct = fee_usd / stable_leg_usd * 100.0
+        capped = min(pct, settings.max_fee_percent)
+        return {
+            "charge": True,
+            "usd": round(capped / 100.0 * stable_leg_usd, 4),
+            "percent": capped,
+            "recipient": recipient,
+            "capped": capped < pct,
+        }
+
     def _validate_slippage(self, value: object) -> float:
         if value is None:
             return settings.default_slippage_pct
@@ -108,8 +137,15 @@ class XLayerRwaProvider:
         return v
 
     def _risk_notes(self, *, asset: RwaAsset, side: str, est_usd: float | None,
-                    quote: Quote, slippage: float, stepup: passkey.StepUpDecision) -> list[str]:
+                    quote: Quote, slippage: float, stepup: passkey.StepUpDecision,
+                    fee: dict[str, Any] | None = None) -> list[str]:
         notes = [SYNTHETIC_DISCLOSURE]
+        if fee and fee.get("charged"):
+            notes.append(
+                f"Sarf platform fee: ${fee['usd']:.2f} in {fee['denominated_in']} "
+                f"({fee['percent_of_order']:.3f}% of this order), taken inside the "
+                "same transaction. Network gas is separate and paid in OKB."
+            )
         if quote.price_impact_pct is not None and quote.price_impact_pct >= 1.0:
             notes.append(
                 f"Price impact ~{quote.price_impact_pct:.2f}% — this order is large "
@@ -320,6 +356,16 @@ class XLayerRwaProvider:
                     "X Layer is too thin for an order this size. Try a smaller amount."
                 )
 
+            # A flat fee is only fair above a floor: $0.10 on a $2 order is 5%.
+            if (est_usd is not None and settings.platform_fee_usd > 0
+                    and settings.platform_fee_address and est_usd < settings.min_order_usd):
+                raise ValueError(
+                    f"minimum order is ${settings.min_order_usd:,.2f} — the flat "
+                    f"${settings.platform_fee_usd:.2f} platform fee would be "
+                    f"{settings.platform_fee_usd / est_usd * 100:.1f}% of a "
+                    f"{_usd(est_usd)} order, which is not a fair rate."
+                )
+
             stepup = passkey.check_stepup(db, address, est_usd)
             if stepup.blocked:
                 raise ValueError(
@@ -327,11 +373,18 @@ class XLayerRwaProvider:
                     f"Open {settings.public_url}/dashboard/security to verify, then ask again."
                 )
 
+            # Fee always rides on the stablecoin leg so the user is never
+            # charged in a volatile equity: on a buy that is the USDT they
+            # spend, on a sell the USDT they receive.
+            fee = self.fee_plan(est_usd)
             try:
-                unsigned, quote = await dex.build_swap(
+                unsigned, quote, fee_applied = await dex.build_swap(
                     from_address=sell_addr, to_address=buy_addr,
                     amount_min_units=amount_min_units,
                     user_address=address, slippage_pct=slippage,
+                    fee_percent=fee["percent"] if fee["charge"] else None,
+                    fee_recipient=fee["recipient"] if fee["charge"] else None,
+                    fee_on="from" if side == "buy" else "to",
                 )
             except DexError as e:
                 raise ValueError(f"could not build this order: {e}")
@@ -363,6 +416,19 @@ class XLayerRwaProvider:
                     _fmt_units(unsigned.min_receive, out_dec) if unsigned.min_receive else None
                 ),
                 "estimated_usd": round(est_usd, 2) if est_usd is not None else None,
+                "platform_fee": {
+                    # Report what was ACTUALLY attached, not what was configured:
+                    # the CLI transport cannot carry fee parameters, and telling
+                    # the user they paid a fee they did not pay is a lie either way.
+                    "charged": bool(fee["charge"] and fee_applied),
+                    "usd": fee["usd"] if (fee["charge"] and fee_applied) else 0.0,
+                    "percent_of_order": round(fee["percent"], 4) if fee_applied else 0.0,
+                    "denominated_in": reg.quote.symbol,
+                    "note": (
+                        None if (fee["charge"] and fee_applied)
+                        else "no platform fee applied to this order"
+                    ),
+                },
                 "price_impact_percent": impact,
                 "slippage_percent": slippage,
                 "route": quote.route or None,
@@ -370,6 +436,9 @@ class XLayerRwaProvider:
                 "risk_notes": self._risk_notes(
                     asset=asset, side=side, est_usd=est_usd,
                     quote=quote, slippage=slippage, stepup=stepup,
+                    fee={**fee, "charged": bool(fee["charge"] and fee_applied),
+                         "denominated_in": reg.quote.symbol,
+                         "percent_of_order": fee["percent"]},
                 ),
                 "unsigned_transaction": unsigned.as_dict(),
                 "expires_at": int(time.time()) + settings.order_ttl_seconds,

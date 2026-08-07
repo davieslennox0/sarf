@@ -208,3 +208,39 @@ def test_order_cap_is_tighter_than_the_old_lending_cap():
     s = Settings()
     assert 0 < s.max_order_usd <= 100_000
     assert s.max_price_impact_pct > 0
+
+
+# ----------------------------------------------------------- platform fee
+
+def test_flat_fee_becomes_the_right_percentage(monkeypatch):
+    import sarf.providers.xlayer_rwa as m
+    monkeypatch.setenv("PLATFORM_FEE_ADDRESS", ADDR_A)
+    monkeypatch.setattr(m, "settings", Settings())
+    for order_usd in (20.0, 100.0, 1000.0, 25_000.0):
+        f = m.XLayerRwaProvider.fee_plan(order_usd)
+        assert f["charge"] and abs(f["usd"] - 0.10) < 1e-6, (order_usd, f)
+
+
+def test_fee_is_zero_without_a_recipient_address(monkeypatch):
+    # An unset address must mean NO fee, never a fee sent somewhere unowned.
+    import sarf.providers.xlayer_rwa as m
+    monkeypatch.setenv("PLATFORM_FEE_ADDRESS", "")
+    monkeypatch.setattr(m, "settings", Settings())
+    assert m.XLayerRwaProvider.fee_plan(100.0)["charge"] is False
+
+
+def test_fee_not_charged_when_order_cannot_be_priced(monkeypatch):
+    import sarf.providers.xlayer_rwa as m
+    monkeypatch.setenv("PLATFORM_FEE_ADDRESS", ADDR_A)
+    monkeypatch.setattr(m, "settings", Settings())
+    assert m.XLayerRwaProvider.fee_plan(None)["charge"] is False
+
+
+def test_fee_percentage_is_capped(monkeypatch):
+    # A tiny order would otherwise imply an absurd percentage.
+    import sarf.providers.xlayer_rwa as m
+    monkeypatch.setenv("PLATFORM_FEE_ADDRESS", ADDR_A)
+    monkeypatch.setenv("MAX_FEE_PERCENT", "1.0")
+    monkeypatch.setattr(m, "settings", Settings())
+    f = m.XLayerRwaProvider.fee_plan(1.0)
+    assert f["capped"] and f["percent"] <= 1.0 and f["usd"] < 0.10
