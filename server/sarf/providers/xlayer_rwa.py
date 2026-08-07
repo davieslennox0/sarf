@@ -122,6 +122,59 @@ class XLayerRwaProvider:
             "capped": capped < pct,
         }
 
+    async def portfolio(self, address: str) -> dict[str, Any]:
+        """Holdings for `address`, read straight from X Layer state.
+
+        Shared by the MCP tool and the dashboard so the numbers a user
+        sees in chat and on the site can never disagree.
+        """
+        reg, db = self.reg, self.db
+        db.upsert_user(address, "mcp")
+        allow = settings.rwa_allowlist
+        assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
+
+        balances = await rpc.erc20_balances([a.address for a in assets], address)
+        usdt_raw = await rpc.erc20_balance(reg.quote.address, address)
+        okb_raw = await rpc.native_balance(address)
+
+        positions: list[dict[str, Any]] = []
+        total_usd = 0.0
+        unpriced: list[str] = []
+        for a in assets:
+            raw = balances.get(a.address, 0)
+            if raw <= 0:
+                continue
+            price = await self._unit_price_usd(a)
+            qty = float(Decimal(raw) / (Decimal(10) ** a.decimals))
+            value = qty * price if price is not None else None
+            if value is None:
+                unpriced.append(a.symbol)
+            else:
+                total_usd += value
+            positions.append({
+                "symbol": a.symbol, "name": a.name,
+                "quantity": _fmt_units(raw, a.decimals),
+                "price_usdt": round(price, 6) if price is not None else None,
+                "value_usd": round(value, 2) if value is not None else None,
+                "address": a.address, "explorer_url": a.explorer_url,
+            })
+
+        return {
+            "address": address,
+            "chain": {"name": "X Layer", "chain_id": CHAIN_ID},
+            "positions": positions,
+            "usdt_balance": _fmt_units(usdt_raw, reg.quote.decimals),
+            "gas_balance_okb": _fmt_units(okb_raw, 18),
+            "positions_value_usd": round(total_usd, 2),
+            # Stated explicitly so a partial pricing outage can never be
+            # mistaken for "these positions are worth nothing".
+            "unpriced_positions": unpriced,
+            "total_value_usd": round(total_usd + float(
+                Decimal(usdt_raw) / (Decimal(10) ** reg.quote.decimals)
+            ), 2) if not unpriced else None,
+            "disclosure": SYNTHETIC_DISCLOSURE,
+        }
+
     def _validate_slippage(self, value: object) -> float:
         if value is None:
             return settings.default_slippage_pct
@@ -241,52 +294,7 @@ class XLayerRwaProvider:
             Read-only, read straight from chain state. Balances are the
             authenticated session's wallet — no address argument exists.
             """
-            address = require_address()
-            db.upsert_user(address, "mcp")
-            allow = settings.rwa_allowlist
-            assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
-
-            balances = await rpc.erc20_balances([a.address for a in assets], address)
-            usdt_raw = await rpc.erc20_balance(reg.quote.address, address)
-            okb_raw = await rpc.native_balance(address)
-
-            positions: list[dict[str, Any]] = []
-            total_usd = 0.0
-            unpriced: list[str] = []
-            for a in assets:
-                raw = balances.get(a.address, 0)
-                if raw <= 0:
-                    continue
-                price = await self._unit_price_usd(a)
-                qty = float(Decimal(raw) / (Decimal(10) ** a.decimals))
-                value = qty * price if price is not None else None
-                if value is None:
-                    unpriced.append(a.symbol)
-                else:
-                    total_usd += value
-                positions.append({
-                    "symbol": a.symbol, "name": a.name,
-                    "quantity": _fmt_units(raw, a.decimals),
-                    "price_usdt": round(price, 6) if price is not None else None,
-                    "value_usd": round(value, 2) if value is not None else None,
-                    "address": a.address, "explorer_url": a.explorer_url,
-                })
-
-            return {
-                "address": address,
-                "chain": {"name": "X Layer", "chain_id": CHAIN_ID},
-                "positions": positions,
-                "usdt_balance": _fmt_units(usdt_raw, reg.quote.decimals),
-                "gas_balance_okb": _fmt_units(okb_raw, 18),
-                "positions_value_usd": round(total_usd, 2),
-                # Stated explicitly so a partial pricing outage can never be
-                # mistaken for "these positions are worth nothing".
-                "unpriced_positions": unpriced,
-                "total_value_usd": round(total_usd + float(
-                    Decimal(usdt_raw) / (Decimal(10) ** reg.quote.decimals)
-                ), 2) if not unpriced else None,
-                "disclosure": SYNTHETIC_DISCLOSURE,
-            }
+            return await self.portfolio(require_address())
 
         @mcp.tool()
         async def place_order(

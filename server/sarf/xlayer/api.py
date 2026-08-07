@@ -79,7 +79,8 @@ def verify_wallet_challenge(addr: str, signature: Any) -> None:
     _challenges.pop(addr, None)  # single use
 
 
-def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry) -> APIRouter:
+def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
+                     provider=None) -> APIRouter:
     r = APIRouter(prefix="/api")
 
     def _session_addr(authorization: str | None) -> str:
@@ -244,6 +245,15 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry) -> A
             "block_number": st.block_number,
             "explorer_url": EXPLORER_TX.format(o["tx_hash"]),
         }
+
+    @r.get("/me/portfolio")
+    async def my_portfolio(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        # Same provider method the MCP get_portfolio tool uses, so the holdings
+        # shown in chat and on the dashboard cannot disagree.
+        addr = _session_addr(authorization)
+        if provider is None:
+            raise HTTPException(503, "portfolio view unavailable")
+        return await provider.portfolio(addr)
 
     @r.get("/me/orders")
     async def my_orders(authorization: str | None = Header(default=None)) -> dict[str, Any]:

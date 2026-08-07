@@ -184,7 +184,7 @@ async def healthz():
     }
 
 
-app.include_router(build_xlayer_api(db, dex, rwa_registry))
+app.include_router(build_xlayer_api(db, dex, rwa_registry, provider))
 app.include_router(oauth.build_oauth(db))
 
 # Dashboard + signer static bundle (built by `npm run build` in frontend/).

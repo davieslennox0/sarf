@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, Route, Routes, useLocation } from 'react-router-dom';
 import Home from './pages/Home.jsx';
 import Activity from './pages/Activity.jsx';
+import Portfolio from './pages/Portfolio.jsx';
 import Security from './pages/Security.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
@@ -86,11 +87,12 @@ export default function App() {
     <div className="app">
       <nav>
         <Link className="brand" to="/">
-          Sarf <span>X Layer RWA</span>
+          Sarf <span>/</span> X Layer RWA
         </Link>
         <div className="links">
           <Link className={pathname === '/' ? 'on' : ''} to="/">Markets</Link>
-          <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">My activity</Link>
+          <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Holdings</Link>
+          <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
           <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
         </div>
       </nav>
@@ -98,6 +100,7 @@ export default function App() {
       <main>
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/security" element={<Security />} />
           <Route path="/sign" element={<Sign />} />

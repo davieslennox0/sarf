@@ -69,6 +69,7 @@ export const api = {
       body: JSON.stringify({ tx_hash: txHash }),
     }),
   myOrders: () => req('/api/me/orders'),
+  portfolio: () => req('/api/me/portfolio'),
 
   passkeyStatus: () => req('/api/passkey/status'),
   passkeyRegisterOptions: () => req('/api/passkey/register/options', { method: 'POST' }),
