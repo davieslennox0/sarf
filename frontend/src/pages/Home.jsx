@@ -154,13 +154,11 @@ function usePrices(symbols) {
 export default function Home() {
   const [assets, setAssets] = useState([]);
   const [featured, setFeatured] = useState('SPYx');
-  const [stats, setStats] = useState(null);
   const [copied, setCopied] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     api.list().then((d) => setAssets(d.assets || [])).catch(() => {});
-    api.stats().then(setStats).catch(() => {});
   }, []);
 
   const visible = useMemo(() => {
@@ -198,8 +196,6 @@ export default function Home() {
         <div className="stats">
           <div><b>{assets.length || '—'}</b><span>assets</span></div>
           <div><b>X Layer</b><span>chain 196</span></div>
-          <div><b>$0.10</b><span>flat fee / swap</span></div>
-          <div><b>{stats?.total_users ?? '—'}</b><span>wallets</span></div>
         </div>
       </section>
 
@@ -287,8 +283,6 @@ export default function Home() {
         <p className="fine">
           A flat $0.10 platform fee is charged per swap in the stablecoin leg, inside
           the same transaction you sign. Network gas is separate and paid in OKB.
-          Built for the BuildX AI Season hackathon on{' '}
-          <a href="https://x.com/XLayerOfficial" target="_blank" rel="noreferrer">@XLayerOfficial</a>.
         </p>
       </footer>
     </>
