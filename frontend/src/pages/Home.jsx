@@ -4,6 +4,11 @@ import { EXPLORER } from '../wallet.js';
 
 const MCP_URL = 'https://sarf-mcp.managerx.xyz/mcp';
 
+// The short list shown by default. Ordered by on-chain pool depth rather than
+// alphabetically — the registry sorts A-Z, which would open the page on
+// ADBEx/ASMLx and put the deepest, most recognisable markets out of sight.
+const SHORTLIST = ['SPYx', 'QQQx', 'NVDAx', 'AAPLx', 'TSLAx'];
+
 /** One flap. Animates only when its own character changes. */
 function Flap({ ch }) {
   const [flipping, setFlipping] = useState(false);
@@ -118,13 +123,32 @@ export default function Home() {
   const [featured, setFeatured] = useState('SPYx');
   const [stats, setStats] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     api.list().then((d) => setAssets(d.assets || [])).catch(() => {});
     api.stats().then(setStats).catch(() => {});
   }, []);
 
-  const symbols = useMemo(() => assets.map((a) => a.symbol), [assets]);
+  const visible = useMemo(() => {
+    if (showAll) return assets;
+    const rank = (s) => {
+      const i = SHORTLIST.indexOf(s);
+      return i === -1 ? SHORTLIST.length : i;
+    };
+    const top = [...assets].sort((a, b) => rank(a.symbol) - rank(b.symbol)).slice(0, 5);
+    // Keep whatever is on the board in the list, so collapsing never hides the
+    // row the user just selected.
+    if (!top.some((a) => a.symbol === featured)) {
+      const sel = assets.find((a) => a.symbol === featured);
+      if (sel) return [...top.slice(0, 4), sel];
+    }
+    return top;
+  }, [assets, showAll, featured]);
+
+  // Only price what is on screen: each row is its own aggregator call, so
+  // fetching all 40 up front is both slow and a rate-limit risk.
+  const symbols = useMemo(() => visible.map((a) => a.symbol), [visible]);
   const prices = usePrices(symbols);
   const featuredAsset = assets.find((a) => a.symbol === featured);
 
@@ -149,7 +173,7 @@ export default function Home() {
 
       <h2>Markets</h2>
       <div className="ledger">
-        {assets.map((a) => {
+        {visible.map((a) => {
           const p = prices[a.symbol];
           return (
             <button
@@ -171,6 +195,14 @@ export default function Home() {
           );
         })}
       </div>
+      {assets.length > visible.length || showAll ? (
+        <div className="cta">
+          <button onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Show fewer' : `List all ${assets.length} markets`}
+          </button>
+        </div>
+      ) : null}
+
       <p className="muted small" style={{ marginTop: 10 }}>
         Trade using the on-chain symbol — the x-suffix form (AAPLx). The chip shows
         OKX's centralized order-book ticker for the same underlying; that is a
