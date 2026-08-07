@@ -393,16 +393,45 @@ class XLayerRwaProvider:
             out_sym = asset.symbol if side == "buy" else reg.quote.symbol
             in_sym = reg.quote.symbol if side == "buy" else asset.symbol
 
+            summary = (
+                f"{side.upper()} {_fmt_units(quote.to_amount, out_dec)} {out_sym} "
+                f"for {_fmt_units(amount_min_units, sell_asset.decimals)} {in_sym} "
+                f"on X Layer (~{_usd(est_usd)})"
+            )
+            fee_view = {
+                "charged": bool(fee["charge"] and fee_applied),
+                "usd": fee["usd"] if (fee["charge"] and fee_applied) else 0.0,
+                "percent_of_order": round(fee["percent"], 4) if fee_applied else 0.0,
+                "denominated_in": reg.quote.symbol,
+                "note": (None if (fee["charge"] and fee_applied)
+                         else "no platform fee applied to this order"),
+            }
+            risk_notes = self._risk_notes(
+                asset=asset, side=side, est_usd=est_usd,
+                quote=quote, slippage=slippage, stepup=stepup, fee=fee_view,
+            )
+            # Persist everything the signer page must re-display. It is the last
+            # review surface before the user signs, so it has to show exactly
+            # what the assistant showed them.
             order_id = db.create_order(
                 address=address, side=side, symbol=asset.symbol,
                 amount_in=amount_min_units, quoted_out=quote.to_amount,
                 est_usd=est_usd, tx=unsigned.as_dict(),
                 ttl_seconds=settings.order_ttl_seconds,
-            )
-            summary = (
-                f"{side.upper()} {_fmt_units(quote.to_amount, out_dec)} {out_sym} "
-                f"for {_fmt_units(amount_min_units, sell_asset.decimals)} {in_sym} "
-                f"on X Layer (~{_usd(est_usd)})"
+                display={
+                    "name": asset.name,
+                    "human_summary": summary,
+                    "risk_notes": risk_notes,
+                    "platform_fee": fee_view,
+                    "spending": f"{_fmt_units(amount_min_units, sell_asset.decimals)} {in_sym}",
+                    "receiving_estimated": f"{_fmt_units(quote.to_amount, out_dec)} {out_sym}",
+                    "minimum_received": (
+                        _fmt_units(unsigned.min_receive, out_dec) if unsigned.min_receive else None
+                    ),
+                    "price_impact_percent": impact,
+                    "slippage_percent": slippage,
+                    "disclosure": SYNTHETIC_DISCLOSURE,
+                },
             )
             return {
                 "order_id": order_id,
@@ -416,30 +445,17 @@ class XLayerRwaProvider:
                     _fmt_units(unsigned.min_receive, out_dec) if unsigned.min_receive else None
                 ),
                 "estimated_usd": round(est_usd, 2) if est_usd is not None else None,
-                "platform_fee": {
-                    # Report what was ACTUALLY attached, not what was configured:
-                    # the CLI transport cannot carry fee parameters, and telling
-                    # the user they paid a fee they did not pay is a lie either way.
-                    "charged": bool(fee["charge"] and fee_applied),
-                    "usd": fee["usd"] if (fee["charge"] and fee_applied) else 0.0,
-                    "percent_of_order": round(fee["percent"], 4) if fee_applied else 0.0,
-                    "denominated_in": reg.quote.symbol,
-                    "note": (
-                        None if (fee["charge"] and fee_applied)
-                        else "no platform fee applied to this order"
-                    ),
-                },
+                # Reports what was ACTUALLY attached, not what was configured:
+                # the CLI transport cannot carry fee parameters, and telling the
+                # user they paid a fee they did not pay is a lie either way.
+                "platform_fee": fee_view,
                 "price_impact_percent": impact,
                 "slippage_percent": slippage,
                 "route": quote.route or None,
                 "human_summary": summary,
-                "risk_notes": self._risk_notes(
-                    asset=asset, side=side, est_usd=est_usd,
-                    quote=quote, slippage=slippage, stepup=stepup,
-                    fee={**fee, "charged": bool(fee["charge"] and fee_applied),
-                         "denominated_in": reg.quote.symbol,
-                         "percent_of_order": fee["percent"]},
-                ),
+                # Same list persisted with the order, so the model and the
+                # signer page can never drift apart on what the risks are.
+                "risk_notes": risk_notes,
                 "unsigned_transaction": unsigned.as_dict(),
                 "expires_at": int(time.time()) + settings.order_ttl_seconds,
                 "sign_url": (

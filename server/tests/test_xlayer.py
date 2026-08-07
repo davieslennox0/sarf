@@ -244,3 +244,44 @@ def test_fee_percentage_is_capped(monkeypatch):
     monkeypatch.setattr(m, "settings", Settings())
     f = m.XLayerRwaProvider.fee_plan(1.0)
     assert f["capped"] and f["percent"] <= 1.0 and f["usd"] < 0.10
+
+
+def test_signer_page_gets_fee_and_risk_notes(db):
+    # Regression: the signer is the LAST review surface before funds move.
+    # It renders these fields, so they must survive the round trip through
+    # the database -- otherwise it silently shows blanks where the fee and
+    # the risk notes should be.
+    oid = db.create_order(
+        address=ADDR_A, side="buy", symbol="AAPLx", amount_in=100_000_000,
+        quoted_out=319_500_000_000_000_000, est_usd=100.0,
+        tx={"to": ADDR_B, "data": "0xdead"}, ttl_seconds=300,
+        display={
+            "name": "Apple xStock",
+            "human_summary": "BUY 0.319 AAPLx for 100 USDT",
+            "risk_notes": ["synthetic exposure", "platform fee $0.10"],
+            "platform_fee": {"charged": True, "usd": 0.10, "denominated_in": "USDT"},
+            "spending": "100 USDT",
+            "receiving_estimated": "0.3195 AAPLx",
+            "minimum_received": "0.3163 AAPLx",
+        },
+    )
+    o = db.get_order(oid)
+    assert o["platform_fee"]["charged"] is True
+    assert o["platform_fee"]["usd"] == 0.10
+    assert len(o["risk_notes"]) == 2
+    assert o["spending"] == "100 USDT" and o["minimum_received"] == "0.3163 AAPLx"
+    assert o["human_summary"].startswith("BUY")
+
+
+def test_display_never_overrides_authoritative_columns(db):
+    # A display blob is cosmetic; it must not be able to rewrite the address,
+    # amount or status the rest of the system trusts.
+    oid = db.create_order(
+        address=ADDR_A, side="buy", symbol="AAPLx", amount_in=5, quoted_out=6,
+        est_usd=100.0, tx={}, ttl_seconds=300,
+        display={"address": ADDR_B, "status": "confirmed", "est_usd": 999999.0},
+    )
+    o = db.get_order(oid)
+    assert o["address"] == ADDR_A
+    assert o["status"] == "proposed"
+    assert o["est_usd"] == 100.0

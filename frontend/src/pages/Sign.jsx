@@ -112,12 +112,18 @@ export default function Sign() {
           <div><span>Minimum received</span><b>{order.minimum_received}</b></div>
         )}
         <div><span>Order value</span><b>{order.est_usd != null ? `$${Number(order.est_usd).toFixed(2)}` : 'n/a'}</b></div>
-        {fee && (
-          <div>
-            <span>Platform fee</span>
-            <b>{fee.charged ? `$${Number(fee.usd).toFixed(2)} ${fee.denominated_in}` : 'none'}</b>
-          </div>
-        )}
+        {/* Always rendered, including when nothing is charged: a missing fee
+            row reads as "there is no fee", which is a claim we should make
+            explicitly rather than by omission. */}
+        <div>
+          <span>Platform fee</span>
+          <b>
+            {fee?.charged
+              ? `$${Number(fee.usd).toFixed(2)} ${fee.denominated_in || ''}`.trim()
+              : 'none'}
+          </b>
+        </div>
+        <div><span>Network gas</span><b>paid by you in OKB</b></div>
         <div><span>Validity</span><Countdown until={order.expires_at} /></div>
       </div>
 

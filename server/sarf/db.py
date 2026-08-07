@@ -140,6 +140,12 @@ _MIGRATIONS = [
     # same session_expired behavior regardless.
     "ALTER TABLE sessions ADD COLUMN revoked_at REAL",
     "ALTER TABLE sessions ADD COLUMN revocation_reason TEXT",
+    # Human-readable order detail (summary, risk notes, fee, formatted
+    # amounts). The signer page is the LAST review surface before the user
+    # signs, so it has to show exactly what the assistant showed — deriving a
+    # shorter version of it from raw columns is how a signer quietly stops
+    # displaying the fee and the risk notes.
+    "ALTER TABLE orders ADD COLUMN display_json TEXT",
 ]
 
 # How long a revoked session row is retained after revocation for auditing
@@ -536,34 +542,42 @@ class Database:
 
     def create_order(self, *, address: str, side: str, symbol: str, amount_in: int,
                      quoted_out: int, est_usd: float | None, tx: dict[str, Any],
-                     ttl_seconds: int) -> str:
+                     ttl_seconds: int, display: dict[str, Any] | None = None) -> str:
         order_id = "sarf_ord_" + uuid.uuid4().hex
         now = time.time()
         with self._lock, self._conn:
             self._conn.execute(
                 """INSERT INTO orders (order_id,created_at,expires_at,address,side,symbol,
-                                       amount_in,quoted_out,est_usd,tx_json,status)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,'proposed')""",
+                                       amount_in,quoted_out,est_usd,tx_json,status,display_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,'proposed',?)""",
                 (order_id, now, now + ttl_seconds, address.lower(), side, symbol,
-                 str(amount_in), str(quoted_out), est_usd, json.dumps(tx)),
+                 str(amount_in), str(quoted_out), est_usd, json.dumps(tx),
+                 json.dumps(display) if display else None),
             )
         return order_id
 
     def get_order(self, order_id: str) -> dict[str, Any] | None:
         r = self._conn.execute(
             "SELECT order_id,created_at,expires_at,address,side,symbol,amount_in,"
-            "quoted_out,est_usd,tx_json,status,tx_hash,result_json FROM orders WHERE order_id=?",
+            "quoted_out,est_usd,tx_json,status,tx_hash,result_json,display_json "
+            "FROM orders WHERE order_id=?",
             (order_id,),
         ).fetchone()
         if not r:
             return None
-        return {
+        out = {
             "order_id": r[0], "created_at": r[1], "expires_at": r[2], "address": r[3],
             "side": r[4], "symbol": r[5], "amount_in": r[6], "quoted_out": r[7],
             "est_usd": r[8], "tx": json.loads(r[9]), "status": r[10],
             "tx_hash": r[11], "result": json.loads(r[12]) if r[12] else None,
             "expired": r[2] < time.time(),
         }
+        # Display fields (summary, risk notes, fee, formatted amounts) never
+        # override the authoritative columns above.
+        if r[13]:
+            for k, v in json.loads(r[13]).items():
+                out.setdefault(k, v)
+        return out
 
     def mark_order(self, order_id: str, status: str, *, tx_hash: str | None = None,
                    result: dict[str, Any] | None = None) -> None:
