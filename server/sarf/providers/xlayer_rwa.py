@@ -43,7 +43,9 @@ from ..xlayer.card import render_order_card, render_order_card_text
 from ..xlayer.widget import UI_MIME, WIDGETS
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
-from ..xlayer.registry import CHAIN_ID, EXPLORER_TX, RwaAsset, XStocksRegistry
+from ..xlayer.registry import (
+    CHAIN_ID, EXPLORER_TX, NATIVE, RwaAsset, XStocksRegistry,
+)
 
 SYNTHETIC_DISCLOSURE = (
     "xStocks are tokenized SYNTHETIC exposure to the underlying share price. "
@@ -92,6 +94,11 @@ def _resolve_any(reg: XStocksRegistry, symbol: str) -> Any:
     model is how it gets talked into routing into an attacker's token.
     """
     s = (symbol or "").strip()
+    if s.upper() in ("OKB", "XLAYER", "ETH"):
+        # ETH accepted as an alias only because wallets label the gas coin that
+        # way out of habit; on X Layer the gas coin is OKB and that is what the
+        # response says back, so nobody is left thinking they hold ether.
+        return NATIVE
     if s.upper() in ("USDT", "USDT0", "USD₮0", reg.quote.symbol.upper()):
         return reg.quote
     return reg.resolve(s, allowlist=settings.rwa_allowlist)
@@ -646,7 +653,9 @@ class XLayerRwaProvider:
                 amount, sell_asset.decimals, what=f"amount ({sell_asset.symbol})"
             )
 
-            held = await rpc.erc20_balance(sell_asset.address, address)
+            held = (await rpc.native_balance(address)
+                    if getattr(sell_asset, "is_native", False)
+                    else await rpc.erc20_balance(sell_asset.address, address))
             if held < amount_min_units:
                 raise ValueError(
                     f"insufficient {sell_asset.symbol}: you hold "
@@ -703,6 +712,19 @@ class XLayerRwaProvider:
                     f"{_usd(est_usd)} swap, which is not a fair rate."
                 )
 
+            if getattr(sell_asset, "is_native", False):
+                # Selling the gas coin can strand the wallet: spend it all and
+                # there is nothing left to pay for the next transaction, or even
+                # for this one. Reserve a float rather than letting a "sell
+                # everything" land somebody with an unusable account.
+                reserve = int(0.002 * 10 ** 18)
+                if held - amount_min_units < reserve:
+                    raise ValueError(
+                        f"that would leave under {_fmt_units(reserve, 18)} OKB for gas. "
+                        "OKB pays for every transaction on X Layer, including this one — "
+                        f"keep at least that much back (you hold {_fmt_units(held, 18)})."
+                    )
+
             stepup = passkey.check_stepup(db, address, est_usd)
             if stepup.blocked:
                 raise ValueError(
@@ -758,11 +780,23 @@ class XLayerRwaProvider:
 
             summary = (f"SWAP {spending} -> {receiving} on X Layer"
                        + (f" (~{_usd(est_usd)})" if est_usd is not None else ""))
+            # A native leg can never be delegated: SarfSessionKey reads
+            # balances with balanceOf() and calls the router with value: 0, so
+            # that a session key can never reach the gas coin. That is a
+            # property worth keeping, so these swaps go to the wallet instead.
+            native_leg = (getattr(sell_asset, "is_native", False)
+                          or getattr(buy_asset, "is_native", False))
             _g = db.get_grant(address)
             can_execute = bool(
-                _g and not _g.get("revoked_at") and _g["expiry"] > time.time()
+                not native_leg
+                and _g and not _g.get("revoked_at") and _g["expiry"] > time.time()
                 and est_usd is not None and est_usd <= settings.delegated_auto_usd
                 and est_usd * 10 ** reg.quote.decimals <= _g["per_trade_cap"])
+            if native_leg:
+                risk_notes.append(
+                    "This swap involves OKB, the gas coin, so it is signed in your own "
+                    "wallet even if you have a session grant — the session key is built "
+                    "so that it can never touch your gas.")
 
             order_id = db.create_order(
                 address=address, side="swap", symbol=buy_asset.symbol,
@@ -813,6 +847,158 @@ class XLayerRwaProvider:
             if not png:
                 return [text]
             return [text, ImageContent(type="image", data=png, mimeType="image/png")]
+
+        @mcp.tool(meta=ui("ui://sarf/order-card"))
+        async def transfer(
+            symbol: Annotated[str, Field(
+                description="What to send: 'OKB', 'USDT', or an on-chain symbol like 'AAPLx'")],
+            amount: Annotated[str, Field(description="Decimal string, in units of symbol")],
+            to_address: Annotated[str, Field(
+                description="Recipient 0x address on X Layer, EIP-55 checksummed")],
+        ) -> Any:
+            """Build an UNSIGNED transfer of tokens or OKB to another address.
+
+            Requires a fresh passkey verification, and is ALWAYS signed by the
+            user in their own wallet — a transfer can never run under a session
+            grant, whatever limits are set. Does not execute anything.
+
+            A transfer sends funds OUT and cannot be undone. Read the recipient
+            address back to the user, in full, before they sign.
+            """
+            address = require_address()
+            db.upsert_user(address, "mcp")
+
+            # A transfer is the one operation that moves funds to somebody
+            # else. The session key is built so it can never do this, and the
+            # passkey is what proves a human is present for it — so this gate
+            # is unconditional rather than threshold-based, and fails CLOSED
+            # when passkeys are unavailable rather than waving the transfer
+            # through the way check_stepup would.
+            if not passkey.enabled():
+                raise ValueError(
+                    "transfers need passkey verification and passkeys are not "
+                    "configured on this server, so transfers are unavailable here."
+                )
+            if not db.passkeys_for_address(address):
+                raise ValueError(
+                    "transfers need a passkey. Register one at "
+                    f"{settings.public_url}/security, then ask again."
+                )
+            last = db.last_passkey_verification(address)
+            if last is None or (time.time() - last) > passkey.STEPUP_VALIDITY_SECONDS:
+                raise ValueError(
+                    f"verify with your passkey first — open {settings.public_url}/security "
+                    f"and press Verify, then ask again within "
+                    f"{passkey.STEPUP_VALIDITY_SECONDS // 60} minutes. Transfers always "
+                    "require this, whatever the amount."
+                )
+
+            asset = _resolve_any(reg, symbol)
+            native = bool(getattr(asset, "is_native", False))
+            # Checksum-validated, and never resolved from anything the model
+            # invented: a wrong recipient is unrecoverable, so a corrupted
+            # paste must fail here rather than on-chain.
+            to = validate_evm_address(to_address, what="to_address")
+            if to.lower() == address.lower():
+                raise ValidationError("that is your own address — this transfer would do nothing")
+            units = validate_amount(amount, asset.decimals, what=f"amount ({asset.symbol})")
+
+            held = (await rpc.native_balance(address) if native
+                    else await rpc.erc20_balance(asset.address, address))
+            if held < units:
+                raise ValueError(
+                    f"insufficient {asset.symbol}: you hold {_fmt_units(held, asset.decimals)} "
+                    f"but this sends {_fmt_units(units, asset.decimals)}"
+                )
+            if native:
+                reserve = int(0.002 * 10 ** 18)
+                if held - units < reserve:
+                    raise ValueError(
+                        f"that would leave under {_fmt_units(reserve, 18)} OKB for gas, and "
+                        "this transfer itself costs gas. Send a little less."
+                    )
+
+            if native:
+                tx = {"to": to, "data": "0x", "value": str(units),
+                      "gas": 30000, "chainId": CHAIN_ID}
+            else:
+                # transfer(address,uint256) — built here, never taken from the
+                # model, so the recipient in the calldata is the one validated
+                # above and shown to the user.
+                selector = "a9059cbb"
+                data = ("0x" + selector + to.lower()[2:].rjust(64, "0")
+                        + f"{units:064x}")
+                tx = {"to": asset.address, "data": data, "value": "0",
+                      "gas": 120000, "chainId": CHAIN_ID}
+
+            if asset.address.lower() == reg.quote.address.lower():
+                usd: float | None = float(
+                    Decimal(units) / (Decimal(10) ** reg.quote.decimals))
+            else:
+                # OKB prices through the aggregator like anything else — the
+                # native sentinel is a valid `from` token. Skipping it here made
+                # every OKB transfer unpriceable, which the USD cap then refused
+                # (correctly, given it had no price) and so blocked outright.
+                unit_price = await self._unit_price_usd(asset)
+                usd = (None if unit_price is None else unit_price
+                       * float(Decimal(units) / (Decimal(10) ** asset.decimals)))
+            validate_usd_cap(usd, settings.max_order_usd, what=f"transfer {asset.symbol}")
+
+            sending = f"{_fmt_units(units, asset.decimals)} {asset.symbol}"
+            risk_notes = [
+                f"This sends {sending} OUT of your wallet to {to}. Transfers are final "
+                "once mined — there is no recall and no reversal.",
+                "Check the recipient address character by character. An address that is "
+                "wrong but valid will accept the funds and nobody can return them.",
+                "Sarf cannot execute this. It is signed in your own wallet, and no "
+                "session grant can ever perform a transfer.",
+            ]
+            if not native:
+                risk_notes.append(SYNTHETIC_DISCLOSURE)
+
+            summary = f"TRANSFER {sending} to {to} on X Layer"
+            order_id = db.create_order(
+                address=address, side="transfer", symbol=asset.symbol,
+                amount_in=units, quoted_out=0, est_usd=usd, tx=tx,
+                ttl_seconds=settings.order_ttl_seconds,
+                display={
+                    "name": f"Transfer to {to}", "human_summary": summary,
+                    "risk_notes": risk_notes, "spending": sending,
+                    "receiving_estimated": f"{to} receives {sending}",
+                    "platform_fee": {"charged": False, "usd": 0.0,
+                                     "denominated_in": reg.quote.symbol,
+                                     "note": "no platform fee on transfers"},
+                    "disclosure": SYNTHETIC_DISCLOSURE,
+                },
+            )
+            payload = {
+                "order_id": order_id, "chain_id": CHAIN_ID, "side": "transfer",
+                "symbol": asset.symbol, "name": f"Transfer to {to}",
+                "recipient": to, "spending": sending,
+                "receiving_estimated": f"{to} receives {sending}",
+                "estimated_usd": round(usd, 2) if usd is not None else None,
+                "platform_fee": {"charged": False, "usd": 0.0,
+                                 "denominated_in": reg.quote.symbol,
+                                 "note": "no platform fee on transfers"},
+                "human_summary": summary, "risk_notes": risk_notes,
+                "unsigned_transaction": tx,
+                "expires_at": int(time.time()) + settings.order_ttl_seconds,
+                "sign_url": (f"{settings.public_url}/sign?o={order_id}"
+                             if settings.public_url else None),
+                "status": "awaiting_signature",
+                "can_execute": False,
+                "next_step": (
+                    "Print the `card` verbatim and read the FULL recipient address back "
+                    "to the user before they sign. This moves funds out and cannot be "
+                    "undone. Give them sign_url — Sarf cannot execute it."
+                ),
+                "disclosure": SYNTHETIC_DISCLOSURE,
+            }
+            payload["card"] = render_order_card_text(payload)
+            png = render_order_card(payload)
+            text = TextContent(type="text", text=json.dumps(payload, default=str))
+            return [text] if not png else [
+                text, ImageContent(type="image", data=png, mimeType="image/png")]
 
         @mcp.tool()
         async def get_session_status() -> dict[str, Any]:

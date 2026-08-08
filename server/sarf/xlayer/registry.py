@@ -52,6 +52,27 @@ class QuoteAsset:
     onchain_symbol: str
     address: str
     decimals: int
+    is_native: bool = False
+
+
+# The aggregator's sentinel for a chain's native coin. It is not a contract:
+# nothing answers balanceOf() or transfer() at this address, so every code path
+# that touches it has to branch on is_native rather than treating it as an
+# ERC-20. Getting that wrong reads a balance of zero and refuses valid orders.
+NATIVE_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+# OKB is X Layer's gas coin. It is tradable through the aggregator like any
+# other asset, but it can never route through the session-key delegate:
+# SarfSessionKey reads balances with balanceOf() and calls the router with
+# value: 0, deliberately, so that a session key can never touch gas. Native
+# swaps are therefore always signed by the user.
+NATIVE = QuoteAsset(
+    symbol="OKB",
+    onchain_symbol="OKB",
+    address=NATIVE_SENTINEL,
+    decimals=18,
+    is_native=True,
+)
 
 
 class XStocksRegistry:
