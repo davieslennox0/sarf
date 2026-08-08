@@ -94,6 +94,40 @@ async def native_balance(holder: str) -> int:
     return int(res, 16) if res else 0
 
 
+async def transaction_count(address: str) -> int:
+    """Pending nonce — pending, not latest, so two relayed swaps issued back to
+    back don't collide on the same nonce and drop one of them."""
+    res = await _call("eth_getTransactionCount", [address.lower(), "pending"])
+    return int(res, 16) if res else 0
+
+
+async def gas_price() -> int:
+    res = await _call("eth_gasPrice", [])
+    return int(res, 16) if res else 0
+
+
+async def send_raw_transaction(raw: str) -> str:
+    return await _call("eth_sendRawTransaction", [raw])
+
+
+async def code_at(address: str) -> str:
+    return await _call("eth_getCode", [address.lower(), "latest"]) or "0x"
+
+
+async def delegated_to(address: str) -> str | None:
+    """The implementation an EOA is delegated to under EIP-7702, or None.
+
+    A delegated account's code is exactly the 23-byte marker 0xef0100 followed
+    by the implementation address (EIP-7702 §"Delegation Designation"). Reading
+    it is how we check a user's grant is actually installed rather than trusting
+    that their authorisation transaction landed.
+    """
+    code = await code_at(address)
+    if not code.startswith("0xef0100") or len(code) != 48:
+        return None
+    return "0x" + code[8:]
+
+
 async def tx_status(tx_hash: str) -> TxStatus:
     """Receipt-based settlement status. 'not found' is distinct from 'failed'."""
     receipt = await _call("eth_getTransactionReceipt", [tx_hash])

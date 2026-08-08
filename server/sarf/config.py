@@ -163,6 +163,41 @@ class Settings:
     # a mis-set fee/tiny order can never quietly take a big bite.
     max_fee_percent: float = field(default_factory=lambda: float(_env("MAX_FEE_PERCENT", "1.0")))
 
+    # --- Session-key delegation (EIP-7702) — see xlayer/delegation.py --------
+    # The deployed SarfSessionKey implementation users delegate to. Empty
+    # disables in-chat execution entirely: with no delegate there is nothing
+    # to grant, so the feature fails closed rather than half-on.
+    delegate_address: str = field(
+        default_factory=lambda: _env(
+            "SARF_DELEGATE_ADDRESS", "0x30eeC302C6D98253dCcA7d970343dBb95c920D76"
+        ).strip()
+    )
+    # Gas-only wallet that submits signed swaps. Deliberately NOT any wallet
+    # that holds funds — it pays for transactions the session key already
+    # authorised, so compromising it buys an attacker nothing but a gas bill.
+    relayer_private_key: str = field(
+        default_factory=lambda: _env("SARF_RELAYER_PRIVATE_KEY", "").strip()
+    )
+    # Warn below this. A swap costs ~300k gas at ~0.02 gwei on X Layer, so
+    # 0.002 OKB is still hundreds of trades — the threshold is about noticing
+    # early, not about running close to empty.
+    relayer_min_okb: float = field(
+        default_factory=lambda: float(_env("RELAYER_MIN_OKB", "0.002"))
+    )
+    # Re-key this often even when the grant runs longer. Rotation shortens how
+    # long any single key is worth stealing; it cannot extend the grant,
+    # because re-keying needs the user's wallet signature again.
+    session_key_rotate_seconds: int = field(
+        default_factory=lambda: int(_env("SESSION_KEY_ROTATE_SECONDS", str(24 * 3600)))
+    )
+    # Orders at or below this USD value execute in chat under a live grant.
+    # Above it, a fresh passkey assertion is required regardless of the grant's
+    # caps — the on-chain cap is the hard ceiling, this is the "are you sure"
+    # line the user drew. 0 means every execution needs a passkey.
+    delegated_auto_usd: float = field(
+        default_factory=lambda: float(_env("DELEGATED_AUTO_USD", "250"))
+    )
+
     # --- Passkey (WebAuthn) — see passkey.py for the threat model ------------
     # Orders above this USD value need a fresh passkey assertion. 0 disables
     # step-up entirely.

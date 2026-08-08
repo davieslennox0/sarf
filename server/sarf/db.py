@@ -110,6 +110,31 @@ CREATE TABLE IF NOT EXISTS passkey_challenges (
   used         INTEGER NOT NULL DEFAULT 0
 );
 
+-- Session-key grants (EIP-7702). One live grant per address: re-granting
+-- rotates the key, and the contract only ever tracks the newest, so a second
+-- live row here would describe a grant the chain does not have.
+--
+-- `sealed_key` is a session private key encrypted under a key derived from
+-- SARF_SESSION_SECRET (see xlayer/delegation.py). It is NOT the user's wallet
+-- key — Sarf never has that — and it is powerless outside the caps the user
+-- signed on-chain. The caps recorded here are a copy for display; the ones
+-- that bind are in the contract, because a limit enforced in this process is
+-- a limit an attacker who reaches this process can skip.
+CREATE TABLE IF NOT EXISTS grants (
+  address         TEXT PRIMARY KEY,
+  session_address TEXT NOT NULL,
+  sealed_key      TEXT NOT NULL,
+  delegate        TEXT NOT NULL,
+  router          TEXT NOT NULL,
+  stable          TEXT NOT NULL,
+  expiry          INTEGER NOT NULL,
+  per_trade_cap   INTEGER NOT NULL,
+  daily_cap       INTEGER NOT NULL,
+  created_at      REAL NOT NULL,
+  rotated_at      REAL NOT NULL,
+  revoked_at      REAL
+);
+
 -- X Layer order audit log. Records what was proposed and, once the user's
 -- wallet broadcasts it, the resulting tx hash. Never holds keys or signatures.
 CREATE TABLE IF NOT EXISTS orders (
@@ -537,6 +562,61 @@ class Database:
                 "UPDATE passkey_challenges SET used=1 WHERE challenge_id=?", (challenge_id,)
             )
         return {"address": r[0], "purpose": r[1], "expires_at": r[2]}
+
+    # --------------------------------------------------------------- grants
+
+    def put_grant(self, *, address: str, session_address: str, sealed_key: str,
+                  delegate: str, router: str, stable: str, expiry: int,
+                  per_trade_cap: int, daily_cap: int) -> None:
+        """Record a grant, replacing any previous one for this address.
+
+        REPLACE rather than INSERT because the contract keeps exactly one
+        grant per account: authorising again overwrites it on-chain, so
+        keeping the old row would leave Sarf signing with a key the contract
+        has already retired.
+        """
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO grants
+                   (address,session_address,sealed_key,delegate,router,stable,expiry,
+                    per_trade_cap,daily_cap,created_at,rotated_at,revoked_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+                (address.lower(), session_address, sealed_key, delegate.lower(),
+                 router.lower(), stable.lower(), int(expiry), int(per_trade_cap),
+                 int(daily_cap), now, now),
+            )
+
+    def get_grant(self, address: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            """SELECT address,session_address,sealed_key,delegate,router,stable,expiry,
+                      per_trade_cap,daily_cap,created_at,rotated_at,revoked_at
+               FROM grants WHERE address=?""", (address.lower(),)
+        ).fetchone()
+        if not r:
+            return None
+        keys = ("address", "session_address", "sealed_key", "delegate", "router",
+                "stable", "expiry", "per_trade_cap", "daily_cap", "created_at",
+                "rotated_at", "revoked_at")
+        return dict(zip(keys, r))
+
+    def revoke_grant(self, address: str) -> bool:
+        """Mark a grant revoked locally. NOT the security boundary — the
+        on-chain revoke() is. This stops Sarf from trying to use the key;
+        the contract is what stops anyone else."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE grants SET revoked_at=? WHERE address=? AND revoked_at IS NULL",
+                (time.time(), address.lower()),
+            )
+        return cur.rowcount > 0
+
+    def rotate_grant_key(self, address: str, *, session_address: str, sealed_key: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE grants SET session_address=?, sealed_key=?, rotated_at=? WHERE address=?",
+                (session_address, sealed_key, time.time(), address.lower()),
+            )
 
     # --------------------------------------------------------------- orders
 
