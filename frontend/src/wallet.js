@@ -1,15 +1,22 @@
 /**
- * X Layer wallet access over EIP-1193 — OKX Wallet first, any injected
- * provider as fallback.
+ * X Layer wallet access over EIP-1193.
  *
- * Deliberately no wagmi/viem: the whole surface we need is connect, sign a
- * login message, switch chain, and send one transaction whose calldata the
- * server already built. A connector framework would add weight without
- * removing a decision, and OKX Wallet injects a standard provider.
+ * Two sources, one interface. When Privy is configured (VITE_PRIVY_APP_ID) the
+ * signer is the user's embedded wallet, provisioned from a Google login and
+ * published into a module ref by the bridge in privy.jsx. Otherwise it is the
+ * injected provider — OKX Wallet first, any other injection second.
+ *
+ * The point of keeping this module is that it is the app's only non-hook
+ * accessor to a signer. `ensureSession()` in api.js has to sign the login
+ * challenge from a plain async function, where a React hook cannot be called.
+ * Every page imports these five functions and none of them needs to know which
+ * source is behind them.
  *
  * No key material passes through here. The provider signs; we only ever hold
  * an address, a signature, and a transaction hash.
  */
+
+import { onPrivyChange, privyContext, privyEnabled, waitForWallet } from './privy.jsx';
 
 export const CHAIN_ID = 196;
 export const CHAIN_ID_HEX = '0xc4';
@@ -23,7 +30,7 @@ const X_LAYER_PARAMS = {
   blockExplorerUrls: ['https://web3.okx.com/explorer/x-layer'],
 };
 
-export function provider() {
+function injected() {
   if (typeof window === 'undefined') return null;
   // Prefer the OKX injection: on a machine with several wallets, window.ethereum
   // is whichever one won the race, which is not necessarily the one the user
@@ -31,12 +38,38 @@ export function provider() {
   return window.okxwallet || window.ethereum || null;
 }
 
+export function provider() {
+  return privyContext().provider || injected();
+}
+
+/**
+ * Whether signing is possible at all. With Privy configured this is true before
+ * login too — the wallet does not exist yet, but it will, and the user needs a
+ * login button rather than "install a wallet extension".
+ */
 export function hasWallet() {
-  return Boolean(provider());
+  return privyEnabled() || Boolean(injected());
+}
+
+/** True once a Privy embedded wallet is the active signer. */
+export function isEmbedded() {
+  return Boolean(privyContext().provider);
 }
 
 export async function connect() {
-  const p = provider();
+  if (privyEnabled()) {
+    const c = privyContext();
+    if (c.address && c.provider) return c.address;
+    if (!c.ready) throw new Error('Still loading — try again in a moment.');
+    // Opens the Privy modal. It returns before the user has finished, so the
+    // address is awaited from the bridge rather than from this call.
+    if (!c.authenticated && c.login) c.login();
+    const address = await waitForWallet();
+    await ensureXLayer();
+    return address;
+  }
+
+  const p = injected();
   if (!p) {
     throw new Error(
       'No EVM wallet found. Install OKX Wallet to trade on X Layer.'
@@ -49,7 +82,8 @@ export async function connect() {
 }
 
 export async function currentAccount() {
-  const p = provider();
+  if (privyEnabled()) return privyContext().address;
+  const p = injected();
   if (!p) return null;
   const accounts = await p.request({ method: 'eth_accounts' });
   return accounts && accounts.length ? accounts[0].toLowerCase() : null;
@@ -134,6 +168,22 @@ export async function sendWithAuthorization(address, tx, delegate) {
     data: tx.data,
     value: '0x0',
   };
+
+  // Embedded path: Privy signs the authorization properly rather than us
+  // guessing at a request shape. `executor: 'self'` because the same account
+  // both authorizes and sends, which is what shifts the authorization nonce.
+  const { signAuthorization } = privyContext();
+  if (signAuthorization) {
+    const signed = await signAuthorization(
+      { contractAddress: delegate, chainId: CHAIN_ID, executor: 'self' },
+      { address },
+    );
+    return p.request({
+      method: 'eth_sendTransaction',
+      params: [{ ...base, type: '0x4', authorizationList: [signed] }],
+    });
+  }
+
   const auth = [{ address: delegate, chainId: CHAIN_ID_HEX }];
 
   const attempts = [
@@ -168,7 +218,21 @@ export async function sendWithAuthorization(address, tx, delegate) {
 }
 
 export function onAccountsChanged(cb) {
-  const p = provider();
+  if (privyEnabled()) {
+    // Callers treat this as "the account you had is gone" and drop the session.
+    // The first login is null -> address, which is NOT that: firing there would
+    // clear the session ensureSession() had just minted. Only a transition away
+    // from an address we were already using counts.
+    let last = privyContext().address;
+    return onPrivyChange((next) => {
+      const now = next.address;
+      if (now === last) return;
+      const previous = last;
+      last = now;
+      if (previous) cb(now);
+    });
+  }
+  const p = injected();
   if (!p || !p.on) return () => {};
   const handler = (accs) => cb(accs && accs.length ? accs[0].toLowerCase() : null);
   p.on('accountsChanged', handler);
@@ -176,7 +240,10 @@ export function onAccountsChanged(cb) {
 }
 
 export function onChainChanged(cb) {
-  const p = provider();
+  // Privy is pinned to X Layer by supportedChains, so there is no chain to
+  // change to and no event to subscribe to.
+  if (privyEnabled()) return () => {};
+  const p = injected();
   if (!p || !p.on) return () => {};
   const handler = (cid) => cb(parseInt(cid, 16));
   p.on('chainChanged', handler);

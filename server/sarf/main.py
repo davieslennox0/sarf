@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import auth, oauth
 from .config import settings
@@ -230,6 +231,23 @@ class _SPAStaticFiles(StaticFiles):
 
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _SPA_ROUTES = ["/", "/portfolio", "/activity", "/send", "/security", "/sign", "/connect"]
+
+# Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with
+# base=/legacy/ so it carries its own assets and its router stays inside the
+# sub-path. It exists so a login restructure on the main bundle can never
+# leave the demo surface unreachable — rebuild with:
+#   VITE_ROUTER_BASE=/legacy npx vite build --base=/legacy/ --outDir dist-legacy
+_LEGACY_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist-legacy"
+
+if _LEGACY_DIST.is_dir():
+    # Registered before the mount on purpose: Mount("/legacy") also matches the
+    # bare path with an empty remainder and 404s on it, so the route has to win
+    # first. A shared URL should not depend on the trailing slash.
+    @app.get("/legacy", include_in_schema=False)
+    async def _legacy_root():
+        return RedirectResponse("/legacy/", status_code=308)
+
+    app.mount("/legacy", _SPAStaticFiles(directory=_LEGACY_DIST, html=True), name="legacy")
 
 if _FRONTEND_DIST.is_dir():
     # Assets get a real mount; SPA routes are declared explicitly rather than

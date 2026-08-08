@@ -22,6 +22,9 @@ __pycache__/
 node_modules/
 txbuilder/dist/
 frontend/dist/
+# Frozen pre-Privy fallback served at /legacy. A build artifact like dist/,
+# rebuildable from the tag `pre-privy` — see the comment in server/sarf/main.py.
+frontend/dist-legacy/
 
 # Local state (audit db lives outside git regardless of nesting)
 **/data/

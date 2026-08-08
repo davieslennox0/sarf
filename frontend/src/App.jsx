@@ -8,8 +8,9 @@ import Transfer from './pages/Transfer.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
 import { api, clearSession, getSession } from './api.js';
+import Onboarding from './Onboarding.jsx';
 import {
-  CHAIN_ID, connect, currentAccount, chainId as getChainId,
+  CHAIN_ID, currentAccount, chainId as getChainId,
   ensureXLayer, hasWallet, onAccountsChanged, onChainChanged, short,
 } from './wallet.js';
 
@@ -50,6 +51,8 @@ function SessionBar() {
     );
   }
 
+  // Chain mismatch cannot happen on the embedded wallet — it is pinned to
+  // X Layer — so this only ever fires for an injected provider.
   if (account && chain != null && chain !== CHAIN_ID) {
     return (
       <div className="bar warn">
@@ -64,10 +67,13 @@ function SessionBar() {
   if (!session) {
     return (
       <div className="bar">
-        {account ? <>Wallet {short(account)} connected — sign in to trade.</> : 'Not connected.'}
-        <button onClick={() => connect().then(setAccount)}>
-          {account ? 'Refresh' : 'Connect wallet'}
-        </button>
+        {account
+          ? <>Wallet {short(account)} connected — sign in to trade.</>
+          : 'Sign in with Google to get a wallet and start trading.'}
+        <Onboarding onDone={() => {
+          setSession(getSession());
+          currentAccount().then(setAccount).catch(() => {});
+        }} />
       </div>
     );
   }
