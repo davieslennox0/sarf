@@ -59,11 +59,6 @@ class Settings:
     host: str = field(default_factory=lambda: _env("SARF_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(_env("SARF_PORT", "8760")))
     db_path: str = field(default_factory=lambda: _env("SARF_DB_PATH", "./data/sarf.db"))
-    txbuilder_url: str = field(default_factory=lambda: "http://%s:%s" % (
-        _env("TXBUILDER_HOST", "127.0.0.1"),
-        _env("TXBUILDER_PORT", "8761"),
-    ))
-
     proposal_ttl_seconds: int = field(
         default_factory=lambda: int(_env("PROPOSAL_TTL_SECONDS", str(PROPOSAL_TTL_DEFAULT)))
     )
