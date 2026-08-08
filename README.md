@@ -58,6 +58,124 @@ trade against an account they have not proven control of.
 | `get_settlement_status(tx_hash)` | read | distinguishes unknown / pending / confirmed / reverted |
 | `get_order_history(limit?)` | read | this wallet's orders, with tx hashes |
 
+## Deployment strategy — and why each choice was made
+
+### The contract: `SarfSessionKey`
+
+**Live at [`0x30eeC302C6D98253dCcA7d970343dBb95c920D76`](https://web3.okx.com/explorer/x-layer/address/0x30eeC302C6D98253dCcA7d970343dBb95c920D76)** on X Layer
+(tx `0xf720d8cb…32a7`, block 67378132, 843,942 gas ≈ 0.0000169 OKB).
+
+It is the EIP-7702 delegate a user points their EOA at to authorise a scoped,
+expiring trading key — the thing that lets a trade happen inside a chat without
+anyone holding the user's wallet key.
+
+**Why EIP-7702 rather than a smart account.** X Layer runs `reth/v1.10.2-xlayer`
+with Prague active — verified directly, not assumed: block headers carry
+`requestsHash`, and the Prague-only BLS precompile at `0x0b` answers with
+`PrecompileError` rather than an empty return. So a plain EOA can delegate
+in place. The alternative — ERC-4337 or a Safe — means asking the user to move
+their funds into a new account before they can trade, which is a far bigger ask
+than signing one authorisation, and it strands anything they leave behind.
+
+**Why a purpose-built contract rather than an existing one.** Kernel, Safe7579
+and Biconomy Nexus are all fine, and all absent from chain 196 — probed and
+confirmed empty. Deploying one of them means shipping someone else's general
+account abstraction, with a module system and an upgrade path, to get a feature
+that needs neither. This contract does one thing (swap, within limits, until
+expiry) in ~180 lines with no owner and no admin.
+
+**Why CREATE2.** Deployed through the canonical deterministic deployer
+(`0x4e59b448…4956C`, verified present) with salt `0x…5361726601`, so the address
+is a pure function of the salt and the init code. Anyone can recompute it from
+this repo and confirm the address holds what it claims. A nonce-based deploy
+would ask them to take our word for it.
+
+**Why the deployer has no power.** No owner, no admin, no upgrade path, no
+pause. The wallet that paid the gas has exactly the same authority over the
+contract as any other address: none. That matters for the custody claim below —
+there is no privileged party who could change the rules on a grant that is
+already live.
+
+**Why post-conditions instead of validating calldata.** `executeSwap` does not
+try to understand what the router is being asked to do. Aggregator calldata is
+opaque, multi-hop and version-dependent, and a field-by-field validator fails
+*open* the first time OKX ships a router upgrade. So the contract measures
+instead: snapshot both token balances, make the call, then require that no more
+than `sellAmount` left and at least `minBuyAmount` arrived. Whatever the
+calldata contained, that is what it is permitted to have done. The allowance is
+exact and zeroed in the same transaction, and no value is ever sent, so OKB is
+untouchable.
+
+The practical consequence, stated plainly: **a stolen session key cannot move
+funds out.** The worst it can do is trade allowed tokens, at prices bounded by
+`minBuyAmount`, under per-trade and per-day caps, until the grant expires.
+
+**Why it is still non-custodial.** The user's wallet key never leaves their
+wallet. They sign the 7702 authorisation and the grant themselves. `revoke()` is
+gated on a self-call, which under 7702 *is* a signature from their own wallet —
+so revocation needs nothing from Sarf and cannot be withheld. Sarf holds a
+session key with bounded authority; it does not hold keys or funds.
+
+### The relayer: a gas-only wallet, deliberately
+
+`executeSwap` is callable by anyone — the session signature is the authority,
+not the sender — so a relayer submits the transaction and pays the OKB.
+
+That relayer is a **dedicated wallet holding only gas**, and specifically *not*
+the payout wallet that moves real USDT0/USDG/USDC. Reusing a funded wallet would
+mean a compromise of the Sarf server exposes a wallet holding money, in exchange
+for saving one funding transfer. Because a compromised relayer can only submit
+swaps the session key already authorised, keeping it gas-only means compromising
+it buys an attacker a gas bill and nothing else.
+
+Sizing: a swap is ~300k gas at X Layer's ~0.02 gwei, so **0.01 OKB is roughly
+1,600 trades**. `RELAYER_MIN_OKB` warns well before empty.
+
+### Rotation and expiry
+
+Two independent clocks, on purpose:
+
+- **The grant** expires when the user said it should, capped at 30 days in the
+  contract regardless of what the UI asks for.
+- **The key** rotates every 24h (`SESSION_KEY_ROTATE_SECONDS`) even inside a
+  longer grant, so the window in which any single key is worth stealing stays
+  short. Re-keying requires the user's wallet signature again — rotation can
+  only shrink exposure, never quietly extend what they agreed to.
+
+Session private keys are sealed with AES-GCM under a key HKDF-derived from
+`SARF_SESSION_SECRET` with its own info string, so a stolen database file is not
+a set of usable keys, and the key that encrypts session tokens is not the key
+that encrypts signing material.
+
+### Where limits are enforced
+
+**In Solidity, not in Python.** `server/sarf/xlayer/delegation.py` records caps
+so they can be displayed, and enforces none of them. A cap checked in the server
+process is a cap an attacker who reaches that process can skip. The module's
+docstrings say so explicitly, because the natural instinct of the next person to
+touch that file is to add a "safety check" there and believe it is doing work.
+
+### Rendering in chat: MCP Apps
+
+Tools return content blocks, and the host decides what to display. Sarf emits a
+PNG order card as `ImageContent` and hosts are not obliged to render it — in
+practice they did not, so the card arrived as JSON for the model to paraphrase,
+losing the two lines the card existed to protect: the fee and the
+synthetic-exposure disclosure.
+
+The supported path is **MCP Apps**. `get_portfolio`, `analyze_portfolio` and
+`place_order` declare `_meta.ui.resourceUri` pointing at `ui://sarf/*` resources
+served as `text/html;profile=mcp-app`; the host renders them in a sandboxed
+iframe and pushes the tool output in via `ui/notifications/tool-result`. Widgets
+live in `server/sarf/xlayer/widget.py`, use the site's palette, and write every
+value through `textContent` — asset names come from an on-chain `name()` call,
+so a widget that interpolated them into markup would be an injection hole in a
+surface that also shows balances.
+
+A monospace text card still ships on every order, because a host that does not
+implement MCP Apps ignores `_meta` entirely and would otherwise be back to
+paraphrase. Nothing in either card is load-bearing: every fact is in the JSON.
+
 ## Where the security boundary is
 
 `server/sarf/validation.py` + `server/sarf/xlayer/evm.py`, not the LLM prompt.

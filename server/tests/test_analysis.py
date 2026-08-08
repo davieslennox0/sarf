@@ -216,3 +216,25 @@ def test_text_card_marks_truncation_instead_of_cutting_mid_sentence():
 def test_text_card_never_raises():
     assert render_order_card_text({}) != "" or True  # must not raise
     assert render_order_card_text({"risk_notes": None, "platform_fee": "nonsense"}) is not None
+
+
+# --------------------------------------------------------------- MCP Apps
+
+def test_widgets_are_declared_as_mcp_app_resources():
+    """A tool without _meta.ui.resourceUri renders as text the model
+    paraphrases, which is the failure this wiring exists to fix."""
+    from sarf.xlayer.widget import UI_MIME, WIDGETS
+    assert UI_MIME == "text/html;profile=mcp-app"
+    for uri, (name, html, desc) in WIDGETS.items():
+        assert uri.startswith("ui://sarf/")
+        assert html.startswith("<!DOCTYPE html>")
+        assert "ui/notifications/tool-result" in html, uri
+
+
+def test_widgets_never_interpolate_values_into_markup():
+    """Asset names come from an on-chain name() call. innerHTML with an
+    interpolated value would be XSS in a surface showing balances."""
+    from sarf.xlayer.widget import WIDGETS
+    for uri, (_n, html, _d) in WIDGETS.items():
+        body = html.split("function render", 1)[-1]
+        assert "innerHTML=" not in body.replace(" ", "") or "innerHTML=''" in body.replace(" ", ""), uri

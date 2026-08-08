@@ -40,6 +40,7 @@ from ..validation import ValidationError, validate_amount, validate_usd_cap
 from ..xlayer import rpc
 from ..xlayer.analysis import analyze
 from ..xlayer.card import render_order_card, render_order_card_text
+from ..xlayer.widget import UI_MIME, WIDGETS
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import CHAIN_ID, EXPLORER_TX, RwaAsset, XStocksRegistry
@@ -234,6 +235,22 @@ class XLayerRwaProvider:
     def register_tools(self, mcp: FastMCP) -> None:  # noqa: C901 - tool bundle
         reg, dex, db = self.reg, self.dex, self.db
 
+        # --- MCP Apps UI resources ------------------------------------------
+        # Registering the widget HTML as ui:// resources and pointing tools at
+        # them with _meta.ui.resourceUri is what makes a card render in chat.
+        # Without it the host has only content blocks to work with and the
+        # model paraphrases the result — which is how the fee line and the
+        # disclosure stopped appearing in the words we wrote them in.
+        for uri, (wname, html, desc) in WIDGETS.items():
+            def _make(body: str):
+                def _read() -> str:
+                    return body
+                return _read
+            mcp.resource(uri, name=wname, description=desc, mime_type=UI_MIME)(_make(html))
+
+        def ui(uri: str) -> dict[str, Any]:
+            return {"ui": {"resourceUri": uri}}
+
         @mcp.tool()
         async def get_rwa_list() -> dict[str, Any]:
             """List the tokenized stocks and ETFs tradable on X Layer.
@@ -295,7 +312,7 @@ class XLayerRwaProvider:
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
 
-        @mcp.tool()
+        @mcp.tool(meta=ui("ui://sarf/portfolio-card"))
         async def get_portfolio() -> dict[str, Any]:
             """The authenticated wallet's tokenized-stock holdings on X Layer.
 
@@ -304,7 +321,7 @@ class XLayerRwaProvider:
             """
             return await self.portfolio(require_address())
 
-        @mcp.tool()
+        @mcp.tool(meta=ui("ui://sarf/analysis-card"))
         async def analyze_portfolio() -> dict[str, Any]:
             """Analyse the authenticated wallet's holdings: concentration,
             diversification, sector and instrument mix.
@@ -323,7 +340,7 @@ class XLayerRwaProvider:
             """
             return analyze(await self.portfolio(require_address()))
 
-        @mcp.tool()
+        @mcp.tool(meta=ui("ui://sarf/order-card"))
         async def place_order(
             symbol: Annotated[str, Field(description="On-chain symbol, e.g. 'AAPLx'")],
             side: Annotated[Side, Field(description="'buy' spends USDT; 'sell' returns USDT")],
