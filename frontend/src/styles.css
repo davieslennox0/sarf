@@ -304,3 +304,19 @@ footer {
   min-width: 96px; text-align: right;
 }
 .kv select:focus, .kv input[type="number"]:focus { outline: 1px solid var(--amber); }
+
+/* Send form + transfer recipient. The address is deliberately full-width and
+   monospace with generous letter spacing: it is the one field on the signing
+   screen where a single wrong character is unrecoverable, so it has to be
+   readable character by character rather than skimmable. */
+.kv input, .kv select {
+  font: inherit; background: var(--panel-2); color: var(--paper);
+  border: 1px solid var(--line); border-radius: 4px; padding: 4px 7px;
+  min-width: 120px; text-align: right;
+}
+.kv input.addr { min-width: min(100%, 44ch); letter-spacing: .02em; }
+.kv input:focus, .kv select:focus { outline: 1px solid var(--amber); }
+.kv .recipient b {
+  word-break: break-all; text-align: right; letter-spacing: .04em;
+  color: var(--amber);
+}

@@ -229,7 +229,7 @@ class _SPAStaticFiles(StaticFiles):
 
 
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-_SPA_ROUTES = ["/", "/portfolio", "/activity", "/security", "/sign", "/connect"]
+_SPA_ROUTES = ["/", "/portfolio", "/activity", "/send", "/security", "/sign", "/connect"]
 
 if _FRONTEND_DIST.is_dir():
     # Assets get a real mount; SPA routes are declared explicitly rather than

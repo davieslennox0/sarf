@@ -71,6 +71,9 @@ export const api = {
   myOrders: () => req('/api/me/orders'),
   portfolio: () => req('/api/me/portfolio'),
 
+  transferPrepare: (body) =>
+    req('/api/transfer/prepare', { method: 'POST', body: JSON.stringify(body) }),
+
   grant: () => req('/api/grant'),
   grantPrepare: (body) =>
     req('/api/grant/prepare', { method: 'POST', body: JSON.stringify(body) }),

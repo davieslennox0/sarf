@@ -4,6 +4,7 @@ import Home from './pages/Home.jsx';
 import Activity from './pages/Activity.jsx';
 import Portfolio from './pages/Portfolio.jsx';
 import Security from './pages/Security.jsx';
+import Transfer from './pages/Transfer.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
 import { api, clearSession, getSession } from './api.js';
@@ -92,6 +93,7 @@ export default function App() {
         <div className="links">
           <Link className={pathname === '/' ? 'on' : ''} to="/">Markets</Link>
           <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Holdings</Link>
+          <Link className={pathname === '/send' ? 'on' : ''} to="/send">Send</Link>
           <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
           <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
         </div>
@@ -102,6 +104,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/activity" element={<Activity />} />
+          <Route path="/send" element={<Transfer />} />
           <Route path="/security" element={<Security />} />
           <Route path="/sign" element={<Sign />} />
           {/* /authorize is the OAuth endpoint itself; the consent UI lives here. */}

@@ -158,6 +158,28 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             raise ValidationError("caps must be finite")
         return int(round(v * 10 ** reg.quote.decimals))
 
+    @r.post("/transfer/prepare")
+    async def transfer_prepare(body: dict[str, Any],
+                               authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Build an unsigned transfer for the site's Send page.
+
+        Deliberately the same provider method the MCP tool calls — the passkey
+        gate, the balance check and the gas reserve live in one place, so the
+        website cannot end up with a weaker set of them than the assistant.
+        """
+        addr = _session_addr(authorization)
+        if provider is None:  # pragma: no cover - wiring guard
+            raise HTTPException(503, "transfers are unavailable on this server")
+        try:
+            return await provider.build_transfer(
+                addr, body.get("symbol") or "", body.get("amount") or "",
+                body.get("to_address") or "", source="web",
+            )
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
     # ---------------------------------------------------------------- grants
     # The session-key flow. Sarf prepares the transactions; the user's wallet
     # signs them. Every state-changing step here produces an UNSIGNED payload —

@@ -105,6 +105,13 @@ export default function Sign() {
       <div className="kv">
         <div><span>Action</span><b>{order.side} {order.symbol}</b></div>
         <div><span>Spending</span><b>{order.spending ?? order.amount_in}</b></div>
+        {/* Full, never truncated. 0x1edd…9110 is exactly the format in which a
+            swapped character survives a glance, and a transfer cannot be undone. */}
+        {order.recipient && (
+          <div className="recipient">
+            <span>Recipient</span><b>{order.recipient}</b>
+          </div>
+        )}
         {order.receiving_estimated && (
           <div><span>You receive (est.)</span><b>{order.receiving_estimated}</b></div>
         )}
