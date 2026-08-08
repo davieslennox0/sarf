@@ -161,6 +161,19 @@ class XLayerRwaProvider:
             "capped": capped < pct,
         }
 
+    def _gas_sponsored(self, address: str) -> bool:
+        """True when this wallet has a live grant, so the relayer pays gas.
+
+        Drives copy only. It changes what the cards claim about needing OKB,
+        which stopped being true for delegated trades — telling someone to buy
+        gas they do not need is its own kind of wrong answer.
+        """
+        g = self.db.get_grant(address)
+        return bool(
+            g and not g.get("revoked_at") and g["expiry"] > time.time()
+            and settings.relayer_private_key
+        )
+
     async def portfolio(self, address: str) -> dict[str, Any]:
         """Holdings for `address`, read straight from X Layer state.
 
@@ -204,6 +217,7 @@ class XLayerRwaProvider:
             "positions": positions,
             "usdt_balance": _fmt_units(usdt_raw, reg.quote.decimals),
             "gas_balance_okb": _fmt_units(okb_raw, 18),
+            "gas_sponsored": self._gas_sponsored(address),
             "positions_value_usd": round(total_usd, 2),
             # Stated explicitly so a partial pricing outage can never be
             # mistaken for "these positions are worth nothing".

@@ -311,8 +311,11 @@ function render(d){
 
   const t=[];
   if(parseFloat(d.gas_balance_okb||'0')<=0)
-    t.push(['Gas','This wallet has no OKB. Gas on X Layer is paid in OKB, so no '+
-      'transaction can be sent until some is topped up \\u2014 whatever the holdings are worth.']);
+    t.push(d.gas_sponsored
+      ? ['Gas','No OKB here, but trades you place in chat run under your session '+
+         'grant and Sarf pays the gas. Signing one yourself would still need OKB.']
+      : ['Gas','This wallet has no OKB. Gas on X Layer is paid in OKB, so no '+
+         'transaction can be sent until some is topped up \\u2014 whatever the holdings are worth.']);
   if((d.unpriced_positions||[]).length)
     t.push(['Not priced',(d.unpriced_positions||[]).join(', ')+
       ' could not be quoted just now and are excluded from the total.']);

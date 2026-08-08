@@ -359,12 +359,25 @@ def analyze(portfolio: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         gas = 0.0
     if gas <= 0:
-        findings.append(_observe(
-            "operability",
-            "This wallet holds no OKB.",
-            "Gas on X Layer is paid in OKB; with a zero balance no transaction "
-            "can be sent, whatever the holdings are worth.",
-        ))
+        # "No OKB means you cannot transact" stopped being true once trades
+        # could run under a session grant: there the relayer submits and pays,
+        # so a wallet with zero gas still trades. Saying otherwise would send
+        # someone to buy OKB they do not need.
+        if portfolio.get("gas_sponsored"):
+            findings.append(_observe(
+                "operability",
+                "This wallet holds no OKB, but trades placed in chat run under your "
+                "session grant, where Sarf pays the gas.",
+                "Signing a trade yourself still needs OKB, so a wallet with none is "
+                "reliant on the grant staying live.",
+            ))
+        else:
+            findings.append(_observe(
+                "operability",
+                "This wallet holds no OKB.",
+                "Gas on X Layer is paid in OKB; with a zero balance no transaction "
+                "can be sent, whatever the holdings are worth.",
+            ))
 
     if unpriced:
         findings.append(_observe(
