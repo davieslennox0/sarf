@@ -152,14 +152,23 @@ export function WalletProvider({ children }) {
     <PrivyProvider
       appId={PRIVY_APP_ID}
       config={{
-        // Google only. Privy also offers passkey as a login method — leaving it
-        // off is a security decision, not an omission: see the header comment.
-        loginMethods: ['google'],
+        // Google for people who have never held a wallet, plus real wallets for
+        // people who already have one and would rather bring it.
+        //
+        // Privy also offers PASSKEY as a login method. That one stays off, and
+        // it is the only omission here that is a security decision rather than
+        // a taste one — see the header comment.
+        loginMethods: ['google', 'wallet'],
         appearance: {
           theme: 'dark',
           accentColor: '#e8a33d',
           logo: '/favicon.ico',
-          walletList: [],
+          // OKX first: X Layer is OKX's chain, so it is the wallet most likely
+          // to already hold OKB for gas and to know the network.
+          walletList: [
+            'okx_wallet', 'metamask', 'coinbase_wallet',
+            'rainbow', 'zerion', 'uniswap',
+          ],
         },
         embeddedWallets: {
           ethereum: { createOnLogin: 'users-without-wallets' },

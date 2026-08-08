@@ -40,24 +40,77 @@ a:hover { text-decoration: underline; }
 
 /* ---- chrome ------------------------------------------------------------ */
 
+/* Sticky header. Three zones on one baseline: identity, navigation, account.
+   The account control sits at the far right because that is where every app
+   the user already knows keeps it — the previous layout put signing in on a
+   strip UNDER the menu, which read as page content rather than as chrome. */
 nav {
-  display: flex; align-items: baseline; justify-content: space-between;
-  gap: 16px; padding: 28px 0 18px; border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; gap: 24px;
+  padding: 0 3%; height: 64px;
+  margin: 0 -3%;            /* cancel .app's inset so the rule spans full width */
+  border-bottom: 1px solid var(--line);
+  background: rgba(11, 12, 9, .82);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
 }
 nav .brand {
-  font-family: var(--mono); font-weight: 700; font-size: 22px;
-  letter-spacing: .02em; color: var(--paper);
+  font-family: var(--mono); font-weight: 700; font-size: 18px;
+  letter-spacing: .02em; color: var(--paper); white-space: nowrap;
 }
 nav .brand:hover { text-decoration: none; }
 nav .brand span { color: var(--amber); }
-nav .links { display: flex; gap: 18px; }
+
+nav .links { display: flex; gap: 4px; margin-right: auto; }
 nav .links a {
   font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
   text-transform: uppercase; color: var(--paper-dim);
+  padding: 8px 11px; border-radius: 6px; position: relative;
+  transition: color .15s ease, background .15s ease;
 }
-nav .links a.on { color: var(--amber); }
-nav .links a:hover { color: var(--paper); text-decoration: none; }
+nav .links a:hover { color: var(--paper); background: var(--panel); text-decoration: none; }
+nav .links a.on { color: var(--amber); background: var(--panel); }
+/* Underline the active tab against the header rule rather than only tinting
+   it: colour alone is the one cue a colour-blind user may not get. */
+nav .links a.on::after {
+  content: ''; position: absolute; left: 11px; right: 11px; bottom: -13px;
+  height: 2px; background: var(--amber);
+}
+
+.header-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.header-right button { padding: 8px 14px; font-size: 12px; }
+
+/* Account chip + its menu. */
+.account { position: relative; }
+.account-chip {
+  display: flex; align-items: center; gap: 9px;
+  font-family: var(--mono); font-size: 12px; color: var(--paper);
+  background: var(--panel); border: 1px solid var(--line);
+  padding: 7px 12px; border-radius: 999px; cursor: pointer;
+}
+.account-chip:hover { border-color: var(--amber-dim); }
+.dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+  box-shadow: 0 0 0 3px rgba(107, 158, 125, .16); flex: none;
+}
+.dot.soon { background: var(--amber); box-shadow: 0 0 0 3px rgba(232, 163, 61, .16); }
+.account-chip .ttl { color: var(--paper-dim); font-size: 11px; }
+.account-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 60;
+  min-width: 268px; padding: 14px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
+}
+.account-menu .addr {
+  font-family: var(--mono); font-size: 12px; color: var(--paper);
+  word-break: break-all; line-height: 1.5;
+}
+.account-menu .label {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--paper-dim); margin-bottom: 4px;
+}
+.account-menu hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.account-menu button { width: 100%; }
 
 .bar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -69,7 +122,34 @@ nav .links a:hover { color: var(--paper); text-decoration: none; }
 .bar.warn { border-color: var(--red); color: var(--paper); }
 .bar button { margin-left: auto; }
 
+@media (max-width: 760px) {
+  nav { height: auto; padding-top: 12px; padding-bottom: 12px; flex-wrap: wrap; gap: 12px; }
+  nav .links { order: 3; width: 100%; margin-right: 0; overflow-x: auto; }
+  nav .links a.on::after { display: none; }
+  .header-right { margin-left: auto; }
+}
+
 main { padding-top: 8px; }
+
+/* ---- modal ------------------------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: rgba(6, 7, 5, .72);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+.modal {
+  width: 100%; max-width: 440px; padding: 26px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .6);
+}
+.modal h2 {
+  font-size: 19px; text-transform: none; letter-spacing: 0;
+  color: var(--paper); margin: 0 0 12px;
+}
+.modal p { margin-bottom: 10px; line-height: 1.55; }
+.modal .cta { margin: 20px 0 10px; }
 
 /* ---- type -------------------------------------------------------------- */
 

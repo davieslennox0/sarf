@@ -20,26 +20,78 @@ import {
  * authenticated. "End session" revokes server-side, which also disconnects
  * the MCP connector — ending it here ends it in Claude.
  */
-function SessionBar() {
+/**
+ * The account control in the header's right slot: a "Log in" button when there
+ * is no session, and an address chip with a live expiry countdown when there
+ * is. The countdown is on the chip rather than tucked in the menu because a
+ * session that has quietly lapsed is the thing people are surprised by.
+ */
+function AccountControl({ session, setSession }) {
+  const [now, setNow] = useState(Date.now());
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Close on any click outside the menu, which is what a dropdown is expected
+  // to do; without it the panel survives navigation and looks stuck.
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => { if (!e.target.closest('.account')) setOpen(false); };
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [open]);
+
+  const end = async () => {
+    try { await api.logout(); } catch { /* revoke best-effort; clear locally regardless */ }
+    clearSession();
+    setSession(null);
+    setOpen(false);
+  };
+
+  if (!session) return <Onboarding onDone={() => setSession(getSession())} />;
+
+  const left = Math.max(0, Math.floor((session.expiresAt - now) / 1000));
+  const mm = Math.floor(left / 60);
+  return (
+    <div className="account">
+      <button className="account-chip" onClick={() => setOpen((v) => !v)}>
+        <span className={`dot${mm < 5 ? ' soon' : ''}`} />
+        {short(session.address)}
+        <span className="ttl">{mm}m {String(left % 60).padStart(2, '0')}s</span>
+      </button>
+      {open && (
+        <div className="account-menu">
+          <div className="label">Signed in as</div>
+          <div className="addr">{session.address}</div>
+          <hr />
+          <p className="muted small">
+            Ending the session revokes it server-side, which also disconnects the
+            MCP connector — ending it here ends it in Claude.
+          </p>
+          <div style={{ marginTop: 12 }}>
+            <button className="danger" onClick={end}>End session</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Only real problems get a strip: a wrong network, or no way to sign at all. */
+function WarningBar({ setSession }) {
   const [account, setAccount] = useState(null);
   const [chain, setChain] = useState(null);
-  const [session, setSession] = useState(getSession());
-  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     currentAccount().then(setAccount).catch(() => {});
     getChainId().then(setChain).catch(() => {});
     const offA = onAccountsChanged((a) => { setAccount(a); clearSession(); setSession(null); });
     const offC = onChainChanged(setChain);
-    const t = setInterval(() => { setNow(Date.now()); setSession(getSession()); }, 1000);
-    return () => { offA(); offC(); clearInterval(t); };
-  }, []);
-
-  const end = async () => {
-    try { await api.logout(); } catch { /* revoke best-effort; clear locally regardless */ }
-    clearSession();
-    setSession(null);
-  };
+    return () => { offA(); offC(); };
+  }, [setSession]);
 
   if (!hasWallet()) {
     return (
@@ -63,33 +115,47 @@ function SessionBar() {
       </div>
     );
   }
+  return null;
+}
 
-  if (!session) {
-    return (
-      <div className="bar">
-        {account
-          ? <>Wallet {short(account)} connected — sign in to trade.</>
-          : 'Sign in with Google to get a wallet and start trading.'}
-        <Onboarding onDone={() => {
-          setSession(getSession());
-          currentAccount().then(setAccount).catch(() => {});
-        }} />
-      </div>
-    );
-  }
-
-  const left = Math.max(0, Math.floor((session.expiresAt - now) / 1000));
+/**
+ * Stands in for a page that needs an account.
+ *
+ * It renders in place rather than redirecting home, because the URL is often
+ * the payload: /sign?o=... is the link Claude hands the user from chat, and
+ * /connect carries the OAuth request. Bouncing to / would sign them in and
+ * then leave them staring at the markets page with the order id gone.
+ */
+function SignInRequired({ what, onDone }) {
   return (
-    <div className="bar live">
-      Session active for {short(session.address)} — expires in{' '}
-      {Math.floor(left / 60)}m {String(left % 60).padStart(2, '0')}s
-      <button className="danger" onClick={end}>End session</button>
-    </div>
+    <section>
+      <h1>Sign in</h1>
+      <p className="muted">
+        {what} belongs to your account, so it needs you signed in first. Sign in
+        with Google and Sarf provisions a wallet for you — nothing to install.
+      </p>
+      <div className="cta"><Onboarding onDone={onDone} /></div>
+    </section>
   );
 }
 
 export default function App() {
   const { pathname } = useLocation();
+  // Session state lives here so the nav, the bar and the route guards all read
+  // the same thing. sessionStorage is the source of truth; this is a mirror of
+  // it that re-renders, and it also expires on its own (getSession drops a
+  // token past expiresAt), so the UI locks itself without anything to notify.
+  const [session, setSession] = useState(getSession());
+  useEffect(() => {
+    const t = setInterval(() => setSession(getSession()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const signedIn = Boolean(session);
+  const refresh = () => setSession(getSession());
+  const gate = (what, element) =>
+    signedIn ? element : <SignInRequired what={what} onDone={refresh} />;
+
   return (
     <div className="app">
       <nav>
@@ -98,23 +164,34 @@ export default function App() {
         </Link>
         <div className="links">
           <Link className={pathname === '/' ? 'on' : ''} to="/">Markets</Link>
-          <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Holdings</Link>
-          <Link className={pathname === '/send' ? 'on' : ''} to="/send">Send</Link>
-          <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
-          <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
+          {/* Account pages are hidden rather than shown-and-refused: every one
+              of them opens by asking the wallet who you are, so listing them
+              to a signed-out visitor advertises pages that can only greet
+              them with a connect prompt. Markets needs no account and stays. */}
+          {signedIn && (
+            <>
+              <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Holdings</Link>
+              <Link className={pathname === '/send' ? 'on' : ''} to="/send">Send</Link>
+              <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
+              <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
+            </>
+          )}
+        </div>
+        <div className="header-right">
+          <AccountControl session={session} setSession={setSession} />
         </div>
       </nav>
-      <SessionBar />
+      <WarningBar setSession={setSession} />
       <main>
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/portfolio" element={<Portfolio />} />
-          <Route path="/activity" element={<Activity />} />
-          <Route path="/send" element={<Transfer />} />
-          <Route path="/security" element={<Security />} />
-          <Route path="/sign" element={<Sign />} />
+          <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
+          <Route path="/activity" element={gate('Your activity', <Activity />)} />
+          <Route path="/send" element={gate('Sending', <Transfer />)} />
+          <Route path="/security" element={gate('Security settings', <Security />)} />
+          <Route path="/sign" element={gate('This transaction', <Sign />)} />
           {/* /authorize is the OAuth endpoint itself; the consent UI lives here. */}
-          <Route path="/connect" element={<Authorize />} />
+          <Route path="/connect" element={gate('This connection request', <Authorize />)} />
         </Routes>
       </main>
       {/* Site-wide, so it appears on the signer and consent pages too — not

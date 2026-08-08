@@ -181,6 +181,11 @@ async def guard(request: Request, call_next):
 
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
+    # Asset filenames carry a content hash, so a given URL's bytes never
+    # change and it can be cached hard. The SPA shell that names them must
+    # not be (see _index) — otherwise a browser pins itself to a past deploy.
+    if request.url.path.startswith("/assets/"):
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
 
 
@@ -256,7 +261,15 @@ if _FRONTEND_DIST.is_dir():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
 
     def _index() -> FileResponse:
-        return FileResponse(_FRONTEND_DIST / "index.html")
+        # no-cache means "revalidate", not "don't cache": the etag still turns
+        # an unchanged shell into a 304 with no body. Without this header the
+        # browser applies heuristic freshness and can serve a shell from a
+        # previous deploy, which names hashed chunks that are no longer the
+        # current build — the page then runs old code with no visible error.
+        return FileResponse(
+            _FRONTEND_DIST / "index.html",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     for _path in _SPA_ROUTES:
         app.get(_path, include_in_schema=False)(lambda: _index())
