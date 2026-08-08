@@ -114,6 +114,59 @@ function toHex(v) {
   return '0x' + BigInt(v).toString(16);
 }
 
+/**
+ * Send a transaction carrying an EIP-7702 authorization, delegating the
+ * account to `delegate` in the same transaction that uses it.
+ *
+ * Wallet support for type-4 is uneven and there is no single agreed 1193
+ * method yet, so this tries the shapes in circulation and reports honestly
+ * rather than pretending. The two failure modes are told apart deliberately:
+ * a wallet that cannot do 7702 is a "use a different wallet" problem, while a
+ * rejection is the user changing their mind, and conflating them sends people
+ * to install something they do not need.
+ */
+export async function sendWithAuthorization(address, tx, delegate) {
+  const p = provider();
+  await ensureXLayer();
+  const base = {
+    from: address,
+    to: tx.to,
+    data: tx.data,
+    value: '0x0',
+  };
+  const auth = [{ address: delegate, chainId: CHAIN_ID_HEX }];
+
+  const attempts = [
+    // Shape most wallets converged on: the authorization list rides on the
+    // transaction and the wallet signs both parts.
+    () => p.request({ method: 'eth_sendTransaction',
+                      params: [{ ...base, type: '0x4', authorizationList: auth }] }),
+    // Some builds accept the list without an explicit type.
+    () => p.request({ method: 'eth_sendTransaction',
+                      params: [{ ...base, authorizationList: auth }] }),
+  ];
+
+  let unsupported = null;
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch (e) {
+      // 4001 is "user rejected" — stop immediately, do not retry another
+      // shape and prompt them a second time for something they declined.
+      if (e && (e.code === 4001 || /reject|denied/i.test(e.message || ''))) throw e;
+      unsupported = e;
+    }
+  }
+  const err = new Error(
+    'This wallet could not sign an EIP-7702 authorization. In-chat execution ' +
+    'needs one. You can still trade normally — every order is signed in your ' +
+    'wallet as usual.'
+  );
+  err.cause = unsupported;
+  err.unsupported = true;
+  throw err;
+}
+
 export function onAccountsChanged(cb) {
   const p = provider();
   if (!p || !p.on) return () => {};

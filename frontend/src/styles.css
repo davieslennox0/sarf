@@ -295,3 +295,12 @@ footer {
   font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
   color: var(--paper-dim); text-align: center;
 }
+
+/* Inline controls in the key/value grid (session-grant settings). Sized to sit
+   on the value side without breaking the row rhythm the rest of the page uses. */
+.kv select, .kv input[type="number"] {
+  font: inherit; background: var(--panel-2); color: var(--paper);
+  border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px;
+  min-width: 96px; text-align: right;
+}
+.kv select:focus, .kv input[type="number"]:focus { outline: 1px solid var(--amber); }

@@ -71,6 +71,11 @@ export const api = {
   myOrders: () => req('/api/me/orders'),
   portfolio: () => req('/api/me/portfolio'),
 
+  grant: () => req('/api/grant'),
+  grantPrepare: (body) =>
+    req('/api/grant/prepare', { method: 'POST', body: JSON.stringify(body) }),
+  grantRevoke: () => req('/api/grant/revoke', { method: 'POST' }),
+
   passkeyStatus: () => req('/api/passkey/status'),
   passkeyRegisterOptions: () => req('/api/passkey/register/options', { method: 'POST' }),
   passkeyRegisterVerify: (cred) =>
