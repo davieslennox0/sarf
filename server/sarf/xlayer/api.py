@@ -26,7 +26,7 @@ from .. import auth, passkey
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError
-from . import rpc
+from . import delegation, rpc
 from .evm import validate_evm_address, validate_tx_hash
 from .okx_dex import DexError, OkxDexClient
 from .registry import CHAIN_ID, EXPLORER_TX, XStocksRegistry
@@ -143,6 +143,153 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             "required": settings.passkey_required,
             "last_verified_at": int(last) if last else None,
             "stepup_valid_for_seconds": passkey.STEPUP_VALIDITY_SECONDS,
+        }
+
+    def _stable_units(usd: Any) -> int:
+        """Dollars -> USDT minimal units. Rejects nonsense rather than
+        int()-ing it into a cap the user did not choose."""
+        if isinstance(usd, bool) or not isinstance(usd, (int, float, str)):
+            raise ValidationError("caps must be numbers")
+        try:
+            v = float(usd)
+        except (TypeError, ValueError):
+            raise ValidationError("caps must be numbers")
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ValidationError("caps must be finite")
+        return int(round(v * 10 ** reg.quote.decimals))
+
+    # ---------------------------------------------------------------- grants
+    # The session-key flow. Sarf prepares the transactions; the user's wallet
+    # signs them. Every state-changing step here produces an UNSIGNED payload —
+    # there is deliberately no endpoint that installs or removes a grant on the
+    # user's behalf, because that is the one thing that must stay theirs.
+
+    @r.get("/grant")
+    async def grant_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        addr = _session_addr(authorization)
+        row = db.get_grant(addr)
+        # Read the chain, not just our row: a grant is only real if the
+        # authorisation transaction actually landed, and a user can revoke
+        # on-chain without telling us. The chain is the source of truth.
+        installed = await rpc.delegated_to(addr)
+        out: dict[str, Any] = {
+            "address": addr,
+            "delegate_contract": settings.delegate_address or None,
+            "delegation_installed": bool(
+                installed and settings.delegate_address
+                and installed.lower() == settings.delegate_address.lower()
+            ),
+            "delegated_to": installed,
+            "auto_execute_under_usd": settings.delegated_auto_usd,
+            "max_grant_days": delegation.MAX_GRANT_SECONDS // 86400,
+            "passkey_registered": bool(db.passkeys_for_address(addr)),
+        }
+        if not row:
+            out["grant"] = None
+            return out
+        g = delegation.Grant(
+            address=row["address"], session_address=row["session_address"],
+            delegate=row["delegate"], router=row["router"], stable=row["stable"],
+            expiry=row["expiry"], per_trade_cap=row["per_trade_cap"],
+            daily_cap=row["daily_cap"], created_at=row["created_at"],
+            rotated_at=row["rotated_at"], revoked_at=row["revoked_at"],
+        )
+        out["grant"] = g.view(reg.quote.decimals)
+        out["key_due_for_rotation"] = delegation.due_for_rotation(g)
+        return out
+
+    @r.post("/grant/prepare")
+    async def grant_prepare(body: dict[str, Any],
+                            authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Mint a session key and return the UNSIGNED authorize() transaction.
+
+        A passkey must already be registered: the passkey is what protects
+        step-up later, and issuing a key that can trade before that protection
+        exists would ship the convenience without the control.
+        """
+        addr = _session_addr(authorization)
+        if not settings.delegate_address:
+            raise HTTPException(503, "in-chat execution is not configured on this server")
+        if not db.passkeys_for_address(addr):
+            raise HTTPException(
+                400, "register a passkey first — it is what gates trades above your threshold"
+            )
+        try:
+            expiry = delegation.requested_expiry(body.get("days", 7))
+            per_trade = _stable_units(body.get("per_trade_cap_usd", 500))
+            daily = _stable_units(body.get("daily_cap_usd", 2000))
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        if per_trade <= 0 or daily <= 0:
+            raise HTTPException(400, "caps must be greater than zero")
+        if per_trade > daily:
+            raise HTTPException(400, "the per-trade cap cannot exceed the daily cap")
+
+        session_address, sealed = delegation.new_session_key()
+        allow = settings.rwa_allowlist
+        tokens = [a.address for a in reg.assets if not allow or a.symbol.upper() in allow]
+        data = delegation.grant_calldata(
+            session_key=session_address, expiry=expiry,
+            router=reg.dex_approve_address, stable=reg.quote.address,
+            per_trade_cap=per_trade, daily_cap=daily, tokens=tokens,
+        )
+        # Stored before the user signs. If they abandon the flow the key is
+        # inert — it is only worth anything once the contract has been told
+        # about it, and the contract only hears that from their wallet.
+        db.put_grant(
+            address=addr, session_address=session_address, sealed_key=sealed,
+            delegate=settings.delegate_address, router=reg.dex_approve_address,
+            stable=reg.quote.address, expiry=expiry,
+            per_trade_cap=per_trade, daily_cap=daily,
+        )
+        return {
+            "session_key": session_address,
+            "expires_at": expiry,
+            "per_trade_cap_usd": round(per_trade / 10 ** reg.quote.decimals, 2),
+            "daily_cap_usd": round(daily / 10 ** reg.quote.decimals, 2),
+            "allowed_token_count": len(tokens),
+            "authorization_required": {
+                "type": "eip7702",
+                "delegate": settings.delegate_address,
+                "chain_id": CHAIN_ID,
+                "note": (
+                    "Sign an EIP-7702 authorisation for this delegate, then send the "
+                    "transaction below to your own address. Both are signed by your "
+                    "wallet; Sarf cannot do either."
+                ),
+            },
+            "transaction": {"to": addr, "data": data, "value": "0x0", "chainId": CHAIN_ID},
+            "what_this_grants": (
+                f"Sarf may swap the listed tokens for you, up to "
+                f"${per_trade / 10 ** reg.quote.decimals:,.0f} per trade and "
+                f"${daily / 10 ** reg.quote.decimals:,.0f} per day, until this expires. "
+                "It can never move funds to another address, spend your OKB, call any "
+                "contract but the router, or raise these limits. You can revoke it at "
+                "any time without Sarf's involvement."
+            ),
+        }
+
+    @r.post("/grant/revoke")
+    async def grant_revoke(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Stop using the key locally, and hand back the on-chain revoke().
+
+        Both halves matter and only one is the security boundary: marking the
+        row stops Sarf from signing, while the contract call is what stops
+        anyone who has taken the key.
+        """
+        addr = _session_addr(authorization)
+        db.revoke_grant(addr)
+        return {
+            "stopped_locally": True,
+            "transaction": {
+                "to": addr, "data": delegation.revoke_calldata(),
+                "value": "0x0", "chainId": CHAIN_ID,
+            },
+            "note": (
+                "Sarf has stopped using the key. Send this transaction from your wallet "
+                "to revoke it on-chain — that is what makes it unusable by anyone, "
+                "including us."
+            ),
         }
 
     @r.post("/passkey/register/options")
