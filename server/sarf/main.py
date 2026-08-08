@@ -193,6 +193,12 @@ async def healthz():
         "tradable_assets": len(rwa_registry.assets),
         "quote_transport": dex.transport,
         "passkey_stepup_usd": settings.passkey_stepup_usd,
+        # Whether in-chat execution is even possible. A boolean only: the
+        # relayer's address and gas balance are readable on-chain by anyone
+        # who wants them, but publishing the balance on an unauthenticated
+        # endpoint turns "is the tank low" into a free signal for anyone
+        # deciding when to spam the thing.
+        "delegated_execution": bool(settings.delegate_address and settings.relayer_private_key),
     }
 
 
