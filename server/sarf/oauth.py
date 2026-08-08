@@ -173,7 +173,11 @@ def build_oauth(db: Database) -> APIRouter:
             return _redirect_err(redirect_uri, state, "unsupported_response_type", "use code")
         if not q.get("code_challenge") or q.get("code_challenge_method", "S256") != "S256":
             return _redirect_err(redirect_uri, state, "invalid_request", "PKCE S256 required")
-        return RedirectResponse(f"/connect?{urlencode(dict(q))}", status_code=307)
+        # /approve, not /connect: the SPA's /connect is the public MCP setup
+        # page. The consent UI needs a route nothing else claims, or a user
+        # arriving mid-OAuth lands on marketing with their params intact and
+        # nothing to approve.
+        return RedirectResponse(f"/approve?{urlencode(dict(q))}", status_code=307)
 
     @r.post("/api/oauth/approve")
     async def approve(body: dict[str, Any]) -> dict[str, Any]:

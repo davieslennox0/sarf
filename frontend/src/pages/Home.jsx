@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { EXPLORER } from '../wallet.js';
+import { Link } from 'react-router-dom';
 
-const MCP_URL = 'https://sarf-mcp.managerx.xyz/mcp';
 
 // The short list shown by default. Ordered by on-chain pool depth rather than
 // alphabetically — the registry sorts A-Z, which would open the page on
@@ -68,7 +67,7 @@ function Flap({ ch }) {
  * Digit count is fixed per session from the first tick, so the board doesn't
  * reflow between $99 and $100 — a departure board has a fixed number of flaps.
  */
-function Board({ symbol, name }) {
+export function Board({ symbol, name }) {
   const [price, setPrice] = useState(null);
   const [first, setFirst] = useState(null);
   const [stale, setStale] = useState(false);
@@ -128,7 +127,7 @@ function Board({ symbol, name }) {
 }
 
 /** Fetch prices a few at a time so 40 aggregator calls don't stampede. */
-function usePrices(symbols) {
+export function usePrices(symbols) {
   const [prices, setPrices] = useState({});
   useEffect(() => {
     if (!symbols.length) return;
@@ -154,7 +153,6 @@ function usePrices(symbols) {
 export default function Home() {
   const [assets, setAssets] = useState([]);
   const [featured, setFeatured] = useState('SPYx');
-  const [copied, setCopied] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
@@ -186,7 +184,7 @@ export default function Home() {
   return (
     <>
       <section className="hero">
-        <div className="eyebrow">Tokenized equities on X Layer</div>
+        <div className="eyebrow tick">AI assistant for on-chain stock portfolios</div>
         <h1>Sarf, your AI-RWA Portfolio <Rotator words={ROLES} /></h1>
         <p className="sub">
           Ask for a position, a price, or a read on what you hold — in Claude or
@@ -194,14 +192,14 @@ export default function Home() {
           wallet. The server holds no keys and cannot move your funds.
         </p>
         <div className="stats">
-          <div><b>{assets.length || '—'}</b><span>assets</span></div>
+          <div><b>{assets.length || '\u2014'}</b><span>assets</span></div>
           <div><b>X Layer</b><span>chain 196</span></div>
         </div>
       </section>
 
       <Board symbol={featured} name={featuredAsset?.name?.replace(' xStock', '')} />
 
-      <h2>Markets</h2>
+      <div className="section-label">Markets</div>
       <div className="ledger">
         {visible.map((a) => {
           const p = prices[a.symbol];
@@ -217,7 +215,7 @@ export default function Home() {
               </span>
               <span className="row-right">
                 <span className="price">
-                  {p === undefined ? '···' : p === null ? '—' : `$${p.toFixed(2)}`}
+                  {p === undefined ? '\u00b7\u00b7\u00b7' : p === null ? '\u2014' : `$${p.toFixed(2)}`}
                 </span>
                 <span className="chip">{a.cex_ticker}</span>
               </span>
@@ -225,58 +223,66 @@ export default function Home() {
           );
         })}
       </div>
-      {assets.length > visible.length || showAll ? (
-        <div className="cta">
-          <button onClick={() => setShowAll((v) => !v)}>
-            {showAll ? 'Show fewer' : `List all ${assets.length} markets`}
-          </button>
-        </div>
-      ) : null}
+      <Link className="see-all" to="/markets">
+        View all {assets.length || 40} tokenized assets \u2192
+      </Link>
 
-      <p className="muted small" style={{ marginTop: 10 }}>
-        Trade using the on-chain symbol — the x-suffix form (AAPLx). The chip shows
-        OKX's centralized order-book ticker for the same underlying; that is a
-        different identifier on a different venue and is not tradable here.
-      </p>
-
-      <h2>Connect to Claude or ChatGPT</h2>
-      <ol className="steps">
-        <li>
-          Open <b>Settings → Connectors → Add custom connector</b>.
-          <div className="copy-row">
-            <code>{MCP_URL}</code>
-            <button onClick={() => {
-              navigator.clipboard?.writeText(MCP_URL);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            }}>{copied ? 'copied' : 'copy'}</button>
+      <div className="section-label">How it works</div>
+      <div className="steps">
+        <div className="step">
+          <div className="step-num">01</div>
+          <div className="step-body">
+            <h3>Read any address</h3>
+            <p>
+              Paste an X Layer address on the portfolio page. No connection, no
+              signup \u2014 it reads the same public state a block explorer shows.
+            </p>
           </div>
-        </li>
-        <li>
-          Approve with one wallet signature. It <b>authorizes no transaction</b> and
-          moves no funds.
-        </li>
-        <li>
-          Ask naturally — <b>“what can I buy?”</b>, <b>“price of NVDAx”</b>,
-          <b> “buy $50 of SPYx”</b>.
-        </li>
-        <li>
-          Sarf returns an <b>unsigned</b> transaction and a signing link. You review it
-          and sign in your own wallet; that is what produces the X Layer transaction hash.
-        </li>
-      </ol>
+        </div>
+        <div className="step">
+          <div className="step-num">02</div>
+          <div className="step-body">
+            <h3>See what the numbers show</h3>
+            <p>
+              Concentration, sector mix and cash buffer, each stated next to the
+              reference point it is measured against. Sarf is not a licensed
+              adviser and does not tell you what to do.
+            </p>
+          </div>
+        </div>
+        <div className="step">
+          <div className="step-num">03</div>
+          <div className="step-body">
+            <h3>Act from Claude or ChatGPT</h3>
+            <p>
+              Sarf builds the transaction and you sign it in your own wallet.
+              The server never holds your keys.
+            </p>
+          </div>
+        </div>
+      </div>
 
-      <h2>Settlement</h2>
-      <p className="muted small" style={{ maxWidth: '58ch', lineHeight: 1.65 }}>
-        Every trade is an ordinary on-chain swap. Orders appear under{' '}
-        <a href="/activity">activity</a> with their hash linked to the{' '}
-        <a href={EXPLORER} target="_blank" rel="noreferrer">X Layer explorer</a> —
-        verifiable by anyone, not a screenshot.
-      </p>
+      <div className="card green">
+        <h3>Non-custodial by construction</h3>
+        <p>
+          Sarf can price and build a transaction; it cannot move your funds. Every
+          trade is signed by you, and the session-key path that runs small trades
+          in chat is capped in the contract itself \u2014 transfers can never be
+          delegated at all.
+        </p>
+      </div>
+
+      <div className="connect-cta">
+        <h2 style={{ textTransform: 'none', letterSpacing: 0, fontSize: 19, color: 'var(--paper)', margin: '0 0 10px' }}>
+          Connect Sarf to Claude or ChatGPT
+        </h2>
+        <p>Add the MCP server once, then trade and read your portfolio from any chat.</p>
+        <Link className="cta-btn" to="/connect">View setup instructions</Link>
+      </div>
 
       <footer>
         <p className="fine">
-          Synthetic exposure. xStocks track the underlying share price only — no
+          Synthetic exposure. xStocks track the underlying share price only \u2014 no
           ownership, dividends, or voting rights. Redemption depends on the issuer.
           Sarf is not a broker.
         </p>
@@ -284,6 +290,11 @@ export default function Home() {
           A flat $0.10 platform fee is charged per swap in the stablecoin leg, inside
           the same transaction you sign. Network gas is separate and paid in OKB.
         </p>
+        <div className="footlinks">
+          <Link to="/security">Security</Link>
+          <Link to="/how">How it works</Link>
+          <Link to="/connect">Connect</Link>
+        </div>
       </footer>
     </>
   );

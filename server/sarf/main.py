@@ -235,7 +235,10 @@ class _SPAStaticFiles(StaticFiles):
 
 
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-_SPA_ROUTES = ["/", "/portfolio", "/activity", "/send", "/security", "/sign", "/connect"]
+_SPA_ROUTES = [
+    "/", "/portfolio", "/markets", "/how", "/security", "/connect",
+    "/settings", "/activity", "/send", "/sign", "/approve",
+]
 
 # Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with
 # base=/legacy/ so it carries its own assets and its router stays inside the
@@ -285,7 +288,7 @@ if _FRONTEND_DIST.is_dir():
     async def _legacy_dashboard(rest: str, request: Request):
         target = (rest or "/").rstrip("/") or "/"
         if target == "/authorize":
-            target = "/connect"
+            target = "/approve"
         qs = request.url.query
         return RedirectResponse(f"{target}{'?' + qs if qs else ''}", status_code=308)
 

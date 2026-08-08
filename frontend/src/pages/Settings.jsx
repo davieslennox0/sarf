@@ -7,7 +7,7 @@ import { connect, currentAccount, sendTransaction, sendWithAuthorization } from 
  * assume a passkey is a second signer, and it is not — the wallet signature is
  * what authorizes funds. This page says what the passkey actually protects.
  */
-export default function Security() {
+export default function Settings() {
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);

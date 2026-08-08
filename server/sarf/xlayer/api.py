@@ -15,6 +15,7 @@ import asyncio
 import json
 import secrets
 import time
+from collections import defaultdict, deque
 from typing import Any
 
 from eth_account import Account
@@ -26,13 +27,22 @@ from .. import auth, passkey
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError
-from . import delegation, rpc
+from . import analysis, delegation, rpc
 from .evm import validate_evm_address, validate_tx_hash
 from .okx_dex import DexError, OkxDexClient
 from .registry import CHAIN_ID, EXPLORER_TX, XStocksRegistry
 
 CHALLENGE_TTL = 300
 _challenges: dict[str, tuple[str, float]] = {}
+
+# Public (unauthenticated) portfolio lookups — see the /portfolio/{address}
+# handler. 60s of staleness is invisible against a portfolio view and turns a
+# refresh-happy visitor into one fan-out.
+PUBLIC_PORTFOLIO_TTL = 60.0
+PUBLIC_PORTFOLIO_PER_MINUTE = 10
+PUBLIC_CACHE_MAX = 500
+_public_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_public_hits: defaultdict[str, deque[float]] = defaultdict(deque)
 
 # Featured-chart poll interval. The aggregator is the upstream rate limit, so
 # one server-side poller fans out to every viewer over SSE rather than each
@@ -423,6 +433,60 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         if provider is None:
             raise HTTPException(503, "portfolio view unavailable")
         return await provider.portfolio(addr)
+
+    @r.get("/portfolio/{address}")
+    async def public_portfolio(address: str, request: Request) -> dict[str, Any]:
+        """Read-only analysis of any address. No session, no wallet, no signature.
+
+        Safe to leave open because it is strictly a read of public chain state —
+        it authorizes nothing and reveals nothing an explorer would not. What it
+        is NOT is cheap: one call fans out to a balance read per tracked asset
+        plus aggregator quotes to price them. So it is metered twice over — a
+        per-IP rate limit, and a short cache keyed by address so a page that
+        polls, or ten people looking at the same whale, costs one fan-out.
+        """
+        try:
+            addr = validate_evm_address(address)
+        except ValidationError as e:
+            # This one is typed by hand off the front page, so a malformed
+            # address is an ordinary user mistake, not a server fault.
+            raise HTTPException(400, str(e)) from e
+        if provider is None:
+            raise HTTPException(503, "portfolio view unavailable")
+
+        ip = request.client.host if request.client else "?"
+        now = time.time()
+        hits = _public_hits[ip]
+        while hits and now - hits[0] > 60:
+            hits.popleft()
+        # Deliberately below the general /mcp limit: this is the most expensive
+        # unauthenticated call on the server, so it gets the tightest budget.
+        if len(hits) >= PUBLIC_PORTFOLIO_PER_MINUTE:
+            raise HTTPException(429, "too many portfolio lookups; try again shortly")
+        hits.append(now)
+
+        cached = _public_cache.get(addr)
+        if cached and now - cached[0] < PUBLIC_PORTFOLIO_TTL:
+            return cached[1]
+
+        try:
+            portfolio = await provider.portfolio(addr, record=False)
+        except DexError as e:
+            raise HTTPException(502, f"price feed unavailable: {e}") from e
+        except Exception as e:  # RPC flake, upstream timeout
+            # Upstream being down is not this server being broken, and the
+            # difference matters to whoever is looking at the page.
+            raise HTTPException(503, "X Layer read failed; try again shortly") from e
+        # analyze() is pure, so it costs nothing to run here and keeps the site
+        # and the MCP tool reading from one implementation of the methodology.
+        body = {**portfolio, "analysis": analysis.analyze(portfolio)}
+
+        # Bound the cache rather than letting a scripted sweep of random
+        # addresses grow it without limit.
+        if len(_public_cache) > PUBLIC_CACHE_MAX:
+            _public_cache.clear()
+        _public_cache[addr] = (now, body)
+        return body
 
     @r.get("/me/orders")
     async def my_orders(authorization: str | None = Header(default=None)) -> dict[str, Any]:

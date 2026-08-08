@@ -70,6 +70,9 @@ export const api = {
     }),
   myOrders: () => req('/api/me/orders'),
   portfolio: () => req('/api/me/portfolio'),
+  // Read-only, no session. Carries the analysis alongside the holdings so the
+  // page renders both from one round trip.
+  publicPortfolio: (address) => req(`/api/portfolio/${encodeURIComponent(address)}`),
 
   transferPrepare: (body) =>
     req('/api/transfer/prepare', { method: 'POST', body: JSON.stringify(body) }),

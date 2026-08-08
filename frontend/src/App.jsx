@@ -3,7 +3,11 @@ import { Link, Route, Routes, useLocation } from 'react-router-dom';
 import Home from './pages/Home.jsx';
 import Activity from './pages/Activity.jsx';
 import Portfolio from './pages/Portfolio.jsx';
-import Security from './pages/Security.jsx';
+import Markets from './pages/Markets.jsx';
+import How from './pages/How.jsx';
+import SecurityInfo from './pages/SecurityInfo.jsx';
+import Connect from './pages/Connect.jsx';
+import Settings from './pages/Settings.jsx';
 import Transfer from './pages/Transfer.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
@@ -71,7 +75,11 @@ function AccountControl({ session, setSession }) {
             Ending the session revokes it server-side, which also disconnects the
             MCP connector — ending it here ends it in Claude.
           </p>
-          <div style={{ marginTop: 12 }}>
+          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            <Link className="cta-btn" to="/settings" style={{ padding: '9px 14px', fontSize: 11 }}
+                  onClick={() => setOpen(false)}>
+              Settings
+            </Link>
             <button className="danger" onClick={end}>End session</button>
           </div>
         </div>
@@ -163,17 +171,20 @@ export default function App() {
           Sarf <span>/</span> X Layer RWA
         </Link>
         <div className="links">
-          <Link className={pathname === '/' ? 'on' : ''} to="/">Markets</Link>
-          {/* Account pages are hidden rather than shown-and-refused: every one
-              of them opens by asking the wallet who you are, so listing them
-              to a signed-out visitor advertises pages that can only greet
-              them with a connect prompt. Markets needs no account and stays. */}
+          {/* Public first: everything here works without an account, including
+              Portfolio, which reads any pasted address. The account-only pages
+              are appended once there is a session rather than shown and then
+              refused — each of them opens by asking the wallet who you are. */}
+          <Link className={pathname === '/' ? 'on' : ''} to="/">Home</Link>
+          <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
+          <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
+          <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
+          <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
+          <Link className={pathname === '/connect' ? 'on' : ''} to="/connect">Connect</Link>
           {signedIn && (
             <>
-              <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Holdings</Link>
               <Link className={pathname === '/send' ? 'on' : ''} to="/send">Send</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
-              <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
             </>
           )}
         </div>
@@ -184,14 +195,24 @@ export default function App() {
       <WarningBar setSession={setSession} />
       <main>
         <Routes>
+          {/* Public. Portfolio is public on purpose: reading an address needs
+              no account, and it degrades to a prompt only for "my holdings". */}
           <Route path="/" element={<Home />} />
-          <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
+          <Route path="/portfolio" element={<Portfolio />} />
+          <Route path="/markets" element={<Markets />} />
+          <Route path="/how" element={<How />} />
+          <Route path="/security" element={<SecurityInfo />} />
+          <Route path="/connect" element={<Connect />} />
+
+          {/* Account-only. */}
+          <Route path="/settings" element={gate('Your security settings', <Settings />)} />
           <Route path="/activity" element={gate('Your activity', <Activity />)} />
           <Route path="/send" element={gate('Sending', <Transfer />)} />
-          <Route path="/security" element={gate('Security settings', <Security />)} />
           <Route path="/sign" element={gate('This transaction', <Sign />)} />
-          {/* /authorize is the OAuth endpoint itself; the consent UI lives here. */}
-          <Route path="/connect" element={gate('This connection request', <Authorize />)} />
+          {/* OAuth consent. /authorize is the server endpoint, which validates
+              and hands off here; this route moved off /connect when that name
+              was taken by the public setup page. */}
+          <Route path="/approve" element={gate('This connection request', <Authorize />)} />
         </Routes>
       </main>
       {/* Site-wide, so it appears on the signer and consent pages too — not
