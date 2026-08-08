@@ -1,0 +1,38 @@
+{
+  "_comment": "Live deployments on X Layer (chain 196). The delegate address is what users point an EIP-7702 authorisation at, so it is a security-relevant constant: never change it without re-verifying the deployed bytecode against a fresh build of the same source.",
+  "chain_id": 196,
+  "rpc": "https://rpc.xlayer.tech",
+  "contracts": {
+    "SarfSessionKey": {
+      "address": "0x30eeC302C6D98253dCcA7d970343dBb95c920D76",
+      "deployed_at": "2026-08-07",
+      "tx_hash": "0xf720d8cb258825cbfedb5dae4d4dd523fe3368c6e833f430e27580bde67432a7",
+      "block": 67378132,
+      "runtime_code_bytes": 3651,
+      "deployer": "0x6A9eD66625de4f26be561e3Dab5A59e8e47C8Dfd",
+      "create2": {
+        "_comment": "Deployed through the canonical deterministic deployer, so the address is a pure function of the salt and the init code — anyone can recompute it from source and confirm nothing else was deployed here.",
+        "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+        "salt": "0x0000000000000000000000000000000000000000000000000000005361726601"
+      },
+      "privileges": {
+        "_comment": "Stated explicitly because it is the question anyone auditing this should ask first.",
+        "owner": null,
+        "admin": null,
+        "upgradeable": false,
+        "deployer_retains": "nothing — the contract has no privileged role of any kind, so the wallet that paid for deployment has no more power over it than any other address"
+      },
+      "constants": {
+        "MAX_GRANT_SECONDS": 2592000
+      }
+    }
+  },
+  "external": {
+    "_comment": "Third-party addresses verified present on 196 by direct eth_getCode probe on 2026-08-07.",
+    "entrypoint_v07": "0x0000000071727De22E5E9d8BAf0edAc6f37da032",
+    "entrypoint_v08": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
+    "create2_deployer": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+    "okx_dex_approve_address": "0x8b773D83bc66Be128c60e07E17C8901f7a64F000",
+    "not_deployed": ["RIP-7212 P-256 precompile (0x100)", "Safe7579 adapter", "ZeroDev Kernel v3.1"]
+  }
+}
