@@ -143,9 +143,10 @@ class XLayerRwaProvider:
     def fee_plan(stable_leg_usd: float | None) -> dict[str, Any]:
         """Turn the flat dollar fee into a percentage of the stablecoin leg.
 
-        The aggregator charges a percentage, so a fixed $0.10 is only sane
-        above a minimum order size — on a $2 trade it would be 5%. Below
-        min_order_usd we refuse the order rather than quietly overcharge.
+        The aggregator charges a percentage, so a fixed $0.10 would be 5% of a
+        $2 trade. max_fee_percent caps the rate instead of the order being
+        refused, so small orders pay proportionally rather than being turned
+        away: a $2 order is charged $0.02.
 
         Fails to ZERO fee if no recipient address is configured: an unset
         address must never mean "send the fee somewhere else".
@@ -317,14 +318,20 @@ class XLayerRwaProvider:
             and settings.relayer_private_key
         )
 
-    async def portfolio(self, address: str) -> dict[str, Any]:
+    async def portfolio(self, address: str, *, record: bool = True) -> dict[str, Any]:
         """Holdings for `address`, read straight from X Layer state.
 
         Shared by the MCP tool and the dashboard so the numbers a user
         sees in chat and on the site can never disagree.
+
+        record=False for the public lookup, which reads an address nobody has
+        authenticated as. Recording there would let anyone grow the users table
+        without limit just by iterating addresses, and would file strangers as
+        Sarf users on the strength of somebody having typed their address.
         """
         reg, db = self.reg, self.db
-        db.upsert_user(address, "mcp")
+        if record:
+            db.upsert_user(address, "mcp")
         allow = settings.rwa_allowlist
         assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
 
@@ -598,7 +605,9 @@ class XLayerRwaProvider:
                     "X Layer is too thin for an order this size. Try a smaller amount."
                 )
 
-            # A flat fee is only fair above a floor: $0.10 on a $2 order is 5%.
+            # Off by default (min_order_usd = 0): any amount is accepted, and
+            # the fee stays proportionate because max_fee_percent caps the rate.
+            # Only fires if an operator sets a floor back.
             if (est_usd is not None and settings.platform_fee_usd > 0
                     and settings.platform_fee_address and est_usd < settings.min_order_usd):
                 raise ValueError(
@@ -839,6 +848,7 @@ class XLayerRwaProvider:
                 "charge": False, "usd": 0.0, "percent": 0.0, "recipient": None,
                 "reason": "no stablecoin leg — Sarf does not charge fees in a volatile asset",
             }
+            # Off by default — see the note on the same guard in place_order.
             if (touches_stable and est_usd is not None and fee["charge"]
                     and est_usd < settings.min_order_usd):
                 raise ValueError(

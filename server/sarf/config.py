@@ -141,9 +141,10 @@ class Settings:
     # collects it natively via feePercent + a referrer address, inside the same
     # transaction the user signs — there is no second transfer and no custody.
     #
-    # It is expressed in dollars but applied as a percentage, so it needs a
-    # floor on order size: $0.10 on a $2 order is 5%, which would be predatory.
-    # Orders below min_order_usd are refused rather than silently overcharged.
+    # It is expressed in dollars but applied as a percentage, so a small order
+    # would otherwise carry an absurd rate: $0.10 on a $2 order is 5%. That is
+    # handled by max_fee_percent, which caps the rate — a $2 order pays $0.02,
+    # not $0.10 — so no order size has to be refused to keep the fee honest.
     platform_fee_usd: float = field(
         default_factory=lambda: float(_env("PLATFORM_FEE_USD", "0.10"))
     )
@@ -152,7 +153,14 @@ class Settings:
     platform_fee_address: str = field(
         default_factory=lambda: _env("PLATFORM_FEE_ADDRESS", "").strip().lower()
     )
-    min_order_usd: float = field(default_factory=lambda: float(_env("MIN_ORDER_USD", "20")))
+    # No minimum: any amount that is representable on-chain is accepted. The
+    # fee stays proportionate at every size because max_fee_percent caps the
+    # rate, so a floor is not needed to keep it fair. Amounts that round to
+    # zero base units are still rejected (validation.py) — that is not a small
+    # trade, it is a transaction that would move nothing.
+    #
+    # Set MIN_ORDER_USD above 0 to reinstate a floor.
+    min_order_usd: float = field(default_factory=lambda: float(_env("MIN_ORDER_USD", "0")))
 
     # OKX caps referral commission at 3%; keep our own ceiling well under it so
     # a mis-set fee/tiny order can never quietly take a big bite.
