@@ -212,6 +212,10 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
                 and installed.lower() == settings.delegate_address.lower()
             ),
             "delegated_to": installed,
+            "approval_mode": (row or {}).get("approval_mode") or "always_ask",
+            "autonomous_limit_usd": round(
+                int((row or {}).get("autonomous_limit") or 0)
+                / 10 ** reg.quote.decimals, 2),
             "auto_execute_under_usd": settings.delegated_auto_usd,
             "max_grant_days": delegation.MAX_GRANT_SECONDS // 86400,
             "passkey_registered": bool(db.passkeys_for_address(addr)),
@@ -262,12 +266,31 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             expiry = delegation.requested_expiry(body.get("days", 7))
             per_trade = _stable_units(body.get("per_trade_cap_usd", 500))
             daily = _stable_units(body.get("daily_cap_usd", 2000))
+            # Approval mode is an explicit choice at setup, not a default the
+            # user has to go and find later. Anything unrecognised falls back to
+            # always_ask: an unparsed value must never buy a weaker gate.
+            mode = str(body.get("approval_mode", "always_ask")).strip()
+            if mode not in ("always_ask", "autonomous"):
+                mode = "always_ask"
+            autonomous_limit = (
+                _stable_units(body.get("autonomous_limit_usd", 0))
+                if mode == "autonomous" else 0
+            )
         except ValidationError as e:
             raise HTTPException(400, str(e))
         if per_trade <= 0 or daily <= 0:
             raise HTTPException(400, "caps must be greater than zero")
         if per_trade > daily:
             raise HTTPException(400, "the per-trade cap cannot exceed the daily cap")
+        if mode == "autonomous":
+            if autonomous_limit <= 0:
+                raise HTTPException(
+                    400, "autonomous mode needs a spending limit above zero — that "
+                         "limit is the whole difference between it and Always Ask")
+            if autonomous_limit > per_trade:
+                raise HTTPException(
+                    400, "the autonomous limit cannot exceed the per-trade cap; the "
+                         "cap is enforced on-chain and would reject the trade anyway")
 
         session_address, sealed = delegation.new_session_key()
         allow = settings.rwa_allowlist
@@ -285,9 +308,13 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             delegate=settings.delegate_address, router=reg.dex_approve_address,
             stable=reg.quote.address, expiry=expiry,
             per_trade_cap=per_trade, daily_cap=daily,
+            approval_mode=mode, autonomous_limit=autonomous_limit,
         )
         return {
             "session_key": session_address,
+            "approval_mode": mode,
+            "autonomous_limit_usd": round(
+                autonomous_limit / 10 ** reg.quote.decimals, 2) if autonomous_limit else 0,
             "expires_at": expiry,
             "per_trade_cap_usd": round(per_trade / 10 ** reg.quote.decimals, 2),
             "daily_cap_usd": round(daily / 10 ** reg.quote.decimals, 2),

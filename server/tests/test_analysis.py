@@ -203,10 +203,25 @@ def test_text_card_is_a_fenced_block_of_equal_width_lines():
     assert len({len(line) for line in body}) == 1, "ragged border"
 
 
-def test_text_card_always_states_the_fee_line():
-    assert "Platform fee" in render_order_card_text(_ORDER)
-    free = {**_ORDER, "platform_fee": {"charged": False}}
-    assert "none" in render_order_card_text(free)
+def test_text_card_states_gas_sponsorship_not_the_fee():
+    """The fee row was replaced by gas sponsorship on 2026-08-10, by request.
+
+    Worth recording what that trades away, because this file exists to protect
+    exactly this kind of line: the card was the one place the fee could not be
+    paraphrased away by a model summarising the response. It is still computed
+    and still returned as `platform_fee` on every priced response, so it is
+    disclosed — but disclosure now depends on the model relaying it rather than
+    on it being rendered into a fixed image. If the fee ever stops being
+    visible to users in practice, this is the change to look at first.
+    """
+    card = render_order_card_text(_ORDER)
+    assert "Platform fee" not in card
+    assert "sponsored by Sarf" in card
+    # Still present in the payload the model is instructed to relay.
+    assert _ORDER["platform_fee"]["charged"] is True
+
+    metered = {**_ORDER, "gas_sponsored": False}
+    assert "paid from your OKB balance" in render_order_card_text(metered)
 
 
 def test_text_card_marks_truncation_instead_of_cutting_mid_sentence():

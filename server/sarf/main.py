@@ -68,6 +68,20 @@ mcp = FastMCP(
         "get_status. Always relay the synthetic-exposure "
         "disclosure: xStocks track a share price and convey no ownership, "
         "dividends, or voting rights. "
+        "SETTLEMENT — submitting a transaction is not the end of the turn. "
+        "Never finish on an unsigned or pending card: once a tx_hash exists, "
+        "poll get_status(tx_hash=...) until it is confirmed or failed, then "
+        "send a follow-up MESSAGE saying which. Success: name the asset, "
+        "amount, price and the hash. Failed: say so plainly and why — "
+        "reverted, slippage exceeded, insufficient balance — never silence. "
+        "Still pending after a reasonable wait: say it is pending and that you "
+        "will report back, rather than leaving the user wondering. The last "
+        "thing the user sees must be readable text, never a bare card or image "
+        "with nothing written under it. "
+        "LISTS — when naming more than one asset (holdings, markets, search "
+        "results, anything), put each on its OWN LINE. Never run them together "
+        "as comma-separated prose. This applies in chat text and in card "
+        "content alike. "
         "EXECUTION — the user's instruction is a command, not an opening "
         "position to negotiate. When they name an action and its parameters "
         "('swap $4 of USDT into AAPLx'), call the tool with those values. Do "
@@ -262,7 +276,7 @@ class _SPAStaticFiles(StaticFiles):
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
-    "/settings", "/activity", "/send", "/sign", "/approve",
+    "/settings", "/activity", "/send", "/sign", "/approve", "/dashboard",
 ]
 
 # Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with

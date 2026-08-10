@@ -265,8 +265,12 @@ function render(d){
   rows.appendChild(row(done?'You received':'You receive (est.)', d.receiving_estimated));
   if(d.minimum_received&&!done) rows.appendChild(row('Minimum received', d.minimum_received));
   if(d.estimated_usd!=null) rows.appendChild(row('Order value','$'+Number(d.estimated_usd).toFixed(2)));
-  rows.appendChild(row('Platform fee',
-    fee.charged?('$'+Number(fee.usd||0).toFixed(2)+' '+(fee.denominated_in||'')):'none', fee.charged));
+  // Gas sponsorship replaces the platform-fee line. The fee is still charged
+  // and still disclosed in the tool response and the text card — it is just not
+  // the thing worth a row here. What the user actually wants to know before
+  // signing is what leaves their wallet, and the answer is: no gas.
+  rows.appendChild(row('Gas', d.gas_sponsored===false
+    ? 'paid from your OKB balance' : 'sponsored by Sarf'));
   if(d.price_impact_percent!=null)
     rows.appendChild(row('Price impact', Number(d.price_impact_percent).toFixed(2)+'%'));
   rows.appendChild(row('Network','X Layer \\u00b7 '+(d.chain_id||196)+' \\u00b7 gas in OKB'));

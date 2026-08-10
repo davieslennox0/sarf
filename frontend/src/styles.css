@@ -481,3 +481,61 @@ footer {
   word-break: break-all; text-align: right; letter-spacing: .04em;
   color: var(--amber);
 }
+
+/* ---- approval mode chooser --------------------------------------------- */
+/* Two cards side by side so the choice is made by picking, not by reading a
+   dropdown. Stacks on narrow screens rather than squeezing two columns into a
+   phone, which is where the text used to overlap. */
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
+.modes .mode {
+  display: flex; flex-direction: column; gap: 6px; text-align: left;
+  padding: 14px; border: 1px solid var(--line); border-radius: 8px;
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.modes .mode b { font-size: 14px; }
+.modes .mode span { font-size: 12px; color: var(--paper-dim); line-height: 1.5; }
+.modes .mode:hover { border-color: var(--amber); }
+.modes .mode.on { border-color: var(--amber); background: rgba(232, 163, 61, .08); }
+.modes .mode.on b { color: var(--amber); }
+
+/* ---- responsive: fit the screen, never clip or overlap ------------------ */
+/* Long values (addresses, tx hashes) wrap instead of pushing their row wider
+   than the viewport, which is what produced horizontal cut-off. */
+.kv b, .kv span { min-width: 0; overflow-wrap: anywhere; }
+.addr, .mono { overflow-wrap: anywhere; }
+img, svg, canvas { max-width: 100%; height: auto; }
+pre, code { overflow-x: auto; max-width: 100%; }
+
+@media (max-width: 760px) {
+  .modes { grid-template-columns: 1fr; }
+  .kv > div { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .cta { flex-wrap: wrap; }
+  .cta button, .cta .cta-btn { flex: 1 1 auto; }
+  h1 { font-size: 26px; line-height: 1.2; }
+  h2 { font-size: 19px; }
+}
+
+@media (max-width: 620px) {
+  .modal { width: 92vw; max-width: 92vw; padding: 20px; }
+  .account-menu { width: min(92vw, 320px); right: 0; }
+}
+
+/* ---- mobile nav: one button, not a row of links ------------------------- */
+.nav-toggle { display: none; }
+@media (max-width: 760px) {
+  .nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: inherit; font-size: 17px; cursor: pointer;
+  }
+  /* The link row is hidden behind the toggle rather than left to scroll
+     sideways: a horizontally scrolling nav hides its own overflow, so the
+     pages past the fold may as well not exist. */
+  nav .links { display: none; }
+  nav .links.open {
+    display: flex; flex-direction: column; align-items: stretch;
+    order: 3; width: 100%; gap: 2px; padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  nav .links.open a { padding: 11px 4px; }
+}

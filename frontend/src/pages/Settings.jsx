@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api, ensureSession } from '../api.js';
+import { api, ensureSession, verifyPasskey } from '../api.js';
 import { connect, currentAccount, sendTransaction, sendWithAuthorization } from '../wallet.js';
 
 /**
@@ -11,6 +11,7 @@ import { connect, currentAccount, sendTransaction, sendWithAuthorization } from 
  */
 export default function Settings() {
   const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
 
@@ -60,6 +61,58 @@ export default function Settings() {
         </div>
       )}
 
+      {/*
+        The recovery path, and the reason it has to exist.
+
+        Registration normally happens at sign-in, so removing passkey
+        MANAGEMENT from this page was right. Removing registration entirely was
+        not: onboarding lets you skip the prompt ("a passkey prompt that cannot
+        be dismissed is a dead end on any device where the ceremony fails"), and
+        the skip handler's own comment pointed here as the way back. Anyone who
+        signed up before the passkey became mandatory, or who skipped once, was
+        left holding an account that could not transact and could not register —
+        locked out by a gate with no door.
+
+        Shown ONLY when none is registered. Once one exists there is nothing to
+        manage here, which is the state this page was trimmed down to.
+      */}
+      {status && (
+        <>
+          <p className="muted small">
+            {status.registered
+              ? 'Your passkey gates every transaction. One verification covers the '
+                + 'session; after it expires the next trade asks again.'
+              : 'Your passkey gates every transaction, so nothing can be signed until '
+                + 'one is registered. One touch of Face ID, Touch ID, or your device PIN.'}
+          </p>
+          <div className="cta">
+            <button className="primary" disabled={busy || !supported}
+                    onClick={async () => {
+                      setBusy(true); setErr(null); setMsg(null);
+                      try {
+                        // Verify when one exists, register when it does not.
+                        // Both controls have to stay reachable: an assertion
+                        // expires with the session, so a page that only offers
+                        // registration strands every user an hour later with a
+                        // passkey they cannot use.
+                        // Verify only. Registration lives in one place —
+                        // App.jsx's blocking prompt — so there is no second
+                        // path that can create a credential, and no button
+                        // here that only makes sense in a state the app no
+                        // longer lets you reach.
+                        await verifyPasskey();
+                        setMsg('Verified — trades are unlocked for this session.');
+                        setStatus(await api.passkeyStatus());
+                      } catch (e) {
+                        setErr(e.message || String(e));
+                      } finally { setBusy(false); }
+                    }}>
+              Verify with passkey
+            </button>
+          </div>
+        </>
+      )}
+
       {msg && <p className="ok">{msg}</p>}
       {err && <p className="error">{err}</p>}
 
@@ -93,6 +146,11 @@ function SessionGrant({ onMessage, onError, passkey }) {
   const [days, setDays] = useState(7);
   const [perTrade, setPerTrade] = useState(500);
   const [daily, setDaily] = useState(2000);
+  // Mode is an explicit choice made here at setup, not a default buried in a
+  // settings page nobody opens. Always Ask is preselected because the safe
+  // option should be the one you keep by doing nothing.
+  const [mode, setMode] = useState('always_ask');
+  const [autoLimit, setAutoLimit] = useState(50);
 
   const load = () => api.grant().then(setG).catch(() => {});
   useEffect(() => { load(); }, []);
@@ -101,7 +159,11 @@ function SessionGrant({ onMessage, onError, passkey }) {
     setBusy(true); onError(null); onMessage(null);
     try {
       const prep = await api.grantPrepare({
-        days, per_trade_cap_usd: Number(perTrade), daily_cap_usd: Number(daily),
+        days,
+        per_trade_cap_usd: Number(perTrade),
+        daily_cap_usd: Number(daily),
+        approval_mode: mode,
+        autonomous_limit_usd: mode === 'autonomous' ? Number(autoLimit) : 0,
       });
       const addr = await currentAccount();
       const hash = await sendWithAuthorization(
@@ -160,7 +222,12 @@ function SessionGrant({ onMessage, onError, passkey }) {
             <div><span>Per day</span><b>${Number(g.grant.daily_cap_usd).toLocaleString()}</b></div>
             <div><span>Runs in chat under</span>
               <b>${Number(g.auto_execute_under_usd).toLocaleString()}</b></div>
-            <div><span>Every trade</span><b>passkey required</b></div>
+            <div><span>Mode</span>
+              <b>{g.approval_mode === 'autonomous' ? 'Autonomous' : 'Always Ask'}</b></div>
+            <div><span>Passkey</span>
+              <b>{g.approval_mode === 'autonomous'
+                ? `required above $${Number(g.autonomous_limit_usd || 0).toLocaleString()}`
+                : 'required on every trade'}</b></div>
           </div>
           <div className="cta">
             <button className="danger" disabled={busy} onClick={revoke}>
@@ -182,6 +249,38 @@ function SessionGrant({ onMessage, onError, passkey }) {
               issued, so a session token alone can never mint one.
             </p>
           )}
+          <div className="modes">
+            <button type="button"
+                    className={`mode${mode === 'always_ask' ? ' on' : ''}`}
+                    onClick={() => setMode('always_ask')}>
+              <b>Always Ask</b>
+              <span>Every trade needs your passkey. No exceptions, whatever the size.</span>
+            </button>
+            <button type="button"
+                    className={`mode${mode === 'autonomous' ? ' on' : ''}`}
+                    onClick={() => setMode('autonomous')}>
+              <b>Autonomous</b>
+              <span>
+                Trades up to a limit you set go through without a prompt. Anything
+                above it still asks.
+              </span>
+            </button>
+          </div>
+
+          {mode === 'autonomous' && (
+            <>
+              <div className="kv">
+                <div><span>Without asking, up to</span>
+                  <b>$<input type="number" min="1" value={autoLimit}
+                             onChange={(e) => setAutoLimit(e.target.value)} /></b></div>
+              </div>
+              <p className="muted small">
+                Changing this later needs your passkey again — the agent can never
+                raise it on its own.
+              </p>
+            </>
+          )}
+
           <div className="kv">
             <div><span>Lasts for</span>
               <b>

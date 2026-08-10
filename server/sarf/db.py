@@ -171,7 +171,33 @@ _MIGRATIONS = [
     # shorter version of it from raw columns is how a signer quietly stops
     # displaying the fee and the risk notes.
     "ALTER TABLE orders ADD COLUMN display_json TEXT",
+    # Approval mode, chosen at setup: "always_ask" or "autonomous".
+    #
+    # Defaults to always_ask for every row that predates the column, which is
+    # the safe direction — an existing grant must never be silently upgraded to
+    # acting without a per-trade passkey because a migration ran.
+    "ALTER TABLE grants ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'always_ask'",
+    # Ceiling for autonomous mode, in stable units. Only consulted when
+    # approval_mode = 'autonomous'; above it, a passkey is required regardless.
+    "ALTER TABLE grants ADD COLUMN autonomous_limit INTEGER NOT NULL DEFAULT 0",
 ]
+
+# Stop-loss / take-profit levels, one row per (address, symbol).
+#
+# These are WATCH levels, not resting orders. Nothing here executes on its own:
+# see set_risk_params in providers/xlayer_rwa.py for why that is a deliberate
+# limit rather than an unfinished feature.
+_RISK_TABLE = """
+CREATE TABLE IF NOT EXISTS risk_params (
+  address     TEXT NOT NULL,
+  symbol      TEXT NOT NULL,
+  stop_loss   REAL,
+  take_profit REAL,
+  created_at  REAL NOT NULL,
+  updated_at  REAL NOT NULL,
+  PRIMARY KEY (address, symbol)
+);
+"""
 
 # How long a revoked session row is retained after revocation for auditing
 # (a compromise investigation needs to see WHEN and WHY a token was killed).
@@ -197,6 +223,7 @@ class Database:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_RISK_TABLE)
         for mig in _MIGRATIONS:
             try:
                 self._conn.execute(mig)
@@ -567,7 +594,9 @@ class Database:
 
     def put_grant(self, *, address: str, session_address: str, sealed_key: str,
                   delegate: str, router: str, stable: str, expiry: int,
-                  per_trade_cap: int, daily_cap: int) -> None:
+                  per_trade_cap: int, daily_cap: int,
+                  approval_mode: str = "always_ask",
+                  autonomous_limit: int = 0) -> None:
         """Record a grant, replacing any previous one for this address.
 
         REPLACE rather than INSERT because the contract keeps exactly one
@@ -580,25 +609,63 @@ class Database:
             self._conn.execute(
                 """INSERT OR REPLACE INTO grants
                    (address,session_address,sealed_key,delegate,router,stable,expiry,
-                    per_trade_cap,daily_cap,created_at,rotated_at,revoked_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+                    per_trade_cap,daily_cap,created_at,rotated_at,revoked_at,
+                    approval_mode,autonomous_limit)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)""",
                 (address.lower(), session_address, sealed_key, delegate.lower(),
                  router.lower(), stable.lower(), int(expiry), int(per_trade_cap),
-                 int(daily_cap), now, now),
+                 int(daily_cap), now, now,
+                 approval_mode if approval_mode in ("always_ask", "autonomous") else "always_ask",
+                 int(autonomous_limit)),
             )
 
     def get_grant(self, address: str) -> dict[str, Any] | None:
         r = self._conn.execute(
             """SELECT address,session_address,sealed_key,delegate,router,stable,expiry,
-                      per_trade_cap,daily_cap,created_at,rotated_at,revoked_at
+                      per_trade_cap,daily_cap,created_at,rotated_at,revoked_at,
+                      approval_mode,autonomous_limit
                FROM grants WHERE address=?""", (address.lower(),)
         ).fetchone()
         if not r:
             return None
         keys = ("address", "session_address", "sealed_key", "delegate", "router",
                 "stable", "expiry", "per_trade_cap", "daily_cap", "created_at",
-                "rotated_at", "revoked_at")
-        return dict(zip(keys, r))
+                "rotated_at", "revoked_at", "approval_mode", "autonomous_limit")
+        # strict=True because zip() truncates to the shorter side by default:
+        # adding a column to the SELECT above and forgetting it here would
+        # silently drop it, and the field that goes missing is the one deciding
+        # whether a trade needs a passkey. Loud beats subtly wrong.
+        return dict(zip(keys, r, strict=True))
+
+    def put_risk_params(self, *, address: str, symbol: str,
+                        stop_loss: float | None, take_profit: float | None) -> None:
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO risk_params (address,symbol,stop_loss,take_profit,
+                                            created_at,updated_at)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(address,symbol) DO UPDATE SET
+                       stop_loss=excluded.stop_loss,
+                       take_profit=excluded.take_profit,
+                       updated_at=excluded.updated_at""",
+                (address.lower(), symbol.upper(), stop_loss, take_profit, now, now),
+            )
+
+    def risk_params_for(self, address: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT symbol,stop_loss,take_profit,updated_at FROM risk_params
+               WHERE address=? ORDER BY symbol""", (address.lower(),)
+        ).fetchall()
+        return [dict(zip(("symbol", "stop_loss", "take_profit", "updated_at"), r,
+                         strict=True)) for r in rows]
+
+    def clear_risk_params(self, address: str, symbol: str) -> bool:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM risk_params WHERE address=? AND symbol=?",
+                (address.lower(), symbol.upper()))
+        return cur.rowcount > 0
 
     def revoke_grant(self, address: str) -> bool:
         """Mark a grant revoked locally. NOT the security boundary — the

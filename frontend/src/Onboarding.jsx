@@ -16,7 +16,7 @@
  */
 
 import React, { useState } from 'react';
-import { api, ensureSession, registerPasskey } from './api.js';
+import { ensureSession } from './api.js';
 import { connect } from './wallet.js';
 
 const STEPS = {
@@ -28,7 +28,6 @@ const STEPS = {
 
 export default function Onboarding({ onDone }) {
   const [step, setStep] = useState('idle');
-  const [needsPasskey, setNeedsPasskey] = useState(false);
   const [err, setErr] = useState(null);
   const busy = step !== 'idle';
 
@@ -41,28 +40,13 @@ export default function Onboarding({ onDone }) {
       setStep('signing');
       await ensureSession(address);
 
-      setStep('checking');
-      const pk = await api.passkeyStatus();
       setStep('idle');
 
-      // First-time users register right here rather than being sent to a
-      // settings page they would never visit — the gate has to exist before
-      // the first transfer, not after someone discovers they cannot send.
-      if (!pk?.registered) setNeedsPasskey(true);
-      else onDone?.();
-    } catch (e) {
-      setStep('idle');
-      setErr(e.message || String(e));
-    }
-  };
-
-  const addPasskey = async () => {
-    setErr(null);
-    setStep('checking');
-    try {
-      await registerPasskey();
-      setStep('idle');
-      setNeedsPasskey(false);
+      // Registration is NOT handled here any more. App.jsx checks for a
+      // passkey above every authenticated route and blocks until one exists,
+      // which covers the five pages that mint sessions on their own and never
+      // came through this component. Prompting in both places would show the
+      // modal twice.
       onDone?.();
     } catch (e) {
       setStep('idle');
@@ -70,44 +54,10 @@ export default function Onboarding({ onDone }) {
     }
   };
 
-  // Skipping is allowed, because a passkey prompt that cannot be dismissed is a
-  // dead end on any device where the ceremony fails. Sending stays locked until
-  // one exists, and /security offers it again.
-  const skip = () => { setNeedsPasskey(false); onDone?.(); };
-
-  if (needsPasskey) {
-    return (
-      <div className="modal-backdrop">
-        <div className="modal">
-          <h2>Add a passkey</h2>
-          <p className="muted small">
-            One touch of Face ID, Touch ID, or your device PIN. It is what proves
-            a person is present before Sarf sends funds to someone else, or
-            executes an unusually large order from chat.
-          </p>
-          <p className="muted small">
-            Your passkey never leaves your device, and it is not your wallet key
-            — it approves actions, it cannot sign transactions on its own.
-          </p>
-          {err && <p className="error">{err}</p>}
-          <div className="cta">
-            <button className="primary" disabled={busy} onClick={addPasskey}>
-              {busy ? 'Waiting for your device…' : 'Add passkey'}
-            </button>
-            <button disabled={busy} onClick={skip}>Later</button>
-          </div>
-          <p className="muted small">
-            Skipping leaves sending disabled until you add one.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <>
       <button className="primary" disabled={busy} onClick={start}>
-        {busy ? STEPS[step] : 'Log in'}
+        {busy ? STEPS[step] : 'Connect'}
       </button>
       {err && <span className="error"> {err}</span>}
     </>

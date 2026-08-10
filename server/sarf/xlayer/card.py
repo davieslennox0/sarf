@@ -124,12 +124,13 @@ def _render_text(o: dict[str, Any]) -> str:
         _row("Minimum received", str(o.get("minimum_received") or "—")),
         _row(""),
         _row("Order value", f"${float(usd):,.2f}" if usd is not None else "—"),
-        # Always printed, charged or not — "no fee" is information too, and
-        # leaving the row out is how a user starts assuming there is one.
-        _row("Platform fee",
-             f"${float(fee.get('usd', 0)):.2f} {fee.get('denominated_in', '')}".strip()
-             if charged else "none"),
-        _row("Network", f"X Layer · {o.get('chain_id', 196)} · gas in OKB"),
+        # Gas sponsorship in place of the platform-fee row. The fee is still
+        # computed, still returned on the tool response, and still disclosed —
+        # it is just not what a user needs in front of them at the moment of
+        # signing. What leaves their wallet does: and for gas, nothing does.
+        _row("Gas", "paid from your OKB balance"
+             if o.get("gas_sponsored") is False else "sponsored by Sarf"),
+        _row("Network", f"X Layer · {o.get('chain_id', 196)}"),
         _rule(),
         _row("READ BEFORE SIGNING"),
     ]

@@ -195,12 +195,12 @@ class XLayerRwaProvider:
         if not db.passkeys_for_address(address):
             raise ValueError(
                 "transfers need a passkey. Register one at "
-                f"{settings.public_url}/security, then try again."
+                f"{settings.public_url}/settings, then try again."
             )
         last = db.last_passkey_verification(address)
         if last is None or (time.time() - last) > passkey.stepup_validity_seconds():
             raise ValueError(
-                f"verify with your passkey first — open {settings.public_url}/security "
+                f"verify with your passkey first — open {settings.public_url}/settings "
                 f"and press Verify, then try again within "
                 f"{passkey.stepup_validity_seconds() // 60} minutes. Transfers always "
                 "require this, whatever the amount."
@@ -634,7 +634,7 @@ class XLayerRwaProvider:
             if stepup.blocked:
                 raise ValueError(
                     f"passkey verification required before this order: {stepup.reason}. "
-                    f"Open {settings.public_url}/security to verify, then ask again."
+                    f"Open {settings.public_url}/settings to verify, then ask again."
                 )
 
             # Fee always rides on the stablecoin leg so the user is never
@@ -889,7 +889,7 @@ class XLayerRwaProvider:
             if stepup.blocked:
                 raise ValueError(
                     f"passkey verification required before this swap: {stepup.reason}. "
-                    f"Open {settings.public_url}/security to verify, then ask again."
+                    f"Open {settings.public_url}/settings to verify, then ask again."
                 )
             try:
                 unsigned, quote, fee_applied = await dex.build_swap(
@@ -1042,6 +1042,70 @@ class XLayerRwaProvider:
         # get found when several connectors are enabled at once. Fewer, richer
         # tools beat many narrow ones for discoverability.
         @mcp.tool()
+        async def set_risk_params(
+            symbol: Annotated[str, Field(description="On-chain symbol, e.g. 'AAPLx'")],
+            stop_loss: Annotated[float | None, Field(
+                default=None, description="Price in USDT to flag a sell at. Omit to leave unset")] = None,
+            take_profit: Annotated[float | None, Field(
+                default=None, description="Price in USDT to flag a sell at. Omit to leave unset")] = None,
+        ) -> dict[str, Any]:
+            """Record stop-loss / take-profit levels for an asset you hold.
+
+            IMPORTANT — these are WATCH levels, not resting orders. Nothing
+            executes on its own. When a level is reached, the trade still has to
+            be built and approved like any other. Tell the user that plainly
+            rather than letting them believe a stop is protecting them while
+            they are away.
+            """
+            address = require_address()
+            asset = reg.resolve(symbol, allowlist=settings.rwa_allowlist)
+
+            for label, v in (("stop_loss", stop_loss), ("take_profit", take_profit)):
+                if v is None:
+                    continue
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise ValidationError(f"{label} must be a number")
+                if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+                    raise ValidationError(f"{label} must be a positive, finite price")
+            if stop_loss is None and take_profit is None:
+                db.clear_risk_params(address, asset.symbol)
+                return {"symbol": asset.symbol, "cleared": True,
+                        "note": "Both levels removed."}
+            if (stop_loss is not None and take_profit is not None
+                    and stop_loss >= take_profit):
+                raise ValidationError(
+                    f"stop_loss ({stop_loss}) must be below take_profit ({take_profit}) "
+                    "— as given, both would trigger at once"
+                )
+
+            mark = await self._unit_price_usd(asset)
+            db.put_risk_params(address=address, symbol=asset.symbol,
+                               stop_loss=stop_loss, take_profit=take_profit)
+            return {
+                "symbol": asset.symbol,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "current_price_usdt": round(mark, 6) if mark is not None else None,
+                "armed": False,
+                # Stated on every response, not just the first, because the gap
+                # between what a stop-loss usually means and what this does is
+                # exactly where someone loses money believing otherwise.
+                "how_this_works": (
+                    "Sarf records these levels and will flag them when you ask about "
+                    "this position or your portfolio. It does NOT watch the market "
+                    "while you are away and it does NOT sell on its own — that would "
+                    "need either a resting on-chain order, which these pools do not "
+                    "offer, or a key that trades unattended, which is custody. When a "
+                    "level is hit you still build and approve the trade like any other."
+                ),
+                "next_step": (
+                    "Say this back to the user in plain words: the levels are saved, "
+                    "and they are a reminder rather than an automatic sale. Do not "
+                    "describe this as protection that works while they are away."
+                ),
+            }
+
+        @mcp.tool()
         async def get_status(
             tx_hash: Annotated[str | None, Field(
                 default=None,
@@ -1066,7 +1130,7 @@ class XLayerRwaProvider:
                 "delegation_installed": on_chain,
                 "auto_execute_under_usd": settings.delegated_auto_usd,
                 "passkey_registered": bool(db.passkeys_for_address(address)),
-                "setup_url": f"{settings.public_url}/security" if settings.public_url else None,
+                "setup_url": f"{settings.public_url}/settings" if settings.public_url else None,
             }
             if not row or not on_chain:
                 base["grant"] = None
@@ -1087,6 +1151,14 @@ class XLayerRwaProvider:
                 base["settlement"] = await _settlement_view(tx_hash)
             if history_limit is not None:
                 base["history"] = _history_view(address, history_limit)
+            levels = db.risk_params_for(address)
+            if levels:
+                base["risk_levels"] = levels
+                base["risk_levels_note"] = (
+                    "Watch levels only — Sarf does not sell on its own. Compare them "
+                    "against the current price and tell the user if one has been "
+                    "reached; the trade still needs building and approving."
+                )
             return base
 
         @mcp.tool(meta=ui("ui://sarf/order-card"))
@@ -1135,33 +1207,78 @@ class XLayerRwaProvider:
                 )
 
             est = order.get("est_usd")
-            # Threshold is the user's "are you sure" line, separate from the
-            # on-chain cap. Fails CLOSED on an unpriceable order: a trade we
-            # cannot value is exactly the one not to auto-execute.
-            if est is None or est > settings.delegated_auto_usd:
-                # check_stepup treats "no passkey registered" as "step-up not
-                # enforced", which is right for a flow that ends in a wallet
-                # prompt — the wallet is the real gate there. Here there is no
-                # wallet prompt, so that default would auto-execute an
-                # unlimited order for anyone without a passkey. Require the
-                # credential to exist before consulting the decision at all.
-                if not db.passkeys_for_address(address):
-                    raise ValueError(
-                        "orders above the auto-execute threshold need a passkey, and "
-                        "this account has none registered. Register one at "
-                        f"{settings.public_url}/security, or sign this order in your "
-                        "wallet instead."
-                    )
-                stepup = passkey.check_stepup(db, address, est)
-                if not stepup.satisfied:
-                    raise ValueError(
-                        f"this order is {_usd(est)}, over the {_usd(settings.delegated_auto_usd)} "
-                        "auto-execute threshold. Verify with your passkey at "
-                        f"{settings.public_url}/security, then ask again."
-                        if est is not None else
-                        "this order could not be priced, so it will not auto-execute. "
-                        "Sign it in your wallet instead."
-                    )
+            # The passkey gates THIS path unconditionally, not just above the
+            # auto-execute threshold.
+            #
+            # This is the only tool that moves money without a wallet prompt:
+            # place_order and swap hand back an unsigned transaction and the
+            # user's wallet is the real gate, but here the session key signs and
+            # broadcasts. It previously consulted the passkey only when
+            # `est > delegated_auto_usd`, which left the in-chat path — the one
+            # with no second confirmation anywhere — as the LEAST gated of the
+            # three, and a stolen session token could settle any number of
+            # sub-threshold trades untouched.
+            #
+            # A registered credential is checked separately from the assertion
+            # because check_stepup can be configured not to enforce (see
+            # passkey_required); on a path with no wallet prompt, "not enforced"
+            # must never mean "execute anyway".
+            if not db.passkeys_for_address(address):
+                raise ValueError(
+                    "in-chat execution needs a passkey and this account has none "
+                    f"registered. Register one at {settings.public_url}/settings, "
+                    "or sign this order in your wallet instead."
+                )
+            # Approval mode, chosen by the user at setup.
+            #
+            #   always_ask  every trade needs a fresh assertion, no exceptions.
+            #   autonomous  trades at or under the user's own limit go through
+            #               on the session assertion alone; anything above it
+            #               falls back to always_ask behaviour.
+            #
+            # The mode is read from the GRANT, not from a request argument, so
+            # neither the model nor a caller can talk their way into a weaker
+            # gate. Changing it means re-authorising, which needs a passkey and
+            # a wallet signature — see /grant/prepare.
+            mode = (row.get("approval_mode") or "always_ask").strip()
+            auto_limit_units = int(row.get("autonomous_limit") or 0)
+            auto_limit_usd = auto_limit_units / (10 ** reg.quote.decimals)
+            within_autonomous = (
+                mode == "autonomous"
+                and est is not None
+                and auto_limit_units > 0
+                and est <= auto_limit_usd
+            )
+
+            stepup = passkey.check_stepup(db, address, est)
+            if not stepup.satisfied and not within_autonomous:
+                why = (
+                    f"this is {_usd(est)}, over the {_usd(auto_limit_usd)} you set for "
+                    "autonomous trades, so it needs a passkey"
+                    if mode == "autonomous" and est is not None and auto_limit_units > 0
+                    else "you chose Always Ask, so every trade needs a passkey"
+                )
+                raise ValueError(
+                    f"{why}. It signs and broadcasts with no wallet prompt, so the "
+                    f"passkey is the only thing in front of it. Verify at "
+                    f"{settings.public_url}/settings, then ask again — one "
+                    f"verification covers the rest of the session "
+                    f"({passkey.stepup_validity_seconds() // 60} minutes)."
+                )
+            # Separate from the passkey and kept: the threshold is the user's own
+            # "are you sure" line and fails CLOSED on an unpriceable order, since
+            # a trade we cannot value is exactly the one not to settle silently.
+            if est is None:
+                raise ValueError(
+                    "this order could not be priced, so it will not auto-execute. "
+                    "Sign it in your wallet instead."
+                )
+            if est > settings.delegated_auto_usd:
+                raise ValueError(
+                    f"this order is {_usd(est)}, over the "
+                    f"{_usd(settings.delegated_auto_usd)} auto-execute threshold you "
+                    "set. Sign it in your wallet instead."
+                )
 
             deadline = int(time.time()) + 300
             signature, nonce = delegation.sign_swap(

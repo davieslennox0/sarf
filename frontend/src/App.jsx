@@ -8,10 +8,11 @@ import How from './pages/How.jsx';
 import SecurityInfo from './pages/SecurityInfo.jsx';
 import Connect from './pages/Connect.jsx';
 import Settings from './pages/Settings.jsx';
+import Dashboard from './pages/Dashboard.jsx';
 import Transfer from './pages/Transfer.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
-import { api, clearSession, getSession } from './api.js';
+import { api, clearSession, getSession, registerPasskey } from './api.js';
 import Onboarding from './Onboarding.jsx';
 import {
   CHAIN_ID, currentAccount, chainId as getChainId,
@@ -25,7 +26,7 @@ import {
  * the MCP connector — ending it here ends it in Claude.
  */
 /**
- * The account control in the header's right slot: a "Log in" button when there
+ * The account control in the header's right slot: a "Connect" button when there
  * is no session, and an address chip with a live expiry countdown when there
  * is. The countdown is on the chip rather than tucked in the menu because a
  * session that has quietly lapsed is the thing people are surprised by.
@@ -147,6 +148,63 @@ function SignInRequired({ what, onDone }) {
   );
 }
 
+/**
+ * Blocking passkey registration. No dismiss, and deliberately so.
+ *
+ * Registering is now mandatory rather than offered: the passkey gates every
+ * transaction, so an account without one is an account that cannot do
+ * anything. Letting it be skipped only deferred that discovery to the first
+ * trade, and — before the check moved to session level — stranded people with
+ * no route back.
+ *
+ * This is the ONLY place a passkey is created. Onboarding's "Later" and the
+ * settings register button are both gone, which is safe precisely because this
+ * renders above every authenticated route, not just the sign-in flow.
+ */
+function RequirePasskey({ onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const supported = typeof window !== 'undefined' && window.PublicKeyCredential;
+
+  const add = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await registerPasskey();
+      onDone();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal">
+        <h2>Add a passkey</h2>
+        <p className="muted small">
+          One touch of Face ID, Touch ID, or your device PIN. It is what approves
+          every transaction on your account — nothing can be signed without it.
+        </p>
+        <p className="muted small">
+          Your passkey never leaves your device, and it is not your wallet key —
+          it approves actions, it cannot sign transactions on its own.
+        </p>
+        {!supported && (
+          <p className="error">
+            This browser does not support passkeys (WebAuthn). Open Sarf in a
+            browser that does — there is no way to transact without one.
+          </p>
+        )}
+        {err && <p className="error">{err}</p>}
+        <div className="cta">
+          <button className="primary" disabled={busy || !supported} onClick={add}>
+            {busy ? 'Waiting for your device…' : 'Add passkey'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const { pathname } = useLocation();
   // Session state lives here so the nav, the bar and the route guards all read
@@ -164,13 +222,52 @@ export default function App() {
   const gate = (what, element) =>
     signedIn ? element : <SignInRequired what={what} onDone={refresh} />;
 
+  // A session without a passkey cannot be reached, from any route.
+  //
+  // The prompt used to live only in Onboarding, but Portfolio, Activity, Sign,
+  // Transfer and Settings each call ensureSession() themselves — so a new
+  // account landing on any of them got a working session and never saw the
+  // prompt, then found every transaction blocked by a gate it had no way to
+  // satisfy. Checking here instead of in one component covers every path that
+  // can ever mint a session, including ones added later.
+  //
+  // This is what makes registration genuinely mandatory, and it is the
+  // precondition for removing the onboarding skip and the settings register
+  // button: those were the escape hatches, and they are only safe to delete
+  // once no one can end up needing them.
+  const [needsPasskey, setNeedsPasskey] = useState(false);
+  // Mobile nav. Collapsed by default and closed on navigation, so the menu
+  // never sits open over the page the user just chose.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (!signedIn) { setNeedsPasskey(false); return undefined; }
+    (async () => {
+      try {
+        const pk = await api.passkeyStatus();
+        if (!cancelled) setNeedsPasskey(!pk?.registered);
+      } catch {
+        // Unknown state is not a reason to wave someone through: the check
+        // fails toward the prompt, same as in Onboarding.
+        if (!cancelled) setNeedsPasskey(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [signedIn, session?.address]);
+
+  if (needsPasskey) return <RequirePasskey onDone={() => setNeedsPasskey(false)} />;
+
   return (
     <div className="app">
       <nav>
         <Link className="brand" to="/">
           Sarf <span>/</span> X Layer RWA
         </Link>
-        <div className="links">
+        <button className="nav-toggle" aria-label="Menu" aria-expanded={navOpen}
+                onClick={() => setNavOpen((v) => !v)}>
+          {navOpen ? '\u2715' : '\u2630'}
+        </button>
+        <div className={`links${navOpen ? ' open' : ''}`} onClick={() => setNavOpen(false)}>
           {/* Public first: everything here works without an account, including
               Portfolio, which reads any pasted address. The account-only pages
               are appended once there is a session rather than shown and then
@@ -183,6 +280,7 @@ export default function App() {
           <Link className={pathname === '/connect' ? 'on' : ''} to="/connect">Connect</Link>
           {signedIn && (
             <>
+              <Link className={pathname === '/dashboard' ? 'on' : ''} to="/dashboard">Dashboard</Link>
               <Link className={pathname === '/send' ? 'on' : ''} to="/send">Send</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
             </>
@@ -206,6 +304,7 @@ export default function App() {
 
           {/* Account-only. */}
           <Route path="/settings" element={gate('Your security settings', <Settings />)} />
+          <Route path="/dashboard" element={gate('Your dashboard', <Dashboard />)} />
           <Route path="/activity" element={gate('Your activity', <Activity />)} />
           <Route path="/send" element={gate('Sending', <Transfer />)} />
           <Route path="/sign" element={gate('This transaction', <Sign />)} />

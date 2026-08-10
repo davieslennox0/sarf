@@ -192,6 +192,16 @@ def verify_registration(db: "Database", address: str, credential: dict[str, Any]
         public_key=v.credential_public_key,
         sign_count=v.sign_count,
     )
+    # Registration counts as a verification, and has to.
+    #
+    # The ceremony that just completed IS a user-presence and user-verification
+    # event — the person physically touched the authenticator a second ago.
+    # Recording only created_at left last_passkey_verification() as None, so
+    # check_stepup blocked every transaction immediately after a successful
+    # registration, telling the user to verify a passkey they had just made. On
+    # a build where the verify control had been removed that was a closed loop
+    # with no way out: register, blocked, register again.
+    db.touch_passkey(cred_id, sign_count=v.sign_count, verified_at=time.time())
     return {"credential_id": cred_id, "registered": True}
 
 

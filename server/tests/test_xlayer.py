@@ -315,3 +315,42 @@ def test_display_never_overrides_authoritative_columns(db):
     assert o["address"] == ADDR_A
     assert o["status"] == "proposed"
     assert o["est_usd"] == 100.0
+
+
+# --- approval mode -----------------------------------------------------------
+# The mode decides whether a trade can settle in chat on a session assertion
+# alone. It is read from the grant row, never from a request argument, so these
+# assert the storage layer defaults the way the gate expects.
+
+def test_grant_defaults_to_always_ask(db):
+    """A grant with no mode specified must be the STRICT one.
+
+    Migration adds this column to rows that predate it, and an existing grant
+    silently becoming autonomous because a migration ran would hand the agent
+    unattended spending the user never chose.
+    """
+    db.put_grant(address=ADDR_A, session_address=ADDR_A, sealed_key="x",
+                 delegate=ADDR_A, router=ADDR_A, stable=ADDR_A,
+                 expiry=int(time.time()) + 3600, per_trade_cap=500, daily_cap=2000)
+    row = db.get_grant(ADDR_A)
+    assert row["approval_mode"] == "always_ask"
+    assert row["autonomous_limit"] == 0
+
+
+def test_grant_records_autonomous_mode_and_limit(db):
+    db.put_grant(address=ADDR_A, session_address=ADDR_A, sealed_key="x",
+                 delegate=ADDR_A, router=ADDR_A, stable=ADDR_A,
+                 expiry=int(time.time()) + 3600, per_trade_cap=500, daily_cap=2000,
+                 approval_mode="autonomous", autonomous_limit=250)
+    row = db.get_grant(ADDR_A)
+    assert row["approval_mode"] == "autonomous"
+    assert row["autonomous_limit"] == 250
+
+
+def test_unknown_mode_falls_back_to_always_ask(db):
+    """An unparsed value must never buy a weaker gate."""
+    db.put_grant(address=ADDR_A, session_address=ADDR_A, sealed_key="x",
+                 delegate=ADDR_A, router=ADDR_A, stable=ADDR_A,
+                 expiry=int(time.time()) + 3600, per_trade_cap=500, daily_cap=2000,
+                 approval_mode="whatever", autonomous_limit=999)
+    assert db.get_grant(ADDR_A)["approval_mode"] == "always_ask"
