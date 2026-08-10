@@ -152,7 +152,7 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             "stepup_threshold_usd": settings.passkey_stepup_usd,
             "required": settings.passkey_required,
             "last_verified_at": int(last) if last else None,
-            "stepup_valid_for_seconds": passkey.STEPUP_VALIDITY_SECONDS,
+            "stepup_valid_for_seconds": passkey.stepup_validity_seconds(),
         }
 
     def _stable_units(usd: Any) -> int:
@@ -235,16 +235,28 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
                             authorization: str | None = Header(default=None)) -> dict[str, Any]:
         """Mint a session key and return the UNSIGNED authorize() transaction.
 
-        A passkey must already be registered: the passkey is what protects
-        step-up later, and issuing a key that can trade before that protection
-        exists would ship the convenience without the control.
+        Gated at BOTH ends by the passkey, which is the whole point of the
+        design: a fresh assertion is required to obtain the key, and another one
+        gates every transaction the key is later used for. Registration alone is
+        not enough here — checking only that a credential exists would let
+        anyone holding a live session token mint a spending key without ever
+        proving they are the person the credential belongs to.
         """
         addr = _session_addr(authorization)
         if not settings.delegate_address:
             raise HTTPException(503, "in-chat execution is not configured on this server")
         if not db.passkeys_for_address(addr):
             raise HTTPException(
-                400, "register a passkey first — it is what gates trades above your threshold"
+                400, "register a passkey first — it is what gates every trade this key makes"
+            )
+        last = db.last_passkey_verification(addr)
+        validity = passkey.stepup_validity_seconds()
+        if last is None or (time.time() - last) > validity:
+            raise HTTPException(
+                400,
+                "verify your passkey before a session key is issued — it has to be you "
+                f"asking, not just your browser. Assertions stay good for {validity // 60} "
+                "minutes.",
             )
         try:
             expiry = delegation.requested_expiry(body.get("days", 7))

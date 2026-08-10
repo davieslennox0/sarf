@@ -128,12 +128,42 @@ def _register_fake_passkey(db, address, sign_count=0):
                    public_key=b"\x01\x02", sign_count=sign_count)
 
 
-def test_stepup_not_required_below_threshold(db, monkeypatch):
+def test_small_transactions_are_gated_too(db, monkeypatch):
+    """The passkey gates every transaction, not just large ones.
+
+    This asserted the opposite until 2026-08-10, when the passkey stopped being
+    a step-up on big orders and became the per-session gate on all of them. A
+    $10 trade moves real money and is exactly the size an attacker with a stolen
+    session token would start with.
+    """
     from sarf import passkey
     monkeypatch.setattr(passkey, "settings", Settings())
     _register_fake_passkey(db, ADDR_A)
     d = passkey.check_stepup(db, ADDR_A, 10.0)
-    assert not d.required and not d.blocked
+    assert d.required and d.blocked
+
+
+def test_one_assertion_covers_the_session(db, monkeypatch):
+    """A single verification covers later trades until the window expires.
+
+    This is what makes an in-chat Approve possible without a wallet round trip
+    per trade, and it is the security trade the session caps exist to bound.
+    """
+    from sarf import passkey
+    monkeypatch.setattr(passkey, "settings", Settings())
+    _register_fake_passkey(db, ADDR_A)
+    db.touch_passkey(f"cred-{ADDR_A}", sign_count=1, verified_at=time.time())
+    assert not passkey.check_stepup(db, ADDR_A, 10.0).blocked
+    assert not passkey.check_stepup(db, ADDR_A, 250.0).blocked
+
+
+def test_no_registered_passkey_blocks_when_required(db, monkeypatch):
+    """Safe only because registration happens at sign-in — see config.py."""
+    from sarf import passkey
+    monkeypatch.setattr(passkey, "settings", Settings())
+    d = passkey.check_stepup(db, ADDR_A, 10.0)
+    assert d.required and d.blocked
+    assert "register" in d.reason
 
 
 def test_stepup_required_above_threshold_and_blocks_without_verification(db, monkeypatch):
@@ -157,7 +187,7 @@ def test_stale_passkey_verification_does_not_satisfy_stepup(db, monkeypatch):
     from sarf import passkey
     monkeypatch.setattr(passkey, "settings", Settings())
     _register_fake_passkey(db, ADDR_A)
-    old = time.time() - (passkey.STEPUP_VALIDITY_SECONDS + 60)
+    old = time.time() - (passkey.stepup_validity_seconds() + 60)
     db.touch_passkey(f"cred-{ADDR_A}", sign_count=1, verified_at=old)
     assert passkey.check_stepup(db, ADDR_A, 50_000.0).blocked
 

@@ -56,9 +56,21 @@ if TYPE_CHECKING:  # pragma: no cover
 Purpose = Literal["register", "bind", "stepup"]
 
 CHALLENGE_TTL_SECONDS = 300
-# How long a step-up assertion stays good for. Long enough to review and sign
-# one order in the wallet; short enough that it cannot authorize a later one.
-STEPUP_VALIDITY_SECONDS = 180
+# How long an assertion stays good for.
+#
+# This used to be 180 seconds: long enough to review and sign ONE order, short
+# enough that it could not authorize a later one. That fitted a model where the
+# passkey was an exceptional step-up on large orders and the wallet signature
+# authorized every trade.
+#
+# The passkey is now the per-session transaction gate, so the window is the
+# session rather than a single order: you prove it is you once, and that covers
+# trades until it expires. The trade-off is deliberate and is the reason the
+# session key it unlocks is both spend-capped and time-bound — one assertion
+# now authorizes more than one order, so the ceiling on what it can authorize
+# has to come from the grant's own limits.
+def stepup_validity_seconds() -> int:
+    return max(60, int(settings.passkey_session_seconds))
 
 
 class PasskeyError(RuntimeError):
@@ -254,31 +266,49 @@ def _challenge_from_client_data(client_data_b64url: str) -> bytes:
 # ------------------------------------------------------------------ policy
 
 def check_stepup(db: "Database", address: str, order_usd: float | None) -> StepUpDecision:
-    """Decide whether this order needs a fresh passkey assertion.
+    """Decide whether this transaction needs a passkey assertion.
 
-    Fails CLOSED on an unpriceable order when a threshold is configured: if we
-    cannot say an order is small, we must not treat it as small.
+    The passkey is the gate on every transaction, so the amount is no longer
+    what decides — it only appears in the reason string. One assertion covers
+    the session (see stepup_validity_seconds), which is what makes an in-chat
+    Approve possible without a wallet round trip per trade.
+
+    Fails CLOSED throughout: no passkey registered, no prior assertion, or an
+    expired one all block rather than wave through.
     """
-    threshold = settings.passkey_stepup_usd
-    if threshold <= 0:
-        return StepUpDecision(False, True, "step-up disabled")
-    if not db.passkeys_for_address(address.lower()):
-        if settings.passkey_required:
-            return StepUpDecision(True, False, "no passkey registered for this account")
-        return StepUpDecision(False, True, "no passkey registered; step-up not enforced")
-    if order_usd is None:
-        return StepUpDecision(
-            True, False,
-            f"order could not be priced in USD, so the ${threshold:,.0f} step-up "
-            "threshold cannot be ruled out",
-        )
-    if order_usd <= threshold:
-        return StepUpDecision(False, True, f"order ~${order_usd:,.2f} is under the step-up threshold")
+    addr = address.lower()
+    amount = f"~${order_usd:,.2f}" if order_usd is not None else "unpriced"
 
-    last = db.last_passkey_verification(address.lower())
-    fresh = last is not None and (time.time() - last) <= STEPUP_VALIDITY_SECONDS
+    # Escape hatch only — see the note in config.py. Above 0 this restores the
+    # old threshold behaviour and leaves small orders ungated.
+    threshold = settings.passkey_stepup_usd
+    if threshold > 0 and order_usd is not None and order_usd <= threshold:
+        return StepUpDecision(
+            False, True,
+            f"order {amount} is under the ${threshold:,.0f} legacy step-up threshold",
+        )
+
+    if not db.passkeys_for_address(addr):
+        if settings.passkey_required:
+            return StepUpDecision(
+                True, False,
+                "no passkey registered for this account — register one at sign-in",
+            )
+        return StepUpDecision(False, True, "no passkey registered; gate not enforced")
+
+    last = db.last_passkey_verification(addr)
+    validity = stepup_validity_seconds()
+    age = None if last is None else time.time() - last
+    fresh = age is not None and age <= validity
+    if fresh:
+        return StepUpDecision(
+            True, True,
+            f"passkey verified {int(age // 60)}m ago; covers this session "
+            f"({validity // 60}m) — transaction {amount}",
+        )
     return StepUpDecision(
-        True, fresh,
-        f"order ~${order_usd:,.2f} exceeds the ${threshold:,.0f} step-up threshold"
-        + ("; recent passkey verification accepted" if fresh else "; passkey verification required"),
+        True, False,
+        f"passkey verification required for transaction {amount}"
+        + ("" if last is None else f" (last one was {int(age // 60)}m ago, over the "
+                                   f"{validity // 60}m session window)"),
     )

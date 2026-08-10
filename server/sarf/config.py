@@ -202,15 +202,32 @@ class Settings:
     )
 
     # --- Passkey (WebAuthn) — see passkey.py for the threat model ------------
-    # Orders above this USD value need a fresh passkey assertion. 0 disables
-    # step-up entirely.
+    # The passkey gates EVERY transaction, not just large ones.
+    #
+    # PASSKEY_STEPUP_USD used to be a threshold — only orders above it needed an
+    # assertion, and a $999 order needed nothing. That left the common case
+    # ungated while the rare case was gated twice (passkey AND a wallet
+    # signature). The passkey is now the gate on all of them, and this value
+    # survives only as an escape hatch: above 0 it restores threshold behaviour,
+    # which is not the intended configuration.
     passkey_stepup_usd: float = field(
-        default_factory=lambda: float(_env("PASSKEY_STEPUP_USD", "1000"))
+        default_factory=lambda: float(_env("PASSKEY_STEPUP_USD", "0"))
     )
-    # When true, an account with no registered passkey cannot place orders at
-    # all (rather than step-up simply not applying).
+    # Whether an account with no registered passkey can transact at all.
+    #
+    # Defaults ON, which is safe here only because registration happens during
+    # login rather than on a settings page nobody visits: a user without a
+    # passkey registers on the way in instead of hitting a wall. Do not turn
+    # this on without that property holding — it is the difference between a
+    # prompt and a lockout.
     passkey_required: bool = field(
-        default_factory=lambda: _env("PASSKEY_REQUIRED", "false").lower() in ("1", "true", "yes")
+        default_factory=lambda: _env("PASSKEY_REQUIRED", "true").lower() in ("1", "true", "yes")
+    )
+    # How long one assertion covers, in seconds. This is the "per session" in
+    # "the passkey gates transactions per session" — it should track the session
+    # grant's own lifetime rather than a single order.
+    passkey_session_seconds: int = field(
+        default_factory=lambda: int(_env("PASSKEY_SESSION_SECONDS", "3600"))
     )
 
     # Simple per-client rate limit for the MCP endpoint.

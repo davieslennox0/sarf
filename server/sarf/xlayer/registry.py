@@ -40,6 +40,11 @@ class RwaAsset:
     address: str         # lowercase 0x, verified on-chain at registry build
     decimals: int
     cex_ticker: str      # "XAAPL" — display only, NEVER an address key
+    # OKX CDN token image, resolved once at registry-build time from
+    # `onchainos token info` and baked in, so rendering a card never depends on
+    # a live lookup. Optional: a missing logo falls back to a generated
+    # monogram rather than an empty box.
+    logo_url: str = ""
 
     @property
     def explorer_url(self) -> str:
@@ -104,6 +109,7 @@ class XStocksRegistry:
                 address=validate_evm_address(a["address"], what=f"{a['symbol']} address"),
                 decimals=int(a["decimals"]),
                 cex_ticker=a["cex_ticker"],
+                logo_url=a.get("logo_url", ""),
             )
             assets[asset.symbol.upper()] = asset
         if not assets:

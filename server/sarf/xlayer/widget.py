@@ -94,9 +94,30 @@ button.chip:hover{border-color:var(--amber);color:var(--amber)}
 button.chip.go{background:var(--amber);color:#141409;border-color:var(--amber);font-weight:600}
 a.btn{background:var(--amber);color:#141409;text-decoration:none;font-weight:600;
   padding:6px 13px;border-radius:4px;font-size:11px}
-.foot{padding:10px 14px;border-top:1px solid var(--line);display:flex;
-  justify-content:space-between;gap:10px;align-items:center;
-  font-size:11px;color:var(--dim);flex-wrap:wrap}
+.foot{padding:12px 14px 14px;border-top:1px solid var(--line);display:flex;
+  flex-direction:column;gap:7px;align-items:stretch;
+  font-size:11px;color:var(--dim)}
+/* The action is the widest thing in the card, not a chip competing with a
+   sentence for the same row. */
+a.btn.wide{display:block;width:100%;box-sizing:border-box;text-align:center;
+  padding:12px 14px;font-size:13px;border-radius:6px}
+a.btn.wide.primary{box-shadow:0 1px 0 rgba(0,0,0,.35)}
+.footnote{text-align:center;font-size:10px;color:var(--dim)}
+/* Identity row: monogram, ticker, and the money on the right. */
+.ident{display:flex;align-items:center;gap:11px;padding:13px 14px 11px}
+.mark{width:38px;height:38px;border-radius:9px;flex:0 0 38px;display:flex;
+  align-items:center;justify-content:center;font-weight:700;font-size:13px;
+  color:#fff;letter-spacing:.5px;overflow:hidden}
+.logoImg{width:100%;height:100%;object-fit:contain;display:block}
+.identText{flex:1 1 auto;min-width:0}
+.ident .title{padding:0;font-size:16px}
+.ident .sub{padding:2px 0 0;font-size:11px}
+.amt{text-align:right;flex:0 0 auto}
+.amtTop{font-size:18px;font-weight:600;color:var(--paper)}
+.amtSub{font-size:11px;color:var(--dim);margin-top:2px}
+.warn{margin:0 14px 11px;padding:8px 10px;border-radius:5px;font-size:11px;
+  background:rgba(232,163,61,.10);border:1px solid rgba(232,163,61,.35);
+  color:var(--amber)}
 .bar{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:3px}
 .bar i{display:block;height:100%;background:var(--amber)}
 .pos{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line)}
@@ -199,9 +220,44 @@ function render(d){
   const tag=$('div','tag'+(done?' ok':'')); txt(tag,done?'SETTLED':'REVIEW & SIGN');
   head.appendChild(tag); card.appendChild(head);
 
-  txt(card.appendChild($('div','title')),
+  // Identity block: generated monogram + ticker, with the order's USD value as
+  // the headline and the quantity beside it. The registry carries no logo URLs
+  // and this runs in a sandboxed iframe, so the mark is drawn from the ticker
+  // rather than fetched — a remote image would be a blocked request and an
+  // empty box, which reads worse than no logo at all.
+  const idw=$('div','ident');
+  const mark=$('div','mark');
+  const sym0=String(d.symbol||'?').replace(/x$/,'').split(' ')[0];
+  txt(mark, sym0.slice(0,2).toUpperCase());
+  // Deterministic hue per ticker so an asset keeps the same colour everywhere.
+  let hsum=0; for(const ch of sym0) hsum=(hsum*31+ch.charCodeAt(0))%360;
+  mark.style.background='linear-gradient(140deg,hsl('+hsum+',62%,42%),hsl('+((hsum+38)%360)+',58%,30%))';
+  // Real logo on top of the monogram rather than instead of it: the monogram
+  // is already painted and correct, so a blocked or 404 image leaves a filled
+  // mark instead of a hole. Only swapped in once the bytes actually decode.
+  if(d.logo_url){
+    const im=new Image();
+    im.onload=()=>{ mark.textContent=''; mark.style.background='#fff';
+      im.className='logoImg'; mark.appendChild(im); _fit(); };
+    im.onerror=()=>{};
+    im.referrerPolicy='no-referrer';
+    im.alt='';
+    im.src=d.logo_url;
+  }
+  idw.appendChild(mark);
+
+  const idt=$('div','identText');
+  txt(idt.appendChild($('div','title')),
       String(d.side||'').toUpperCase()+' '+(d.symbol||''));
-  txt(card.appendChild($('div','sub')), (d.name||'').replace(' xStock',''));
+  txt(idt.appendChild($('div','sub')), (d.name||'').replace(' xStock',''));
+  idw.appendChild(idt);
+
+  const amt=$('div','amt');
+  txt(amt.appendChild($('div','amtTop')),
+      d.estimated_usd!=null?('$'+Number(d.estimated_usd).toFixed(2)):'\\u2014');
+  txt(amt.appendChild($('div','amtSub')), done?d.receiving_estimated:d.spending);
+  idw.appendChild(amt);
+  card.appendChild(idw);
 
   const fee=d.platform_fee||{};
   const rows=$('div','rows');
@@ -216,40 +272,40 @@ function render(d){
   rows.appendChild(row('Network','X Layer \\u00b7 '+(d.chain_id||196)+' \\u00b7 gas in OKB'));
   card.appendChild(rows);
 
-  const notes=(d.risk_notes||[]).filter(Boolean);
-  if(notes.length){
-    const n=$('div','notes'); const h=$('h4'); h.textContent='READ BEFORE SIGNING';
-    n.appendChild(h); const ul=$('ul');
-    notes.slice(0,4).forEach(t=>txt(ul.appendChild($('li')),t));
-    n.appendChild(ul); card.appendChild(n);
+  // The prose blocks that used to sit here — a READ BEFORE SIGNING list and a
+  // tip strip — are gone by design decision on 2026-08-10. They pushed the
+  // action below the fold and were the kind of standing boilerplate users learn
+  // to scroll past, which buys no comprehension for the space it costs.
+  //
+  // Nothing is suppressed by removing them: the synthetic-exposure disclosure
+  // and the per-order risk notes still ride on the tool response itself
+  // (SYNTHETIC_DISCLOSURE, risk_notes) and the model is instructed to relay
+  // them in the message the card is attached to. The card shows the numbers and
+  // the action; the words stay in the transcript beside it.
+  //
+  // The one thing worth keeping visible is a live warning that is specific to
+  // THIS order rather than boilerplate, so a genuinely bad fill still shows up
+  // where the user is about to click.
+  if(!done&&d.price_impact_percent!=null&&Number(d.price_impact_percent)>=1){
+    const warn=$('div','warn');
+    txt(warn,'Price impact '+Number(d.price_impact_percent).toFixed(2)+
+      '% \\u2014 this order moves the pool. Smaller trades fill closer to quote.');
+    card.appendChild(warn);
   }
 
-  // Tips react to this order rather than being boilerplate — a fixed tip
-  // strip is wallpaper users learn to skip.
-  const t=[];
-  if(d.price_impact_percent!=null&&Number(d.price_impact_percent)>=1)
-    t.push(['Impact','This order moves the pool by more than 1%. Splitting it into '+
-      'smaller trades usually fills closer to the quote.']);
-  if(d.minimum_received&&!done)
-    t.push(['Floor','If the fill would land under '+d.minimum_received+
-      ', the transaction reverts and you keep your funds. Slippage costs you a '+
-      'failed trade, never a bad one.']);
-  if(!done) t.push(['Expiry','Quotes go stale. If you leave this and come back, '+
-    'ask again rather than signing an old one.']);
-  if(fee.charged) t.push(['Fee','The $'+Number(fee.usd||0).toFixed(2)+
-    ' is taken inside this same transaction — there is no second transfer and no '+
-    'custody step.']);
-  if(t.length) card.appendChild(tips(t.slice(0,3)));
-
+  // The action fills the card. It used to be a small inline link sharing a row
+  // with a sentence of explanation, which made the primary action the smallest
+  // target on screen.
   const foot=$('div','foot');
   if(done){
-    txt(foot.appendChild($('span')),'Settled on X Layer');
-    if(d.explorer_url){const a=$('a','btn');a.href=d.explorer_url;a.target='_blank';
+    if(d.explorer_url){const a=$('a','btn wide');a.href=d.explorer_url;a.target='_blank';
       a.textContent='View transaction';foot.appendChild(a);}
-  } else {
-    txt(foot.appendChild($('span')),'Unsigned \\u2014 Sarf holds no keys and cannot execute it.');
-    if(d.sign_url){const a=$('a','btn');a.href=d.sign_url;a.target='_blank';
-      a.textContent='Review & sign';foot.appendChild(a);}
+    else txt(foot.appendChild($('span','footnote')),'Settled on X Layer');
+  } else if(d.sign_url){
+    const a=$('a','btn wide primary');a.href=d.sign_url;a.target='_blank';
+    a.textContent='Approve & sign';foot.appendChild(a);
+    txt(foot.appendChild($('span','footnote')),
+        'Verify with your passkey \\u2014 Sarf holds no keys.');
   }
   card.appendChild(foot);
 

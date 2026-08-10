@@ -198,11 +198,11 @@ class XLayerRwaProvider:
                 f"{settings.public_url}/security, then try again."
             )
         last = db.last_passkey_verification(address)
-        if last is None or (time.time() - last) > passkey.STEPUP_VALIDITY_SECONDS:
+        if last is None or (time.time() - last) > passkey.stepup_validity_seconds():
             raise ValueError(
                 f"verify with your passkey first — open {settings.public_url}/security "
                 f"and press Verify, then try again within "
-                f"{passkey.STEPUP_VALIDITY_SECONDS // 60} minutes. Transfers always "
+                f"{passkey.stepup_validity_seconds() // 60} minutes. Transfers always "
                 "require this, whatever the amount."
             )
 
@@ -502,6 +502,7 @@ class XLayerRwaProvider:
                 return {
                     "symbol": asset.symbol,
                     "name": asset.name,
+                    "logo_url": asset.logo_url,
                     "price_usdt": round(price, 6),
                     "address": asset.address,
                     "chain_id": CHAIN_ID,
@@ -523,6 +524,7 @@ class XLayerRwaProvider:
                         "address": a.address,
                         "decimals": a.decimals,
                         "okx_cex_ticker": a.cex_ticker,
+                        "logo_url": a.logo_url,
                         "explorer_url": a.explorer_url,
                     }
                     for a in assets
@@ -772,7 +774,8 @@ class XLayerRwaProvider:
             # decision, not ours, and several simply don't. The text card is
             # the one that always arrives, so it carries the same facts and
             # `next_step` asks for it verbatim.
-            card = {**payload, "side": side, "symbol": asset.symbol, "name": asset.name}
+            card = {**payload, "side": side, "symbol": asset.symbol, "name": asset.name,
+                    "logo_url": getattr(asset, "logo_url", "")}
             payload["card"] = render_order_card_text(card)
             png = render_order_card(card)
             text = TextContent(type="text", text=json.dumps(payload, default=str))
@@ -983,6 +986,9 @@ class XLayerRwaProvider:
                 "order_id": order_id, "chain_id": CHAIN_ID, "side": "swap",
                 "symbol": f"{sell_asset.symbol} → {buy_asset.symbol}",
                 "name": f"{_label(sell_asset)} to {_label(buy_asset)}",
+                # The asset being ACQUIRED carries the card, matching how the
+                # rest of the payload reads (receiving_estimated, minimum_received).
+                "logo_url": getattr(buy_asset, "logo_url", ""),
                 "spending": spending, "receiving_estimated": receiving,
                 "minimum_received": (
                     f"{_fmt_units(unsigned.min_receive, buy_asset.decimals)} "

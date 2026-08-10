@@ -102,6 +102,29 @@ function PrivyBridge() {
     const w =
       wallets.find((x) => x.walletClientType === 'privy') || wallets[0] || null;
 
+    // Publish the auth state SYNCHRONOUSLY, before touching the provider.
+    //
+    // This used to live inside the async block below, so `ready` only reached
+    // non-React code once getEthereumProvider() had resolved. That call can
+    // hang indefinitely when the embedded wallet has not been provisioned yet
+    // — which is exactly the state a first-time Google sign-in is in — and a
+    // promise that never settles meant `ready: true` was never published at
+    // all. connect() then failed its `if (!c.ready)` check forever and threw
+    // "Still loading — try again in a moment." on every attempt, with no way
+    // out but a reload that landed in the same state.
+    //
+    // Liveness and capability are two different facts and are now published
+    // separately: whether Privy has finished initialising does not depend on
+    // whether a signer exists yet.
+    publish({
+      ready,
+      authenticated,
+      login,
+      logout,
+      signAuthorization,
+      address: w?.address ? w.address.toLowerCase() : null,
+    });
+
     (async () => {
       let eip1193 = null;
       try {
@@ -110,15 +133,7 @@ function PrivyBridge() {
         eip1193 = null;
       }
       if (cancelled) return;
-      publish({
-        ready,
-        authenticated,
-        login,
-        logout,
-        signAuthorization,
-        address: w?.address ? w.address.toLowerCase() : null,
-        provider: eip1193,
-      });
+      publish({ provider: eip1193 });
     })();
 
     return () => { cancelled = true; };

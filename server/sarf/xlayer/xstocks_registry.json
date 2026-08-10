@@ -4,7 +4,7 @@
   "generated_at": 1786124277,
   "quote_asset": {
     "symbol": "USDT",
-    "onchain_symbol": "USD\u20ae0",
+    "onchain_symbol": "USD₮0",
     "address": "0x779ded0c9e1022225f8e0630b35a9b54be713736",
     "decimals": 6
   },
@@ -15,280 +15,320 @@
       "name": "SP500 xStock",
       "address": "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48",
       "decimals": 18,
-      "cex_ticker": "XSPY"
+      "cex_ticker": "XSPY",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48-900/type=default_90_0"
     },
     {
       "symbol": "QQQx",
       "name": "Nasdaq xStock",
       "address": "0xa753a7395cae905cd615da0b82a53e0560f250af",
       "decimals": 18,
-      "cex_ticker": "XQQQ"
+      "cex_ticker": "XQQQ",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xa753a7395cae905cd615da0b82a53e0560f250af-900/type=default_90_0"
     },
     {
       "symbol": "NVDAx",
       "name": "NVIDIA xStock",
       "address": "0xc845b2894dbddd03858fd2d643b4ef725fe0849d",
       "decimals": 18,
-      "cex_ticker": "XNVDA"
+      "cex_ticker": "XNVDA",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xc845b2894dbddd03858fd2d643b4ef725fe0849d-900/type=default_90_0"
     },
     {
       "symbol": "IWMx",
       "name": "Russell 2000 xStock",
       "address": "0xdadfb355c6110eda0908740d52c834d6c2bcddc7",
       "decimals": 18,
-      "cex_ticker": "XIWM"
+      "cex_ticker": "XIWM",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xdadfb355c6110eda0908740d52c834d6c2bcddc7-900/type=default_90_0"
     },
     {
       "symbol": "GLDx",
       "name": "Gold xStock",
       "address": "0x2380f2673c640fb67e2d6b55b44c62f0e0e69da9",
       "decimals": 18,
-      "cex_ticker": "XGLD"
+      "cex_ticker": "XGLD",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x2380f2673c640fb67e2d6b55b44c62f0e0e69da9-900/type=default_90_0"
     },
     {
       "symbol": "SNDKx",
       "name": "Sandisk Corporation xStock",
       "address": "0xb63efbc28860c8097e341de1fcf59456161e9d98",
       "decimals": 18,
-      "cex_ticker": "XSNDK"
+      "cex_ticker": "XSNDK",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xb63efbc28860c8097e341de1fcf59456161e9d98-900/type=default_90_0"
     },
     {
       "symbol": "EWYx",
       "name": "iShares MSCI South Korea xStock",
       "address": "0x299c95eb52bfd5bc98d924bce17197b64864589b",
       "decimals": 18,
-      "cex_ticker": "XEWY"
+      "cex_ticker": "XEWY",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x299c95eb52bfd5bc98d924bce17197b64864589b-900/type=default_90_0"
     },
     {
       "symbol": "DELLx",
       "name": "Dell Technologies Inc. xStock",
       "address": "0x2782df1cc877f720c81b4f6568db64563f1d3aa3",
       "decimals": 18,
-      "cex_ticker": "XDELL"
+      "cex_ticker": "XDELL",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x2782df1cc877f720c81b4f6568db64563f1d3aa3-900/type=default_90_0"
     },
     {
       "symbol": "TSLAx",
       "name": "Tesla xStock",
       "address": "0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0",
       "decimals": 18,
-      "cex_ticker": "XTSLA"
+      "cex_ticker": "XTSLA",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0-900/type=default_90_0"
     },
     {
       "symbol": "TSMx",
       "name": "TSMC xStock",
       "address": "0x9e3bf4ecfc44eedd624f26656b6736a3f093b073",
       "decimals": 18,
-      "cex_ticker": "XTSM"
+      "cex_ticker": "XTSM",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x9e3bf4ecfc44eedd624f26656b6736a3f093b073-900/type=default_90_0"
     },
     {
       "symbol": "INTCx",
       "name": "Intel xStock",
       "address": "0xf8a80d1cb9cfd70d03d655d9df42339846f3b3c8",
       "decimals": 18,
-      "cex_ticker": "XINTC"
+      "cex_ticker": "XINTC",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xf8a80d1cb9cfd70d03d655d9df42339846f3b3c8-900/type=default_90_0"
     },
     {
       "symbol": "PLTRx",
       "name": "Palantir xStock",
       "address": "0x6d482cec5f9dd1f05ccee9fd3ff79b246170f8e2",
       "decimals": 18,
-      "cex_ticker": "XPLTR"
+      "cex_ticker": "XPLTR",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x6d482cec5f9dd1f05ccee9fd3ff79b246170f8e2-900/type=default_90_0"
     },
     {
       "symbol": "CRCLx",
       "name": "Circle xStock",
       "address": "0xfebded1b0986a8ee107f5ab1a1c5a813491deceb",
       "decimals": 18,
-      "cex_ticker": "XCRCL"
+      "cex_ticker": "XCRCL",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xfebded1b0986a8ee107f5ab1a1c5a813491deceb-900/type=default_90_0"
     },
     {
       "symbol": "ORCLx",
       "name": "Oracle xStock",
       "address": "0x548308e91ec9f285c7bff05295badbd56a6e4971",
       "decimals": 18,
-      "cex_ticker": "XORCL"
+      "cex_ticker": "XORCL",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x548308e91ec9f285c7bff05295badbd56a6e4971-900/type=default_90_0"
     },
     {
       "symbol": "COINx",
       "name": "Coinbase xStock",
       "address": "0x364f210f430ec2448fc68a49203040f6124096f0",
       "decimals": 18,
-      "cex_ticker": "XCOIN"
+      "cex_ticker": "XCOIN",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x364f210f430ec2448fc68a49203040f6124096f0-900/type=default_90_0"
     },
     {
       "symbol": "MRVLx",
       "name": "Marvell xStock",
       "address": "0xeaad46f4146ded5a47b55aa7f6c48c191deaec88",
       "decimals": 18,
-      "cex_ticker": "XMRVL"
+      "cex_ticker": "XMRVL",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xeaad46f4146ded5a47b55aa7f6c48c191deaec88-900/type=default_90_0"
     },
     {
       "symbol": "MSFTx",
       "name": "Microsoft xStock",
       "address": "0x5621737f42dae558b81269fcb9e9e70c19aa6b35",
       "decimals": 18,
-      "cex_ticker": "XMSFT"
+      "cex_ticker": "XMSFT",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x5621737f42dae558b81269fcb9e9e70c19aa6b35-900/type=default_90_0"
     },
     {
       "symbol": "AMZNx",
       "name": "Amazon.com xStock",
       "address": "0x3557ba345b01efa20a1bddc61f573bfd87195081",
       "decimals": 18,
-      "cex_ticker": "XAMZN"
+      "cex_ticker": "XAMZN",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x3557ba345b01efa20a1bddc61f573bfd87195081-900/type=default_90_0"
     },
     {
       "symbol": "ASMLx",
       "name": "ASML xStock",
       "address": "0xc0b417e7f83db438631eb5e096684dd742e5294f",
       "decimals": 18,
-      "cex_ticker": "XASML"
+      "cex_ticker": "XASML",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xc0b417e7f83db438631eb5e096684dd742e5294f-900/type=default_90_0"
     },
     {
       "symbol": "AAPLx",
       "name": "Apple xStock",
       "address": "0x9d275685dc284c8eb1c79f6aba7a63dc75ec890a",
       "decimals": 18,
-      "cex_ticker": "XAAPL"
+      "cex_ticker": "XAAPL",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x9d275685dc284c8eb1c79f6aba7a63dc75ec890a-900/type=default_90_0"
     },
     {
       "symbol": "MSTRx",
       "name": "MicroStrategy xStock",
       "address": "0xae2f842ef90c0d5213259ab82639d5bbf649b08e",
       "decimals": 18,
-      "cex_ticker": "XMSTR"
+      "cex_ticker": "XMSTR",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xae2f842ef90c0d5213259ab82639d5bbf649b08e-900/type=default_90_0"
     },
     {
       "symbol": "AVGOx",
       "name": "Broadcom xStock",
       "address": "0x38bac69cbbd28156796e4163b2b6dcb81e336565",
       "decimals": 18,
-      "cex_ticker": "XAVGO"
+      "cex_ticker": "XAVGO",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x38bac69cbbd28156796e4163b2b6dcb81e336565-900/type=default_90_0"
     },
     {
       "symbol": "METAx",
       "name": "Meta xStock",
       "address": "0x96702be57cd9777f835117a809c7124fe4ec989a",
       "decimals": 18,
-      "cex_ticker": "XMETA"
+      "cex_ticker": "XMETA",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x96702be57cd9777f835117a809c7124fe4ec989a-900/type=default_90_0"
     },
     {
       "symbol": "GOOGLx",
       "name": "Alphabet xStock",
       "address": "0xe92f673ca36c5e2efd2de7628f815f84807e803f",
       "decimals": 18,
-      "cex_ticker": "XGOOGL"
+      "cex_ticker": "XGOOGL",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xe92f673ca36c5e2efd2de7628f815f84807e803f-900/type=default_90_0"
     },
     {
       "symbol": "MUx",
       "name": "Micron Technology xStock",
       "address": "0xf6a873bae4ba1b304e45df52a4b7d176e1c6a8c4",
       "decimals": 18,
-      "cex_ticker": "XMU"
+      "cex_ticker": "XMU",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xf6a873bae4ba1b304e45df52a4b7d176e1c6a8c4-900/type=default_90_0"
     },
     {
       "symbol": "IBMx",
       "name": "International Business Machines xStock",
       "address": "0xd9913208647671fe0f48f7f260076b2c6f310aac",
       "decimals": 18,
-      "cex_ticker": "XIBM"
+      "cex_ticker": "XIBM",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xd9913208647671fe0f48f7f260076b2c6f310aac-900/type=default_90_0"
     },
     {
       "symbol": "HOODx",
       "name": "Robinhood xStock",
       "address": "0xe1385fdd5ffb10081cd52c56584f25efa9084015",
       "decimals": 18,
-      "cex_ticker": "XHOOD"
+      "cex_ticker": "XHOOD",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xe1385fdd5ffb10081cd52c56584f25efa9084015-900/type=default_90_0"
     },
     {
       "symbol": "AMDx",
       "name": "AMD xStock",
       "address": "0x3522513e5f146a2006e2901b05f16b2821485e19",
       "decimals": 18,
-      "cex_ticker": "XAMD"
+      "cex_ticker": "XAMD",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x3522513e5f146a2006e2901b05f16b2821485e19-900/type=default_90_0"
     },
     {
       "symbol": "GSx",
       "name": "Goldman Sachs xStock",
       "address": "0x3ee7e9b3a992fd23cd1c363b0e296856b04ab149",
       "decimals": 18,
-      "cex_ticker": "XGS"
+      "cex_ticker": "XGS",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x3ee7e9b3a992fd23cd1c363b0e296856b04ab149-900/type=default_90_0"
     },
     {
       "symbol": "NFLXx",
       "name": "Netflix xStock",
       "address": "0xa6a65ac27e76cd53cb790473e4345c46e5ebf961",
       "decimals": 18,
-      "cex_ticker": "XNFLX"
+      "cex_ticker": "XNFLX",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xa6a65ac27e76cd53cb790473e4345c46e5ebf961-900/type=default_90_0"
     },
     {
       "symbol": "CSCOx",
       "name": "Cisco xStock",
       "address": "0x053c784cd87b74f42e0c089f98643e79c1a3ff16",
       "decimals": 18,
-      "cex_ticker": "XCSCO"
+      "cex_ticker": "XCSCO",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x053c784cd87b74f42e0c089f98643e79c1a3ff16-900/type=default_90_0"
     },
     {
       "symbol": "ADBEx",
       "name": "Adobe xStock",
       "address": "0x16e0b579be45baae54ceddd52e742b6457a7fe12",
       "decimals": 18,
-      "cex_ticker": "XADBE"
+      "cex_ticker": "XADBE",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x16e0b579be45baae54ceddd52e742b6457a7fe12-900/type=default_90_0"
     },
     {
       "symbol": "LLYx",
       "name": "Eli Lilly xStock",
       "address": "0x19c41ea77b34bbdee61c3a87a75d1abda2ed0be4",
       "decimals": 18,
-      "cex_ticker": "XLLY"
+      "cex_ticker": "XLLY",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x19c41ea77b34bbdee61c3a87a75d1abda2ed0be4-900/type=default_90_0"
     },
     {
       "symbol": "GMEx",
       "name": "Gamestop xStock",
       "address": "0xe5f6d3b2405abdfe6f660e63202b25d23763160d",
       "decimals": 18,
-      "cex_ticker": "XGME"
+      "cex_ticker": "XGME",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xe5f6d3b2405abdfe6f660e63202b25d23763160d-900/type=default_90_0"
     },
     {
       "symbol": "CRWDx",
       "name": "CrowdStrike xStock",
       "address": "0x214151022c2a5e380ab80cdac31f23ae554a7345",
       "decimals": 18,
-      "cex_ticker": "XCRWD"
+      "cex_ticker": "XCRWD",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x214151022c2a5e380ab80cdac31f23ae554a7345-900/type=default_90_0"
     },
     {
       "symbol": "HIMSx",
       "name": "Hims & Hers xStock",
       "address": "0x55600dfb3943a2db1a49b250e1e9114e4ad2174f",
       "decimals": 18,
-      "cex_ticker": "XHIMS"
+      "cex_ticker": "XHIMS",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x55600dfb3943a2db1a49b250e1e9114e4ad2174f-900/type=default_90_0"
     },
     {
       "symbol": "BMNRx",
       "name": "Bitmine xStock",
       "address": "0xaeb681b69e5094e04d11bcef51a71358a374c3ed",
       "decimals": 18,
-      "cex_ticker": "XBMNR"
+      "cex_ticker": "XBMNR",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xaeb681b69e5094e04d11bcef51a71358a374c3ed-900/type=default_90_0"
     },
     {
       "symbol": "IRENx",
       "name": "IREN xStock",
       "address": "0xfbfc1fd14eec970276c8a3bf5e6131cd751cc0b9",
       "decimals": 18,
-      "cex_ticker": "XIREN"
+      "cex_ticker": "XIREN",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0xfbfc1fd14eec970276c8a3bf5e6131cd751cc0b9-900/type=default_90_0"
     },
     {
       "symbol": "XLEx",
       "name": "Energy Select Sector SPDR Fund xStock",
       "address": "0x6f75ac3b1b6fbe8bb5f948e25af03620f26ae838",
       "decimals": 18,
-      "cex_ticker": "XXLE"
+      "cex_ticker": "XXLE",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x6f75ac3b1b6fbe8bb5f948e25af03620f26ae838-900/type=default_90_0"
     },
     {
       "symbol": "SOXLx",
       "name": "Direxion Semiconductor Bull 3X xStock",
       "address": "0x53ee7f58cf031ea4d897fdfcdafad124b3160689",
       "decimals": 18,
-      "cex_ticker": "XSOXL"
+      "cex_ticker": "XSOXL",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x53ee7f58cf031ea4d897fdfcdafad124b3160689-900/type=default_90_0"
     }
   ]
 }

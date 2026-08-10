@@ -38,13 +38,23 @@ export default function SecurityInfo() {
       </div>
 
       <div className="card accent">
-        <h3>Passkeys gate the dangerous actions</h3>
+        <h3>Your passkey gates every transaction</h3>
         <p>
-          A passkey here is not a second signer — your wallet signature is what
-          authorizes funds, always. It proves a person is present for the actions
-          where that matters: sending funds to someone else, and executing an
-          unusually large order from a chat session. Transfers require a fresh
-          passkey every time, regardless of amount.
+          You register it once when you sign in, and after that it guards both
+          ends: a session key is only issued after you prove it is you, and no
+          transaction that key makes goes through without it. One verification
+          covers a session rather than a single order — that is what lets you
+          approve trades in chat instead of returning to your wallet each time.
+        </p>
+        <p>
+          Being straight about the trade: this is not the same as signing every
+          trade in your wallet. Within a session, your passkey — not a wallet
+          signature — is what authorizes a trade. That is why the session key is
+          capped per trade and per day <em>in the contract</em>, and why it
+          expires. Those limits are the ceiling on what one verification can
+          ever authorize, and Sarf cannot raise them. Transfers are outside this
+          entirely: they always need a fresh passkey, they can never be
+          delegated to a session key, and no amount is small enough to skip it.
         </p>
       </div>
 
