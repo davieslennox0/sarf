@@ -238,3 +238,51 @@ def test_widgets_never_interpolate_values_into_markup():
     for uri, (_n, html, _d) in WIDGETS.items():
         body = html.split("function render", 1)[-1]
         assert "innerHTML=" not in body.replace(" ", "") or "innerHTML=''" in body.replace(" ", ""), uri
+
+
+def test_okb_counts_toward_wallet_value_but_not_equity_concentration():
+    """OKB is a holding with a price, not just a gas meter.
+
+    The split matters in both directions: it has to reach the wallet total, or
+    every balance is understated by whatever OKB is worth; and it has to stay
+    out of the equity sleeve, or it dilutes every concentration weight and gets
+    handed a sector by classify(), which only knows stock symbols.
+    """
+    result = analyze({
+        "positions": [{"symbol": "AAPLx", "name": "Apple", "value_usd": 100.0}],
+        "positions_value_usd": 100.0,
+        "usdt_balance": "50",
+        "gas_balance_okb": "1.0",
+        "okb_value_usd": 25.0,
+        "unpriced_positions": [],
+    })
+
+    assert result["holdings_value_usd"] == 175.0   # 100 equity + 50 USDT + 25 OKB
+    assert result["equity_value_usd"] == 100.0     # OKB excluded from the sleeve
+    assert result["okb_value_usd"] == 25.0
+    # Weight is over equity alone, so OKB must not move it.
+    assert result["weights"][0]["weight_percent"] == 100.0
+    assert all(w["symbol"] != "OKB" for w in result["weights"])
+
+
+def test_wallet_holding_only_okb_is_not_reported_as_empty():
+    result = analyze({
+        "positions": [],
+        "positions_value_usd": 0.0,
+        "usdt_balance": "0",
+        "gas_balance_okb": "0.5",
+        "okb_value_usd": 12.0,
+    })
+    assert result["holdings_value_usd"] == 12.0
+    assert "nothing to measure" not in json.dumps(result)
+
+
+def test_portfolio_without_an_okb_key_still_analyses():
+    """Back-compat: stored snapshots predate okb_value_usd."""
+    result = analyze({
+        "positions": [{"symbol": "AAPLx", "name": "Apple", "value_usd": 100.0}],
+        "positions_value_usd": 100.0,
+        "usdt_balance": "50",
+    })
+    assert result["holdings_value_usd"] == 150.0
+    assert result["okb_value_usd"] == 0.0

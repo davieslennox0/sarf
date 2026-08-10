@@ -12,7 +12,7 @@ User asks Claude to buy a tokenized stock
     caps, applies passkey step-up, builds an UNSIGNED X Layer transaction
   → Claude shows human_summary + risk_notes + sign_url
   → User signs in their own wallet → the wallet broadcasts → tx hash
-  → get_settlement_status confirms it on X Layer
+  → get_status confirms it on X Layer
 ```
 
 > **xStocks are synthetic exposure.** They track a share price. Holding one
@@ -51,12 +51,23 @@ trade against an account they have not proven control of.
 
 | Tool | Kind | Notes |
 |---|---|---|
-| `get_rwa_list()` | read | the 40 tradable assets, with contracts + explorer links |
-| `get_rwa_price(symbol)` | read | live price quoted from X Layer DEX pools |
-| `get_portfolio()` | read | holdings + USDT + OKB gas balance, read from chain |
+| `get_rwa_list(symbol?)` | read | the 40 tradable assets with contracts + explorer links; with a symbol, that one asset's live DEX price |
+| `get_portfolio()` | read | holdings + USDT + OKB, all priced, read from chain |
 | `place_order(symbol, side, amount, slippage_percent?)` | build | returns an **unsigned** tx + `sign_url`; never executes |
-| `get_settlement_status(tx_hash)` | read | distinguishes unknown / pending / confirmed / reverted |
-| `get_order_history(limit?)` | read | this wallet's orders, with tx hashes |
+| `swap(from_symbol, to_symbol, amount, slippage_percent?)` | build | the general case of `place_order` — rotate any asset into any other without routing through USDT |
+| `transfer(symbol, to, amount)` | build | send a holding out; always requires a fresh passkey and can never be delegated |
+| `execute_order(order_id)` | execute | settles a built order under a live session grant, within its on-chain caps |
+| `get_status(tx_hash?, history_limit?)` | read | session grant by default; optionally a tx's confirmation state and recent orders |
+| `analyze_portfolio()` | read | concentration, diversification, sector and instrument mix — measurement only, not advice |
+
+Deliberately kept to eight. Narrow, single-purpose tools are harder for an
+assistant to find by keyword search once several MCP connectors are enabled at
+once, and a capability nobody can discover may as well not exist — on
+2026-08-10 an assistant spent an afternoon insisting Sarf had no `swap`,
+having read a capped search result as a complete registry listing. The money
+paths stay separate from each other regardless: `transfer` in particular never
+merges into a general trade tool, because its passkey requirement is a
+security property and not a parameter.
 
 ## Deployment strategy — and why each choice was made
 

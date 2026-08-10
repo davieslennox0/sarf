@@ -190,19 +190,27 @@ def analyze(portfolio: dict[str, Any]) -> dict[str, Any]:
         stable = float(portfolio.get("usdt_balance") or 0)
     except (TypeError, ValueError):
         stable = 0.0
-    total = equity + stable
+    # OKB carries real value, so it belongs in the wallet total. It is kept out
+    # of `equity` on purpose: concentration is measured against the tokenized-
+    # stock sleeve, and folding a gas coin in would dilute every weight by
+    # whatever OKB happened to be worth that day.
+    try:
+        okb = float(portfolio.get("okb_value_usd") or 0)
+    except (TypeError, ValueError):
+        okb = 0.0
+    total = equity + stable + okb
 
     findings: list[dict[str, str]] = []
     breakdown: dict[str, Any] = {}
 
-    if not positions and stable <= 0:
+    if not positions and stable <= 0 and okb <= 0:
         return {
             "holdings_value_usd": 0.0,
             "position_count": 0,
             "findings": [_observe(
                 "empty",
-                "This wallet holds no tokenized stocks and no USDT on X Layer, so "
-                "there is nothing to measure yet.",
+                "This wallet holds no tokenized stocks, no USDT and no OKB on X "
+                "Layer, so there is nothing to measure yet.",
             )],
             "weights": [],
             "concentration": {},
@@ -403,6 +411,7 @@ def analyze(portfolio: dict[str, Any]) -> dict[str, Any]:
         "holdings_value_usd": round(total, 2),
         "equity_value_usd": round(equity, 2),
         "stablecoin_usd": round(stable, 2),
+        "okb_value_usd": round(okb, 2),
         "stablecoin_buffer_percent": buffer_pct,
         "position_count": len(weights),
         "weights": weights,

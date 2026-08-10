@@ -361,20 +361,52 @@ class XLayerRwaProvider:
                 "address": a.address, "explorer_url": a.explorer_url,
             })
 
+        # OKB is the gas coin, but it is also a real holding with a real price,
+        # and reporting it as a bare quantity understated every wallet by
+        # whatever it was worth. It is priced through the same 1-unit sell quote
+        # as everything else, so its mark agrees with what it would actually
+        # fill at.
+        #
+        # Deliberately NOT appended to `positions`: that list is the equity
+        # sleeve that analyze() computes concentration weights against and runs
+        # through classify(), which maps stock symbols to sectors. A gas coin
+        # given a sector and a single-name concentration weight would be noise
+        # dressed as a finding. It sits beside usdt_balance as a valued
+        # non-equity holding instead.
+        okb_qty = float(Decimal(okb_raw) / (Decimal(10) ** 18))
+        okb_price = await self._unit_price_usd(NATIVE) if okb_raw > 0 else None
+        okb_value = okb_qty * okb_price if okb_price is not None else None
+        if okb_raw > 0 and okb_value is None:
+            # Same fail-closed rule as the equities: an unpriceable holding
+            # suppresses the total rather than being silently counted as zero.
+            unpriced.append(NATIVE.symbol)
+
+        usdt_value = float(Decimal(usdt_raw) / (Decimal(10) ** reg.quote.decimals))
         return {
             "address": address,
             "chain": {"name": "X Layer", "chain_id": CHAIN_ID},
             "positions": positions,
             "usdt_balance": _fmt_units(usdt_raw, reg.quote.decimals),
+            # Kept under its original key so the dashboard and any stored
+            # snapshots keep reading the balance they already read.
             "gas_balance_okb": _fmt_units(okb_raw, 18),
+            "okb": {
+                "symbol": NATIVE.symbol,
+                "quantity": _fmt_units(okb_raw, 18),
+                "price_usdt": round(okb_price, 6) if okb_price is not None else None,
+                "value_usd": round(okb_value, 2) if okb_value is not None else None,
+                "note": "OKB pays for gas on X Layer as well as being a holding, "
+                        "so some of this balance has to stay put to transact.",
+            },
+            "okb_value_usd": round(okb_value, 2) if okb_value is not None else None,
             "gas_sponsored": self._gas_sponsored(address),
             "positions_value_usd": round(total_usd, 2),
             # Stated explicitly so a partial pricing outage can never be
             # mistaken for "these positions are worth nothing".
             "unpriced_positions": unpriced,
-            "total_value_usd": round(total_usd + float(
-                Decimal(usdt_raw) / (Decimal(10) ** reg.quote.decimals)
-            ), 2) if not unpriced else None,
+            "total_value_usd": round(
+                total_usd + usdt_value + (okb_value or 0.0), 2
+            ) if not unpriced else None,
             "disclosure": SYNTHETIC_DISCLOSURE,
         }
 
@@ -446,12 +478,38 @@ class XLayerRwaProvider:
             return {"ui": {"resourceUri": uri}}
 
         @mcp.tool()
-        async def get_rwa_list() -> dict[str, Any]:
-            """List the tokenized stocks and ETFs tradable on X Layer.
+        async def get_rwa_list(
+            symbol: Annotated[str | None, Field(
+                default=None,
+                description="Optional on-chain symbol, e.g. 'AAPLx' — returns a live "
+                            "price for just that asset instead of the whole list")] = None,
+        ) -> dict[str, Any]:
+            """Tradable tokenized stocks and ETFs on X Layer, or one asset's price.
 
-            Read-only. Returns each asset's on-chain symbol, name, contract
-            address and X Layer explorer link.
+            Read-only. With no argument: the full universe, each with on-chain
+            symbol, name, contract address and explorer link. With a symbol: a
+            live price for that one asset, quoted from the same X Layer pools a
+            trade would fill against, so the quote and the fill agree.
             """
+            if symbol is not None:
+                asset = reg.resolve(symbol, allowlist=settings.rwa_allowlist)
+                price = await self._unit_price_usd(asset)
+                if price is None:
+                    raise ValueError(
+                        f"could not price {asset.symbol} on X Layer right now — the DEX "
+                        "aggregator did not return a route. Try again shortly."
+                    )
+                return {
+                    "symbol": asset.symbol,
+                    "name": asset.name,
+                    "price_usdt": round(price, 6),
+                    "address": asset.address,
+                    "chain_id": CHAIN_ID,
+                    "explorer_url": asset.explorer_url,
+                    "quoted_at": int(time.time()),
+                    "source": "OKX DEX aggregator (X Layer pools)",
+                    "disclosure": SYNTHETIC_DISCLOSURE,
+                }
             allow = settings.rwa_allowlist
             assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
             return {
@@ -478,34 +536,6 @@ class XLayerRwaProvider:
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
 
-        @mcp.tool()
-        async def get_rwa_price(
-            symbol: Annotated[str, Field(description="On-chain symbol, e.g. 'AAPLx' or 'SPYx'")],
-        ) -> dict[str, Any]:
-            """Live price for one tokenized stock, quoted from X Layer DEX pools.
-
-            Read-only. The price is what the aggregator would actually fill at
-            right now, not a reference feed.
-            """
-            asset = reg.resolve(symbol, allowlist=settings.rwa_allowlist)
-            price = await self._unit_price_usd(asset)
-            if price is None:
-                raise ValueError(
-                    f"could not price {asset.symbol} on X Layer right now — the DEX "
-                    "aggregator did not return a route. Try again shortly."
-                )
-            return {
-                "symbol": asset.symbol,
-                "name": asset.name,
-                "price_usdt": round(price, 6),
-                "address": asset.address,
-                "chain_id": CHAIN_ID,
-                "explorer_url": asset.explorer_url,
-                "quoted_at": int(time.time()),
-                "source": "OKX DEX aggregator (X Layer pools)",
-                "disclosure": SYNTHETIC_DISCLOSURE,
-            }
-
         @mcp.tool(meta=ui("ui://sarf/portfolio-card"))
         async def get_portfolio() -> dict[str, Any]:
             """The authenticated wallet's tokenized-stock holdings on X Layer.
@@ -514,25 +544,6 @@ class XLayerRwaProvider:
             authenticated session's wallet — no address argument exists.
             """
             return await self.portfolio(require_address())
-
-        @mcp.tool(meta=ui("ui://sarf/analysis-card"))
-        async def analyze_portfolio() -> dict[str, Any]:
-            """Analyse the authenticated wallet's holdings: concentration,
-            diversification, sector and instrument mix.
-
-            Read-only. Applies standard portfolio-analysis methodology — the
-            measures a CFA charterholder would reach for — but this is NOT
-            regulated financial advice and Sarf is not a licensed adviser.
-
-            Every field of the response must be relayed under the rules the
-            response itself carries: state each finding as a fact beside the
-            norm it is measured against and let the user draw the conclusion;
-            never instruct them to buy, sell, trim or rebalance; never forecast
-            a price; always relay `disclosure` and `missing_context`, because
-            this tool sees on-chain holdings only and knows nothing about the
-            user's income, goals, horizon or risk tolerance.
-            """
-            return analyze(await self.portfolio(require_address()))
 
         @mcp.tool(meta=ui("ui://sarf/order-card"))
         async def place_order(
@@ -1018,12 +1029,26 @@ class XLayerRwaProvider:
             return [text] if not png else [
                 text, ImageContent(type="image", data=png, mimeType="image/png")]
 
+        # One read-only status tool instead of three. Three separate lookups
+        # answering variations of "where does this stand" made the toolset wider
+        # than the capability warranted, and a wide toolset is genuinely harder
+        # for an assistant to discover by keyword search — which is how tools
+        # get found when several connectors are enabled at once. Fewer, richer
+        # tools beat many narrow ones for discoverability.
         @mcp.tool()
-        async def get_session_status() -> dict[str, Any]:
-            """Whether this wallet has a live session grant for in-chat execution.
+        async def get_status(
+            tx_hash: Annotated[str | None, Field(
+                default=None,
+                description="Optional X Layer tx hash (0x + 64 hex) to check confirmation of")] = None,
+            history_limit: Annotated[int | None, Field(
+                default=None, description="Optional: include this many recent orders, 1-100")] = None,
+        ) -> dict[str, Any]:
+            """Session grant, transaction confirmation, and order history.
 
-            Read-only. Tells you if orders can be executed here or must be
-            signed in the user's wallet, and what limits they set.
+            Read-only, and every section is optional except the session one:
+            call with no arguments for whether in-chat execution is live and
+            under what limits; pass tx_hash to confirm a settlement; pass
+            history_limit for recent orders. Combine them freely.
             """
             address = require_address()
             row = db.get_grant(address)
@@ -1044,14 +1069,18 @@ class XLayerRwaProvider:
                     "sign_url and they sign in their own wallet. They can set up in-chat "
                     "execution at setup_url; it is optional and revocable."
                 )
-                return base
-            g = _grant_from_row(row)
-            base["grant"] = g.view(reg.quote.decimals)
-            base["note"] = (
-                "A live grant exists: orders at or under auto_execute_under_usd can be "
-                "executed with execute_order. Larger ones need a fresh passkey. The "
-                "on-chain caps are the hard ceiling and Sarf cannot raise them."
-            )
+            else:
+                g = _grant_from_row(row)
+                base["grant"] = g.view(reg.quote.decimals)
+                base["note"] = (
+                    "A live grant exists: orders at or under auto_execute_under_usd can be "
+                    "executed with execute_order. Larger ones need a fresh passkey. The "
+                    "on-chain caps are the hard ceiling and Sarf cannot raise them."
+                )
+            if tx_hash is not None:
+                base["settlement"] = await _settlement_view(tx_hash)
+            if history_limit is not None:
+                base["history"] = _history_view(address, history_limit)
             return base
 
         @mcp.tool(meta=ui("ui://sarf/order-card"))
@@ -1173,11 +1202,11 @@ class XLayerRwaProvider:
             payload["card"] = render_order_card_text(payload)
             return [TextContent(type="text", text=json.dumps(payload, default=str))]
 
-        @mcp.tool()
-        async def get_settlement_status(
-            tx_hash: Annotated[str, Field(description="X Layer transaction hash (0x + 64 hex)")],
-        ) -> dict[str, Any]:
-            """Look up an X Layer transaction's confirmation status by hash."""
+        # Plain helpers, not tools. Their capability is still reachable — it
+        # moved into get_status — but it no longer costs a slot in the client's
+        # tool budget.
+        async def _settlement_view(tx_hash: str) -> dict[str, Any]:
+            """An X Layer transaction's confirmation status, by hash."""
             h = validate_tx_hash(tx_hash)
             st = await rpc.tx_status(h)
             if not st.found:
@@ -1199,12 +1228,8 @@ class XLayerRwaProvider:
                 "explorer_url": EXPLORER_TX.format(h),
             }
 
-        @mcp.tool()
-        async def get_order_history(
-            limit: Annotated[int, Field(default=25, description="Max orders, 1-100")] = 25,
-        ) -> dict[str, Any]:
+        def _history_view(address: str, limit: int) -> dict[str, Any]:
             """Orders this wallet has created through Sarf, newest first."""
-            address = require_address()
             n = max(1, min(int(limit), 100))
             rows = db.orders_for_address(address, n)
             out = []
@@ -1223,3 +1248,31 @@ class XLayerRwaProvider:
                     "explorer_url": EXPLORER_TX.format(r["tx_hash"]) if r["tx_hash"] else None,
                 })
             return {"address": address, "count": len(out), "orders": out}
+
+        # Registered last simply because it is the least load-bearing tool here:
+        # it moves no money and re-reads holdings get_portfolio already returns.
+        #
+        # It is NOT last because of any client tool cap. That theory was floated
+        # on 2026-08-10 to explain an assistant insisting Sarf had no `swap`,
+        # and it was wrong — the assistant had run a keyword tool search capped
+        # at 20 results across three connectors exposing 71 tools between them,
+        # and read the partial result as a complete registry. No truncation was
+        # ever involved; `swap` was registered and callable throughout.
+        @mcp.tool(meta=ui("ui://sarf/analysis-card"))
+        async def analyze_portfolio() -> dict[str, Any]:
+            """Analyse the authenticated wallet's holdings: concentration,
+            diversification, sector and instrument mix.
+
+            Read-only. Applies standard portfolio-analysis methodology — the
+            measures a CFA charterholder would reach for — but this is NOT
+            regulated financial advice and Sarf is not a licensed adviser.
+
+            Every field of the response must be relayed under the rules the
+            response itself carries: state each finding as a fact beside the
+            norm it is measured against and let the user draw the conclusion;
+            never instruct them to buy, sell, trim or rebalance; never forecast
+            a price; always relay `disclosure` and `missing_context`, because
+            this tool sees on-chain holdings only and knows nothing about the
+            user's income, goals, horizon or risk tolerance.
+            """
+            return analyze(await self.portfolio(require_address()))
