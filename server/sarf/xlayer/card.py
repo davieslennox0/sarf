@@ -145,13 +145,75 @@ def _render_text(o: dict[str, Any]) -> str:
             shown[-1] = shown[-1] + " …"
         for i, seg in enumerate(shown):
             lines.append(_row(("• " if i == 0 else "  ") + seg))
-    lines += [
-        _rule(),
-        _row("UNSIGNED — you sign this in your own wallet."),
-        _row("Sarf holds no keys and cannot execute it."),
-        f"└{'─' * (TW - 2)}┘",
-    ]
+    # The closing line has to agree with can_execute. It was hard-coded to
+    # "Sarf holds no keys and cannot execute it" even on orders inside a live
+    # session grant, so the card flatly contradicted the same payload's
+    # can_execute flag — and an assistant reading both is right to trust the
+    # card, which is what happened: it refused to execute an order it could
+    # have executed. Both statements are true in their own case; neither is
+    # true in both.
+    if o.get("can_execute"):
+        lines += [
+            _rule(),
+            _row("UNSIGNED — within your session grant."),
+            _row("Approve here and Sarf submits it; caps are on-chain."),
+            f"└{'─' * (TW - 2)}┘",
+        ]
+    else:
+        lines += [
+            _rule(),
+            _row("UNSIGNED — you sign this in your own wallet."),
+            _row("Sarf holds no keys and cannot execute it."),
+            f"└{'─' * (TW - 2)}┘",
+        ]
     return "```\n" + "\n".join(lines) + "\n```"
+
+
+# Logo fetch for the PNG card. Cached in-process: the same forty images recur
+# constantly, they are ~1.3KB each, and a card render must never wait on the
+# network twice for the same asset.
+_LOGO_CACHE: dict[str, "Image.Image | None"] = {}
+
+
+def _logo(url: str, size: int) -> "Image.Image | None":
+    """Fetch and square a token logo, or None. Never raises.
+
+    The HTML widget layers a real image over a generated monogram so a failed
+    load degrades to a filled square. The PNG needs the same property, and it
+    gets it by returning None here and letting the caller draw the monogram.
+    """
+    if not url:
+        return None
+    if url in _LOGO_CACHE:
+        cached = _LOGO_CACHE[url]
+        return cached.resize((size, size)) if cached else None
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=4) as r:
+            raw = r.read(512_000)
+        im = Image.open(io.BytesIO(raw)).convert("RGBA")
+        _LOGO_CACHE[url] = im
+        return im.resize((size, size))
+    except Exception:
+        _LOGO_CACHE[url] = None
+        return None
+
+
+def _monogram(d: "ImageDraw.ImageDraw", box, symbol: str, size: int) -> None:
+    """The fallback mark: two letters on a hue derived from the ticker, so an
+    asset keeps the same colour here as in the HTML card."""
+    import colorsys
+    base = (symbol or "?").rstrip("x").split(" ")[0]
+    h = 0
+    for ch in base:
+        h = (h * 31 + ord(ch)) % 360
+    r, g, b = colorsys.hls_to_rgb(h / 360.0, 0.36, 0.52)
+    fill = (int(r * 255), int(g * 255), int(b * 255))
+    d.rounded_rectangle(box, radius=max(4, size // 5), fill=fill)
+    d.text(
+        (box[0] + size / 2, box[1] + size / 2), base[:2].upper(),
+        font=_f(max(10, size // 2 - 2), True), fill=(255, 255, 255), anchor="mm",
+    )
 
 
 def render_order_card(order: dict[str, Any]) -> str:
@@ -190,9 +252,22 @@ def _render(o: dict[str, Any]) -> str:
     d.line([(PAD, 76), (W - PAD, 76)], fill=LINE, width=1)
 
     # ---- headline ---------------------------------------------------------
-    _text(d, (PAD, 100), f"{side} {symbol}", _f(34, True), AMBER)
+    # Token mark, then the text shifted right to clear it. The PNG had no logo
+    # at all — logos were added to the HTML widget only, so the image card that
+    # actually renders in chat kept showing bare text.
+    MARK = 46
+    mark_box = (PAD, 100, PAD + MARK, 100 + MARK)
+    logo = _logo(str(o.get("logo_url") or ""), MARK)
+    if logo is not None:
+        d.rounded_rectangle(mark_box, radius=9, fill=(255, 255, 255))
+        img.paste(logo, (PAD, 100), logo)
+    else:
+        _monogram(d, mark_box, str(symbol), MARK)
+
+    tx = PAD + MARK + 14
+    _text(d, (tx, 100), f"{side} {symbol}", _f(34, True), AMBER)
     if name:
-        _text(d, (PAD, 146), name, _f(15), PAPER_DIM)
+        _text(d, (tx, 146), name, _f(15), PAPER_DIM)
 
     # ---- amounts panel ----------------------------------------------------
     y = 180

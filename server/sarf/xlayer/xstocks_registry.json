@@ -330,5 +330,6 @@
       "cex_ticker": "XSOXL",
       "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x53ee7f58cf031ea4d897fdfcdafad124b3160689-900/type=default_90_0"
     }
-  ]
+  ],
+  "dex_router_address": "0x722db4f285F8bD91ef7AF6DA397e83f7fA4E80a7"
 }

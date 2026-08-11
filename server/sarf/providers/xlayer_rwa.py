@@ -64,6 +64,16 @@ _SIGN_STEP = (
     "tx_hash exists."
 )
 
+_EXECUTE_STEP = (
+    "Print the `card` field VERBATIM as the first thing in your reply. This "
+    "order is INSIDE the user's session grant, so do NOT lead with sign_url — "
+    "offer to execute it here: call execute_order with the order_id when they "
+    "say yes. Only fall back to sign_url if execute_order returns an error. "
+    "Never say a trade happened until a tx_hash exists, then confirm it with "
+    "get_status."
+)
+
+
 Side = Literal["buy", "sell"]
 
 # Slippage the caller may request, hard-bounded here regardless of config.
@@ -515,6 +525,23 @@ class XLayerRwaProvider:
                 }
             allow = settings.rwa_allowlist
             assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
+
+            # Price the whole list, concurrently.
+            #
+            # The list card shows a price per row and this response carried none,
+            # so every row rendered blank — the card was right and the payload
+            # was empty. Forty sequential quotes would be unusable; gathered,
+            # it is one round trip's latency. Failures come back as None rather
+            # than raising, because one unpriceable asset must not blank the
+            # other thirty-nine.
+            import asyncio as _asyncio
+            prices = await _asyncio.gather(
+                *(self._unit_price_usd(a) for a in assets), return_exceptions=True
+            )
+            price_by_symbol = {
+                a.symbol: (p if isinstance(p, (int, float)) else None)
+                for a, p in zip(assets, prices)
+            }
             return {
                 "chain": {"name": "X Layer", "chain_id": CHAIN_ID},
                 "quote_asset": reg.quote.symbol,
@@ -527,6 +554,9 @@ class XLayerRwaProvider:
                         "decimals": a.decimals,
                         "okx_cex_ticker": a.cex_ticker,
                         "logo_url": a.logo_url,
+                        "price_usdt": (
+                            round(price_by_symbol[a.symbol], 6)
+                            if price_by_symbol.get(a.symbol) is not None else None),
                         "explorer_url": a.explorer_url,
                     }
                     for a in assets
@@ -761,7 +791,7 @@ class XLayerRwaProvider:
                 # chain, because a flag computed here is a flag a caller
                 # could have gone stale on.
                 "can_execute": can_execute,
-                "next_step": _SIGN_STEP,
+                "next_step": _EXECUTE_STEP if can_execute else _SIGN_STEP,
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
 
@@ -1004,7 +1034,8 @@ class XLayerRwaProvider:
                 "sign_url": (f"{settings.public_url}/sign?o={order_id}"
                              if settings.public_url else None),
                 "status": "awaiting_signature", "can_execute": can_execute,
-                "next_step": _SIGN_STEP, "disclosure": SYNTHETIC_DISCLOSURE,
+                "next_step": _EXECUTE_STEP if can_execute else _SIGN_STEP,
+                "disclosure": SYNTHETIC_DISCLOSURE,
             }
             payload["card"] = render_order_card_text(payload)
             png = render_order_card(payload)
@@ -1149,6 +1180,24 @@ class XLayerRwaProvider:
                     "executed with execute_order. Larger ones need a fresh passkey. The "
                     "on-chain caps are the hard ceiling and Sarf cannot raise them."
                 )
+                # "Installed and unexpired" is not the same as "usable". A grant
+                # pinned to the wrong router passes every other check and then
+                # reverts every trade, so say so HERE rather than let the agent
+                # report execution as live and discover otherwise by spending
+                # the user's gas.
+                if row["router"].lower() != reg.dex_router_address.lower():
+                    base["grant_usable"] = False
+                    base["note"] = (
+                        "This grant is installed but UNUSABLE: it authorises "
+                        f"{row['router']}, while swaps route through "
+                        f"{reg.dex_router_address}. Every execute_order would revert "
+                        "on-chain and still cost gas. The router is fixed at signing "
+                        "time, so it cannot be repaired server-side — tell the user to "
+                        f"re-authorise at {base['setup_url']}. Until then, build orders "
+                        "and hand over sign_url instead."
+                    )
+                else:
+                    base["grant_usable"] = True
             if tx_hash is not None:
                 base["settlement"] = await _settlement_view(tx_hash)
             if history_limit is not None:
@@ -1208,6 +1257,27 @@ class XLayerRwaProvider:
                     "the authorisation transaction may not have landed. Re-run setup."
                 )
 
+            # A grant names ONE router and SarfSessionKey enforces
+            # `target == g.router`. If the order routes anywhere else the swap
+            # is already decided: it reverts with TargetNotAllowed, on-chain,
+            # after the user has paid for the gas. Refuse here instead.
+            #
+            # This is not hypothetical. Grants signed before 2026-08-11 recorded
+            # the approval spender as their router, and every trade under them
+            # reverted identically — twice, at 69,750 gas each, with nothing to
+            # show for it but a tx hash that looked like it might still land.
+            # The router is fixed at signing time, so no server-side change can
+            # repair an existing grant: it has to be re-authorised.
+            if ex["router"].lower() != row["router"].lower():
+                raise ValueError(
+                    "this session grant authorises a different contract than this "
+                    f"order routes through ({row['router']} vs {ex['router']}), so the "
+                    "trade would revert on-chain and still cost gas. The router is "
+                    "baked into the signed grant and cannot be changed server-side — "
+                    f"re-authorise the session at {settings.public_url}/security, then "
+                    "ask again. Nothing has been broadcast and no funds moved."
+                )
+
             est = order.get("est_usd")
             # The passkey gates THIS path unconditionally, not just above the
             # auto-execute threshold.
@@ -1231,42 +1301,32 @@ class XLayerRwaProvider:
                     f"registered. Sign in to the site and you will be prompted to add one, "
                     "or sign this order in your wallet instead."
                 )
-            # Approval mode, chosen by the user at setup.
+            # Autonomous is the only mode; Always Ask was removed from the
+            # platform on 2026-08-11. It promised a passkey on every trade and
+            # could not deliver one where trades actually happen: WebAuthn needs
+            # a top-level browsing context, an MCP widget is a sandboxed iframe,
+            # so every trade degraded into a link out to the website.
             #
-            #   always_ask  every trade needs a fresh assertion, no exceptions.
-            #   autonomous  trades at or under the user's own limit go through
-            #               on the session assertion alone; anything above it
-            #               falls back to always_ask behaviour.
-            #
-            # The mode is read from the GRANT, not from a request argument, so
-            # neither the model nor a caller can talk their way into a weaker
-            # gate. Changing it means re-authorising, which needs a passkey and
-            # a wallet signature — see /grant/prepare.
-            mode = (row.get("approval_mode") or "always_ask").strip()
+            # The passkey now gates the SESSION rather than the trade. It is
+            # required to obtain the session key, and the ceiling on what that
+            # key can do without asking again is the user's own limit plus the
+            # contract's per-trade and daily caps and its expiry — all enforced
+            # on-chain, none of them raisable by the agent.
             auto_limit_units = int(row.get("autonomous_limit") or 0)
             auto_limit_usd = auto_limit_units / (10 ** reg.quote.decimals)
             within_autonomous = (
-                mode == "autonomous"
-                and est is not None
-                and auto_limit_units > 0
-                and est <= auto_limit_usd
+                est is not None and auto_limit_units > 0 and est <= auto_limit_usd
             )
 
-            stepup = passkey.check_stepup(db, address, est)
-            if not stepup.satisfied and not within_autonomous:
-                why = (
-                    f"this is {_usd(est)}, over the {_usd(auto_limit_usd)} you set for "
-                    "autonomous trades, so it needs a passkey"
-                    if mode == "autonomous" and est is not None and auto_limit_units > 0
-                    else "you chose Always Ask, so every trade needs a passkey"
-                )
-                raise ValueError(
-                    f"{why}. It signs and broadcasts with no wallet prompt, so the "
-                    f"passkey is the only thing in front of it. Verify at "
-                    f"{settings.public_url}/security, then ask again — one "
-                    f"verification covers the rest of the session "
-                    f"({passkey.stepup_validity_seconds() // 60} minutes)."
-                )
+            if not within_autonomous:
+                stepup = passkey.check_stepup(db, address, est)
+                if not stepup.satisfied:
+                    raise ValueError(
+                        f"this is {_usd(est)}, over the {_usd(auto_limit_usd)} you set "
+                        "for in-chat trades, so it needs your passkey. Verify at "
+                        f"{settings.public_url}/security, then ask again."
+                    )
+
             # Separate from the passkey and kept: the threshold is the user's own
             # "are you sure" line and fails CLOSED on an unpriceable order, since
             # a trade we cannot value is exactly the one not to settle silently.

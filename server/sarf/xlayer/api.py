@@ -266,27 +266,30 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             expiry = delegation.requested_expiry(body.get("days", 7))
             per_trade = _stable_units(body.get("per_trade_cap_usd", 500))
             daily = _stable_units(body.get("daily_cap_usd", 2000))
-            # Approval mode is an explicit choice at setup, not a default the
-            # user has to go and find later. Anything unrecognised falls back to
-            # always_ask: an unparsed value must never buy a weaker gate.
-            mode = str(body.get("approval_mode", "always_ask")).strip()
-            if mode not in ("always_ask", "autonomous"):
-                mode = "always_ask"
-            autonomous_limit = (
-                _stable_units(body.get("autonomous_limit_usd", 0))
-                if mode == "autonomous" else 0
-            )
+            # Autonomous is the only mode. Always Ask was removed on 2026-08-11
+            # because it could not be honoured where it mattered: a passkey
+            # needs a top-level browsing context, an MCP widget is a sandboxed
+            # iframe, so "approve every trade in chat" was unreachable and every
+            # trade fell back to a link out to the website. Offering a mode the
+            # platform cannot deliver is worse than not offering it.
+            #
+            # The passkey did not go away — it moved. It gates the SESSION: you
+            # prove it is you to obtain the key, and the contract's per-trade
+            # and daily caps plus the expiry bound everything that key can then
+            # do without asking again.
+            mode = "autonomous"
+            autonomous_limit = _stable_units(body.get("autonomous_limit_usd", 0))
+            # An unset limit must not mean "unlimited". Fall back to the
+            # per-trade cap, which is enforced on-chain either way.
+            if autonomous_limit <= 0:
+                autonomous_limit = per_trade
         except ValidationError as e:
             raise HTTPException(400, str(e))
         if per_trade <= 0 or daily <= 0:
             raise HTTPException(400, "caps must be greater than zero")
         if per_trade > daily:
             raise HTTPException(400, "the per-trade cap cannot exceed the daily cap")
-        if mode == "autonomous":
-            if autonomous_limit <= 0:
-                raise HTTPException(
-                    400, "autonomous mode needs a spending limit above zero — that "
-                         "limit is the whole difference between it and Always Ask")
+        if True:
             if autonomous_limit > per_trade:
                 raise HTTPException(
                     400, "the autonomous limit cannot exceed the per-trade cap; the "
@@ -297,7 +300,11 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         tokens = [a.address for a in reg.assets if not allow or a.symbol.upper() in allow]
         data = delegation.grant_calldata(
             session_key=session_address, expiry=expiry,
-            router=reg.dex_approve_address, stable=reg.quote.address,
+            # The SWAP router, not the approval spender. The contract enforces
+            # target == grant.router, so authorising the approve address here
+            # made every executeSwap revert with TargetNotAllowed — verified
+            # on-chain before this was found.
+            router=reg.dex_router_address, stable=reg.quote.address,
             per_trade_cap=per_trade, daily_cap=daily, tokens=tokens,
         )
         # Stored before the user signs. If they abandon the flow the key is
@@ -305,7 +312,9 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         # about it, and the contract only hears that from their wallet.
         db.put_grant(
             address=addr, session_address=session_address, sealed_key=sealed,
-            delegate=settings.delegate_address, router=reg.dex_approve_address,
+            # Must match the router in the calldata above, or the stored row
+            # disagrees with what the contract was actually told.
+            delegate=settings.delegate_address, router=reg.dex_router_address,
             stable=reg.quote.address, expiry=expiry,
             per_trade_cap=per_trade, daily_cap=daily,
             approval_mode=mode, autonomous_limit=autonomous_limit,
@@ -613,7 +622,8 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             "count": len(assets),
             "assets": [
                 {"symbol": a.symbol, "name": a.name, "address": a.address,
-                 "cex_ticker": a.cex_ticker, "explorer_url": a.explorer_url}
+                 "cex_ticker": a.cex_ticker, "logo_url": a.logo_url,
+                 "explorer_url": a.explorer_url}
                 for a in assets
             ],
         }

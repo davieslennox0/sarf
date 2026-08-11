@@ -258,7 +258,13 @@ async def relay(*, to: str, data: str, gas_limit: int = 900_000) -> str:
             "wallet before enabling in-chat execution"
         )
     acct = Account.from_key(key)
-    validate_evm_address(to)
+    # Checksummed, not just validated. eth_account rejects the lowercase form
+    # outright ("Transaction had invalid fields: {'to': ...}") and
+    # validate_evm_address normalises TO lowercase — correct for storage and
+    # comparison, wrong at the signing boundary. The same fix was applied to
+    # relay_authorization and missed here, which is the path execute_order
+    # uses, so every in-chat trade failed on its own `to` field.
+    to = to_checksum_address(validate_evm_address(to))
 
     nonce = await rpc.transaction_count(acct.address)
     gas_price = await rpc.gas_price()

@@ -150,7 +150,6 @@ function SessionGrant({ onMessage, onError, passkey }) {
   // Mode is an explicit choice made here at setup, not a default buried in a
   // settings page nobody opens. Always Ask is preselected because the safe
   // option should be the one you keep by doing nothing.
-  const [mode, setMode] = useState('always_ask');
   const [autoLimit, setAutoLimit] = useState(50);
 
   const load = () => api.grant().then(setG).catch(() => {});
@@ -170,8 +169,8 @@ function SessionGrant({ onMessage, onError, passkey }) {
         days,
         per_trade_cap_usd: Number(perTrade),
         daily_cap_usd: Number(daily),
-        approval_mode: mode,
-        autonomous_limit_usd: mode === 'autonomous' ? Number(autoLimit) : 0,
+        approval_mode: 'autonomous',
+        autonomous_limit_usd: Number(autoLimit),
       });
       const addr = await currentAccount();
       const delegate = prep.authorization_required.delegate;
@@ -288,25 +287,18 @@ function SessionGrant({ onMessage, onError, passkey }) {
               issued, so a session token alone can never mint one.
             </p>
           )}
-          <div className="modes">
-            <button type="button"
-                    className={`mode${mode === 'always_ask' ? ' on' : ''}`}
-                    onClick={() => setMode('always_ask')}>
-              <b>Always Ask</b>
-              <span>Every trade needs your passkey. No exceptions, whatever the size.</span>
-            </button>
-            <button type="button"
-                    className={`mode${mode === 'autonomous' ? ' on' : ''}`}
-                    onClick={() => setMode('autonomous')}>
-              <b>Autonomous</b>
-              <span>
-                Trades up to a limit you set go through without a prompt. Anything
-                above it still asks.
-              </span>
-            </button>
-          </div>
+          {/*
+            The Always Ask / Autonomous chooser was here. It is gone: a passkey
+            needs a top-level browsing context and an MCP widget is a sandboxed
+            iframe, so "ask on every trade in chat" could never actually prompt
+            — it degraded to a link out to this site on every single trade.
+            A mode the platform cannot honour is worse than no choice at all.
 
-          {mode === 'autonomous' && (
+            The passkey still gates this: it is required to obtain the key
+            below, and the contract's caps and expiry bound what that key can
+            do afterwards.
+          */}
+          {(
             <>
               <div className="kv">
                 <div><span>Without asking, up to</span>
@@ -314,8 +306,9 @@ function SessionGrant({ onMessage, onError, passkey }) {
                              onChange={(e) => setAutoLimit(e.target.value)} /></b></div>
               </div>
               <p className="muted small">
-                Changing this later needs your passkey again — the agent can never
-                raise it on its own.
+                Trades up to this settle in chat with no prompt. Anything above it,
+                and every transfer, still needs your passkey. Raising it needs your
+                passkey too — the agent can never raise it on its own.
               </p>
             </>
           )}

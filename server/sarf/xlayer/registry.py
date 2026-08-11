@@ -96,6 +96,14 @@ class XStocksRegistry:
             address=validate_evm_address(q["address"], what="quote asset"),
             decimals=int(q["decimals"]),
         )
+        # The address the aggregator's swap executes AGAINST. Distinct from the
+        # approval spender below, and confusing the two is not cosmetic: the
+        # session-key contract enforces `target == grant.router`, so a grant
+        # authorising the approve address makes every swap revert with
+        # TargetNotAllowed. That shipped, and every in-chat trade failed on it.
+        self.dex_router_address = validate_evm_address(
+            raw.get("dex_router_address") or raw["dex_token_approve_address"]
+        )
         self.dex_approve_address = validate_evm_address(
             raw["dex_token_approve_address"], what="dex approve address"
         )

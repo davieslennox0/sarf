@@ -12,6 +12,14 @@ import { usePrices } from './Home.jsx';
  */
 const PAGE = 12;
 
+/** Deterministic hue per ticker so an asset keeps one colour everywhere. */
+function markBg(symbol) {
+  const base = String(symbol || '?').replace(/x$/, '');
+  let h = 0;
+  for (const c of base) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `linear-gradient(140deg, hsl(${h},62%,42%), hsl(${(h + 38) % 360},58%,30%))`;
+}
+
 export default function Markets() {
   const [assets, setAssets] = useState([]);
   const [err, setErr] = useState(null);
@@ -55,8 +63,20 @@ export default function Markets() {
               rel="noreferrer"
             >
               <span className="row-left">
-                <span className="sym">{a.symbol}</span>
-                <span className="name">{a.name.replace(' xStock', '')}</span>
+                {/* Logo over a generated monogram, same as the chat cards: the
+                    mark is painted first so a blocked or 404 image leaves a
+                    filled square rather than a hole in the row. */}
+                <span className="tokenmark" style={{ background: markBg(a.symbol) }}>
+                  {a.logo_url
+                    ? <img src={a.logo_url} alt="" loading="lazy" referrerPolicy="no-referrer"
+                           onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                    : null}
+                  <i>{a.symbol.replace(/x$/, '').slice(0, 2).toUpperCase()}</i>
+                </span>
+                <span className="row-id">
+                  <span className="sym">{a.symbol}</span>
+                  <span className="name">{a.name.replace(' xStock', '')}</span>
+                </span>
               </span>
               <span className="row-right">
                 <span className="price">

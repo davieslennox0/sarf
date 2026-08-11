@@ -171,15 +171,24 @@ _MIGRATIONS = [
     # shorter version of it from raw columns is how a signer quietly stops
     # displaying the fee and the risk notes.
     "ALTER TABLE orders ADD COLUMN display_json TEXT",
-    # Approval mode, chosen at setup: "always_ask" or "autonomous".
-    #
-    # Defaults to always_ask for every row that predates the column, which is
-    # the safe direction — an existing grant must never be silently upgraded to
-    # acting without a per-trade passkey because a migration ran.
+    # Approval mode. Only "autonomous" is issued now — Always Ask was removed
+    # because a passkey cannot render inside a chat widget, so it degraded to a
+    # link out on every trade. The column stays: existing rows keep their value,
+    # and the enforcement path still reads it, so an old always_ask grant
+    # continues to demand a passkey rather than being silently loosened by an
+    # upgrade. New grants are autonomous and bounded by the contract caps.
     "ALTER TABLE grants ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'always_ask'",
     # Ceiling for autonomous mode, in stable units. Only consulted when
     # approval_mode = 'autonomous'; above it, a passkey is required regardless.
     "ALTER TABLE grants ADD COLUMN autonomous_limit INTEGER NOT NULL DEFAULT 0",
+    # Always Ask was removed from the platform on 2026-08-11 (see api.py). Rows
+    # still carrying it are migrated rather than left holding a value nothing
+    # reads any more — a stored mode no code path honours is worse than none.
+    # Grants with no limit inherit their per-trade cap, which the contract
+    # enforces regardless, so this widens nothing beyond what was already
+    # authorised on-chain.
+    "UPDATE grants SET approval_mode='autonomous' WHERE approval_mode<>'autonomous'",
+    "UPDATE grants SET autonomous_limit=per_trade_cap WHERE autonomous_limit<=0",
 ]
 
 # Stop-loss / take-profit levels, one row per (address, symbol).
@@ -631,7 +640,7 @@ class Database:
                 (address.lower(), session_address, sealed_key, delegate.lower(),
                  router.lower(), stable.lower(), int(expiry), int(per_trade_cap),
                  int(daily_cap), now, now,
-                 approval_mode if approval_mode in ("always_ask", "autonomous") else "always_ask",
+                 "autonomous",
                  int(autonomous_limit)),
             )
 
