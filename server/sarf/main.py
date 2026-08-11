@@ -83,6 +83,17 @@ mcp = FastMCP(
         "will report back, rather than leaving the user wondering. The last "
         "thing the user sees must be readable text, never a bare card or image "
         "with nothing written under it. "
+        "NEVER say a trade succeeded on the strength of a tx_hash alone. A "
+        "hash means the node accepted it, not that it worked: a reverted "
+        "transaction has one too. execute_order now returns `executed` from "
+        "the actual receipt and a `settlement` block — read those. If "
+        "`executed` is false, the trade did NOT happen, whatever else the "
+        "response contains. A reverted trade still costs gas and moves "
+        "nothing; say exactly that rather than calling it submitted. "
+        "ACCOUNT — every tool acts on the wallet bound to this session. When a "
+        "trade settles, state the address it settled on. If the user mentions "
+        "a different address than the one tools report, stop and say so "
+        "before building anything: the address IS the account here. "
         "LISTS — when naming more than one asset (holdings, markets, search "
         "results, anything), put each on its OWN LINE. Never run them together "
         "as comma-separated prose. This applies in chat text and in card "
@@ -305,7 +316,15 @@ if _FRONTEND_DIST.is_dir():
     # Assets get a real mount; SPA routes are declared explicitly rather than
     # mounting StaticFiles at "/", which would collide with the MCP app that
     # owns the catch-all below.
-    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+    #
+    # The directory is CREATED if absent rather than asserted. StaticFiles
+    # raises at construction on a missing directory, and vite empties dist/
+    # partway through a build — so a restart that landed inside a rebuild took
+    # the whole process down, API and MCP with it, over missing CSS. The API
+    # does not depend on the frontend existing and must not die with it.
+    _ASSETS = _FRONTEND_DIST / "assets"
+    _ASSETS.mkdir(parents=True, exist_ok=True)
+    app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
 
     def _index() -> FileResponse:
         # no-cache means "revalidate", not "don't cache": the etag still turns

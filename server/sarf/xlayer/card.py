@@ -312,10 +312,19 @@ def _render(o: dict[str, Any]) -> str:
         y += 22
 
     # ---- footer -----------------------------------------------------------
+    # Must agree with can_execute, same as the text card's closing line. This
+    # one was missed when that was fixed, so the image kept saying "Sarf cannot
+    # execute this" over an order the payload advertised as auto-executable —
+    # the two halves of one response disagreeing about a fund-moving action,
+    # which is a trust problem rather than a cosmetic one.
     y = h - 46
     d.line([(PAD, y - 14), (W - PAD, y - 14)], fill=LINE, width=1)
-    _text(d, (PAD, y), "UNSIGNED — you sign in your own wallet", _f(12), PAPER)
-    _text(d, (W - PAD, y), "Sarf cannot execute this", _f(12), PAPER_DIM, anchor="ra")
+    if o.get("can_execute"):
+        _text(d, (PAD, y), "UNSIGNED — approve in chat to execute", _f(12), PAPER)
+        _text(d, (W - PAD, y), "within your session grant", _f(12), PAPER_DIM, anchor="ra")
+    else:
+        _text(d, (PAD, y), "UNSIGNED — you sign in your own wallet", _f(12), PAPER)
+        _text(d, (W - PAD, y), "Sarf cannot execute this", _f(12), PAPER_DIM, anchor="ra")
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)

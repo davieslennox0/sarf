@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api, ensureSession, verifyPasskey } from '../api.js';
+import { api, ensureSession, getSession, verifyPasskey } from '../api.js';
 import { connect, currentAccount, sendTransaction, sendWithAuthorization } from '../wallet.js';
 
 /**
@@ -21,17 +21,44 @@ export default function SecurityPage() {
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
 
+  // Three states, not two: registered, not registered, and NOT YET KNOWN.
+  // Collapsing the third into "not registered" is what turned a slow wallet
+  // into "Register a passkey first" on an account that had one all along —
+  // and since this load runs once on mount, that verdict then stuck for the
+  // life of the page with no way to clear it.
   const load = async () => {
     try {
-      const addr = (await currentAccount()) || (await connect());
+      // Do not force connect() here. This page is reachable while Privy is
+      // still rehydrating, and connect() at mount either throws or throws up a
+      // modal nobody asked for; either way status stays null and the passkey
+      // gate reads as a refusal. Wait for the account instead.
+      const addr = await currentAccount();
+      if (!addr) return false;
       await ensureSession(addr);
       setStatus(await api.passkeyStatus());
+      return true;
     } catch (e) {
       setErr(e.message);
+      return false;
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let live = true;
+    let tries = 0;
+    const tick = async () => {
+      if (!live) return;
+      if (await load()) return;
+      if (++tries < 10) setTimeout(tick, 500);
+    };
+    tick();
+    return () => { live = false; };
+  }, []);
+
+  // Sign-in already told us whether this account has a passkey, so a status
+  // fetch that has not landed yet does not have to mean "no". Falling back to
+  // it keeps the page honest during rehydration; null means genuinely unknown.
+  const hasPasskey = status ? status.registered : (getSession()?.hasPasskey ?? null);
 
   const supported = typeof window !== 'undefined' && window.PublicKeyCredential;
 
@@ -117,7 +144,7 @@ export default function SecurityPage() {
       {msg && <p className="ok">{msg}</p>}
       {err && <p className="error">{err}</p>}
 
-      <SessionGrant onMessage={setMsg} onError={setErr} passkey={status?.registered} />
+      <SessionGrant onMessage={setMsg} onError={setErr} passkey={hasPasskey} />
     </section>
   );
 }
@@ -280,7 +307,7 @@ function SessionGrant({ onMessage, onError, passkey }) {
         </>
       ) : (
         <>
-          {!passkey && (
+          {passkey === false && (
             <p className="error">
               Register a passkey first — you will be prompted at sign-in. It gates
               every trade this key makes, and it is checked again before the key is
@@ -331,7 +358,17 @@ function SessionGrant({ onMessage, onError, passkey }) {
                         onChange={(e) => setDaily(e.target.value)} /></b></div>
           </div>
           <div className="cta">
-            <button className="primary" disabled={busy || !passkey} onClick={authorize}>
+            {/*
+              Disabled only on a KNOWN "no passkey". While the answer is still
+              unknown the button stays live and the attempt is allowed to reach
+              the server, because the server is where this is actually enforced:
+              /grant/prepare demands a fresh assertion and refuses without a
+              registered credential. A client-side guess that fails closed adds
+              no security over that check — it only locks people out of the one
+              page that could fix them, which has now happened three times.
+            */}
+            <button className="primary" disabled={busy || passkey === false}
+                    onClick={authorize}>
               {busy ? 'Waiting for your wallet…' : 'Authorize session key'}
             </button>
           </div>

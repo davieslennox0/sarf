@@ -317,6 +317,35 @@ def test_display_never_overrides_authoritative_columns(db):
     assert o["est_usd"] == 100.0
 
 
+# --- reporting honesty -------------------------------------------------------
+
+def test_cards_never_contradict_can_execute():
+    """The image and the text card must agree with the payload, and each other.
+
+    A place_order response once advertised an order as auto-executable while
+    the card rendered under it read "Sarf cannot execute this" — two halves of
+    one response disagreeing about a fund-moving action. The text card was
+    fixed; the PNG kept the hard-coded line for another day.
+    """
+    import base64
+
+    from sarf.xlayer.card import render_order_card, render_order_card_text
+
+    o = {"side": "buy", "symbol": "PLTRx", "name": "Palantir xStock",
+         "spending": "1 USDT", "receiving_estimated": "0.005 PLTRx",
+         "estimated_usd": 1.0, "risk_notes": ["note"]}
+
+    o["can_execute"] = True
+    assert "cannot execute" not in render_order_card_text(o)
+    executable_png = base64.b64decode(render_order_card(o))
+
+    o["can_execute"] = False
+    assert "cannot execute" in render_order_card_text(o)
+    # The PNG has no text to assert on, so compare renders: identical bytes
+    # would mean the footer ignored the flag entirely.
+    assert base64.b64decode(render_order_card(o)) != executable_png
+
+
 # --- router identity ---------------------------------------------------------
 # SarfSessionKey enforces `target == g.router`. The approval spender and the
 # swap router are DIFFERENT contracts on X Layer, and a grant that names the

@@ -23,6 +23,7 @@ will actually read.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from decimal import Decimal
@@ -832,6 +833,13 @@ class XLayerRwaProvider:
             without routing through USDT, or trade either against USDT. Does
             NOT execute — returns an unsigned transaction and a sign_url, or an
             order_id that execute_order can settle under a live session grant.
+
+            Two limits apply BEFORE you build an order, and both are readable
+            from get_status under `constraints` — check them rather than
+            discovering them as an error after the user has picked an amount:
+            a minimum order size on any leg touching USDT, and a small OKB
+            reserve that a sell of the gas coin may not eat into, which is why
+            "swap everything" fails on OKB but works on any other asset.
             """
             address = require_address()
             db.upsert_user(address, "mcp")
@@ -1202,6 +1210,24 @@ class XLayerRwaProvider:
                 base["settlement"] = await _settlement_view(tx_hash)
             if history_limit is not None:
                 base["history"] = _history_view(address, history_limit)
+            # Publish the order limits instead of enforcing them silently.
+            # A minimum order size and a gas reserve that only ever appeared as
+            # a runtime error read as arbitrary refusals: the user had already
+            # chosen an amount by the time either surfaced. They belong here,
+            # where the assistant can size an order correctly the first time.
+            base["constraints"] = {
+                "min_order_usd": settings.min_order_usd,
+                "min_order_applies_to": (
+                    "orders with a USDT leg, and only while a platform fee is charged"
+                ),
+                "native_gas_reserve_okb": 0.002,
+                "native_gas_reserve_note": (
+                    "OKB pays gas on X Layer, so a sale of it must leave this much "
+                    "behind. Selling the FULL OKB balance always fails; other assets "
+                    "have no such reserve."
+                ),
+                "auto_execute_under_usd": settings.delegated_auto_usd,
+            }
             levels = db.risk_params_for(address)
             if levels:
                 base["risk_levels"] = levels
@@ -1371,24 +1397,72 @@ class XLayerRwaProvider:
                 raise ValueError(f"could not submit this trade to X Layer: {e}")
 
             db.mark_order(order_id, "submitted", tx_hash=tx_hash)
+
+            # Wait for the receipt rather than reporting on the broadcast.
+            #
+            # "executed": True used to be set right here, on nothing more than
+            # the node accepting the transaction. Two reverted trades came back
+            # through this path reading as successes, and only a manual
+            # get_status afterwards revealed that nothing had moved. A field
+            # named `executed` has exactly one honest meaning — it ran, on
+            # chain, and it worked — so it is now derived from the receipt and
+            # is False for anything else, pending included.
+            #
+            # X Layer blocks in a couple of seconds, so this usually returns
+            # settled within one or two polls. Timing out is not a failure: it
+            # reports pending, truthfully, and the caller polls get_status.
+            settle = await _settlement_view(tx_hash)
+            for _ in range(14):
+                if settle["state"] in ("confirmed", "failed"):
+                    break
+                await asyncio.sleep(2)
+                settle = await _settlement_view(tx_hash)
+
+            state = settle["state"]
+            confirmed = state == "confirmed"
+            db.mark_order(
+                order_id,
+                {"confirmed": "confirmed", "failed": "failed"}.get(state, "submitted"),
+                tx_hash=tx_hash,
+            )
+            if confirmed:
+                next_step = (
+                    "Confirmed on-chain. Tell the user the trade settled, naming the "
+                    "asset, the amount, and the tx_hash."
+                )
+            elif state == "failed":
+                next_step = (
+                    "This trade REVERTED. It did not happen and no funds moved, though "
+                    "gas was still spent. Say so plainly — do not describe it as "
+                    "submitted or pending — and do not retry the same order blindly."
+                )
+            else:
+                next_step = (
+                    "Still pending after a wait. Say it is pending, not complete, and "
+                    "confirm it with get_status(tx_hash=...) before telling the user "
+                    "anything settled."
+                )
+
             payload = {
                 "order_id": order_id,
                 "tx_hash": tx_hash,
                 "explorer_url": EXPLORER_TX.format(tx_hash),
                 "chain_id": CHAIN_ID,
+                # Which wallet this actually settled on. A tester found the
+                # active address had changed mid-session with nothing marking
+                # it; on an app where the address IS the account, that should
+                # never be something the user has to spot for themselves.
+                "address": address,
                 "side": order["side"], "symbol": order["symbol"],
                 "name": order.get("name"),
                 "spending": order.get("spending"),
                 "receiving_estimated": order.get("receiving_estimated"),
                 "estimated_usd": est,
                 "platform_fee": order.get("platform_fee"),
-                "status": "submitted",
-                "executed": True,
-                "next_step": (
-                    "Show the tx_hash and explorer_url. It is submitted, not yet "
-                    "confirmed — use get_settlement_status to confirm it mined "
-                    "successfully before saying the trade completed."
-                ),
+                "status": state if state != "unknown" else "submitted",
+                "executed": confirmed,
+                "settlement": settle,
+                "next_step": next_step,
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
             payload["card"] = render_order_card_text(payload)
