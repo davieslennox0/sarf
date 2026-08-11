@@ -555,6 +555,22 @@ class Database:
                 (sign_count, verified_at, credential_id),
             )
 
+    def consume_passkey_verification(self, address: str) -> None:
+        """Spend the current assertion so it cannot authorize a second action.
+
+        Always Ask means every trade, not "the first trade and then anything
+        else for an hour". Without this, one verification covered the whole
+        session window and trades 2..n went through with no prompt — which is
+        both weaker than the mode's name promises and weaker than the design it
+        was modelled on, where an approval is valid for exactly one
+        transaction and a captured authorization cannot be replayed.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE passkeys SET last_used_at=NULL WHERE address=?",
+                (address.lower(),),
+            )
+
     def last_passkey_verification(self, address: str) -> float | None:
         r = self._conn.execute(
             "SELECT MAX(last_used_at) FROM passkeys WHERE address=?", (address.lower(),),

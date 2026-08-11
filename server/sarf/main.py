@@ -316,6 +316,16 @@ if _FRONTEND_DIST.is_dir():
     for _path in _SPA_ROUTES:
         app.get(_path, include_in_schema=False)(lambda: _index())
 
+    # Sub-paths of the SPA routes, so client-side routes with a parameter
+    # (/dashboard/agents) serve index.html instead of redirecting to /. These
+    # are registered as a catch-all per prefix rather than added by hand: the
+    # exact-match list above was silently wrong for every nested route the
+    # frontend grew, and the failure looks like a broken link, not a 404.
+    for _path in _SPA_ROUTES:
+        if _path == "/":
+            continue
+        app.get(f"{_path}/{{rest:path}}", include_in_schema=False)(lambda rest="": _index())
+
     @app.get("/favicon.ico", include_in_schema=False)
     async def _favicon():
         f = _FRONTEND_DIST / "favicon.ico"

@@ -109,6 +109,7 @@ a.btn.wide.primary{box-shadow:0 1px 0 rgba(0,0,0,.35)}
   align-items:center;justify-content:center;font-weight:700;font-size:13px;
   color:#fff;letter-spacing:.5px;overflow:hidden}
 .logoImg{width:100%;height:100%;object-fit:contain;display:block}
+.mark.sm{width:28px;height:28px;flex:0 0 28px;border-radius:7px;font-size:11px}
 .identText{flex:1 1 auto;min-width:0}
 .ident .title{padding:0;font-size:16px}
 .ident .sub{padding:2px 0 0;font-size:11px}
@@ -135,6 +136,24 @@ const $=(t,c)=>{const e=document.createElement(t);if(c)e.className=c;return e};
 const txt=(e,s)=>{e.textContent=(s===null||s===undefined)?'\\u2014':String(s);return e};
 let _id=100;
 const post=(m)=>window.parent.postMessage(Object.assign({jsonrpc:'2.0'},m),'*');
+
+
+// Token mark: monogram painted first, real logo layered on only once its bytes
+// decode. A blocked CSP or a 404 then leaves a filled square instead of a gap.
+function mark(symbol, logo){
+  const m=$('div','mark sm');
+  const base=String(symbol||'?').replace(/x$/,'').split(' ')[0];
+  txt(m, base.slice(0,2).toUpperCase());
+  let h=0; for(const c of base) h=(h*31+c.charCodeAt(0))%360;
+  m.style.background='linear-gradient(140deg,hsl('+h+',62%,42%),hsl('+((h+38)%360)+',58%,30%))';
+  if(logo){
+    const im=new Image();
+    im.onload=()=>{m.textContent='';m.style.background='#fff';im.className='logoImg';m.appendChild(im);_fit();};
+    im.onerror=()=>{};
+    im.referrerPolicy='no-referrer'; im.alt=''; im.src=logo;
+  }
+  return m;
+}
 
 function row(k,v,em){
   const r=$('div','row'); r.appendChild(txt($('span','k'),k));
@@ -353,9 +372,12 @@ function render(d){
     const rows=$('div','rows');
     ps.slice(0,8).forEach(p=>{
       const r=$('div','pos');
-      const l=$('div');
-      txt(l.appendChild($('div','sym')),p.symbol);
-      txt(l.appendChild($('div','muted')),p.quantity);
+      const l=$('div'); l.style.display='flex'; l.style.alignItems='center'; l.style.gap='9px';
+      l.appendChild(mark(p.symbol,p.logo_url));
+      const lt=$('div');
+      txt(lt.appendChild($('div','sym')),p.symbol);
+      txt(lt.appendChild($('div','muted')),p.quantity);
+      l.appendChild(lt);
       const rr=$('div'); rr.style.textAlign='right'; rr.style.minWidth='110px';
       txt(rr.appendChild($('div')),p.value_usd!=null?('$'+Number(p.value_usd).toFixed(2)):'unpriced');
       txt(rr.appendChild($('div','muted')),
@@ -471,11 +493,57 @@ function render(d){
 """)
 
 
+
+LIST_CARD = _page("""
+function render(d){
+  const root=document.getElementById('root'); root.innerHTML='';
+  const card=$('div','card');
+
+  const head=$('div','head');
+  const b=$('div','brand'); b.textContent='SARF '; const s=$('span');
+  s.textContent='/ MARKETS'; b.appendChild(s); head.appendChild(b);
+  txt(head.appendChild($('div','tag')),'X LAYER \\u00b7 196'); card.appendChild(head);
+
+  // One asset per line, always. A comma-joined run of forty tickers is the
+  // thing this card exists to replace.
+  const items=(d.assets||[]).slice();
+  if(!items.length){
+    txt(card.appendChild($('div','empty')),'Nothing to list.');
+  } else {
+    const rows=$('div','rows');
+    items.slice(0,40).forEach(a=>{
+      const r=$('div','pos');
+      const l=$('div'); l.style.display='flex'; l.style.alignItems='center'; l.style.gap='9px';
+      l.appendChild(mark(a.symbol,a.logo_url));
+      const lt=$('div');
+      txt(lt.appendChild($('div','sym')),a.symbol);
+      txt(lt.appendChild($('div','muted')),(a.name||'').replace(' xStock',''));
+      l.appendChild(lt);
+      const rr=$('div'); rr.style.textAlign='right'; rr.style.minWidth='96px';
+      txt(rr.appendChild($('div')),
+        a.price_usdt!=null?('$'+Number(a.price_usdt).toFixed(2)):'\\u2014');
+      txt(rr.appendChild($('div','muted')),a.price_usdt!=null?'per unit':'tap to price');
+      r.appendChild(l); r.appendChild(rr); rows.appendChild(r);
+    });
+    card.appendChild(rows);
+    if(items.length>40) txt(card.appendChild($('div','sub')),'+ '+(items.length-40)+' more');
+  }
+
+  card.appendChild(chips([['Price one','What is the price of AAPLx?'],
+                          ['My holdings','Show my portfolio'],
+                          ['Buy something','Buy $50 of AAPLx']]));
+  root.appendChild(card); _fit();
+}
+""")
+
+
 WIDGETS = {
     "ui://sarf/order-card": ("sarf_order_card", ORDER_CARD,
                              "Order card — amounts, platform fee, risks, tips, sign or execute"),
     "ui://sarf/portfolio-card": ("sarf_portfolio_card", PORTFOLIO_CARD,
                                  "Holdings card — positions, weights, cash and gas, next steps"),
+    "ui://sarf/list-card": ("sarf_list_card", LIST_CARD,
+                            "Token list — logo, symbol and name per line, price per unit"),
     "ui://sarf/analysis-card": ("sarf_analysis_card", ANALYSIS_CARD,
                                 "Analysis card — concentration, sectors, observations, how to read it"),
 }

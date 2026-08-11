@@ -354,3 +354,22 @@ def test_unknown_mode_falls_back_to_always_ask(db):
                  expiry=int(time.time()) + 3600, per_trade_cap=500, daily_cap=2000,
                  approval_mode="whatever", autonomous_limit=999)
     assert db.get_grant(ADDR_A)["approval_mode"] == "always_ask"
+
+
+def test_consuming_a_verification_forces_the_next_one(db, monkeypatch):
+    """Always Ask means every trade, not the first trade and then an hour free.
+
+    Modelled on PayBox, where an approval is valid for exactly one transaction
+    so a captured authorization cannot be replayed. Before this, one assertion
+    covered the whole session window and trades 2..n went through unprompted —
+    weaker than the mode's own name promises.
+    """
+    from sarf import passkey
+    monkeypatch.setattr(passkey, "settings", Settings())
+    _register_fake_passkey(db, ADDR_A)
+    db.touch_passkey(f"cred-{ADDR_A}", sign_count=1, verified_at=time.time())
+    assert not passkey.check_stepup(db, ADDR_A, 10.0).blocked
+
+    db.consume_passkey_verification(ADDR_A)
+    assert db.last_passkey_verification(ADDR_A) is None
+    assert passkey.check_stepup(db, ADDR_A, 10.0).blocked

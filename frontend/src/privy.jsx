@@ -126,14 +126,29 @@ function PrivyBridge() {
     });
 
     (async () => {
-      let eip1193 = null;
-      try {
-        eip1193 = w ? await w.getEthereumProvider() : null;
-      } catch {
-        eip1193 = null;
+      if (!w) { if (!cancelled) publish({ provider: null }); return; }
+      // Retry, because one failure here is not a permanent one.
+      //
+      // After a page reload Privy rehydrates as authenticated before the
+      // embedded wallet finishes coming back, and getEthereumProvider() throws
+      // "Unable to connect to wallet" for a second or two. A single attempt
+      // published provider:null and this effect does not re-run on its own, so
+      // the provider stayed null forever: connect() then skipped the login
+      // modal (already authenticated) and sat in waitForWallet() until it timed
+      // out. Hitting Connect after a refresh failed every time; a fresh sign-in
+      // worked, which is what made it look like a wallet problem rather than a
+      // rehydration race.
+      for (let attempt = 0; attempt < 6 && !cancelled; attempt += 1) {
+        try {
+          const eip1193 = await w.getEthereumProvider();
+          if (cancelled) return;
+          if (eip1193) { publish({ provider: eip1193 }); return; }
+        } catch {
+          /* still rehydrating — fall through to the backoff below */
+        }
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       }
-      if (cancelled) return;
-      publish({ provider: eip1193 });
+      if (!cancelled) publish({ provider: null });
     })();
 
     return () => { cancelled = true; };

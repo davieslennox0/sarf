@@ -159,7 +159,7 @@ function toHex(v) {
  * rejection is the user changing their mind, and conflating them sends people
  * to install something they do not need.
  */
-export async function sendWithAuthorization(address, tx, delegate) {
+export async function sendWithAuthorization(address, tx, delegate, relayer) {
   const p = provider();
   await ensureXLayer();
   const base = {
@@ -174,14 +174,54 @@ export async function sendWithAuthorization(address, tx, delegate) {
   // both authorizes and sends, which is what shifts the authorization nonce.
   const { signAuthorization } = privyContext();
   if (signAuthorization) {
+    // executor: 'self' is right ONLY while the same account both authorizes and
+    // sends. If the browser cannot broadcast type-4 we hand the authorization
+    // to the relayer instead, and then a different account sends it — which
+    // shifts whose nonce the authorization must carry. So sign twice-shaped:
+    // try self first, and re-sign for a third-party executor on fallback.
     const signed = await signAuthorization(
       { contractAddress: delegate, chainId: CHAIN_ID, executor: 'self' },
       { address },
     );
-    return p.request({
-      method: 'eth_sendTransaction',
-      params: [{ ...base, type: '0x4', authorizationList: [signed] }],
-    });
+    try {
+      return await p.request({
+        method: 'eth_sendTransaction',
+        params: [{ ...base, type: '0x4', authorizationList: [signed] }],
+      });
+    } catch (e) {
+      // Privy collapses failures here into "An unexpected error occurred.
+      // Please try again later.", which names neither the cause nor the layer
+      // it came from. EIP-7702 type-4 broadcast is the one unproven step in
+      // this flow on chain 196, so an opaque failure here is exactly the case
+      // that needs its detail preserved rather than flattened.
+      const detail = [
+        e?.details, e?.shortMessage, e?.cause?.message, e?.data?.message,
+        typeof e?.code === 'number' ? `code ${e.code}` : null,
+      ].filter(Boolean).join(' · ');
+      const err = new Error(
+        detail
+          ? `Session key authorization failed: ${detail}`
+          : `Session key authorization failed: ${e?.message || String(e)} `
+            + '(EIP-7702 broadcast on X Layer)',
+      );
+      err.cause = e;
+      // Marks this as "signing worked, sending did not" — the only case the
+      // relayer fallback can rescue. Anything else should surface as itself.
+      err.sevenSevenZeroTwo = true;
+      // Re-sign for a THIRD-PARTY sender. EIP-7702 derives the authorization
+      // nonce differently when the authority is not the account broadcasting,
+      // so the self-signed one above cannot simply be forwarded to the relayer.
+      err.reSign = relayer
+        ? () => signAuthorization(
+          { contractAddress: delegate, chainId: CHAIN_ID, executor: relayer },
+          { address },
+        )
+        : null;
+      // Full object to the console: the fields worth reading vary by which
+      // layer rejected it, and guessing wrong loses the only copy.
+      console.error('[sarf] 7702 authorization broadcast failed', e);
+      throw err;
+    }
   }
 
   const auth = [{ address: delegate, chainId: CHAIN_ID_HEX }];

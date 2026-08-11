@@ -194,13 +194,14 @@ class XLayerRwaProvider:
             )
         if not db.passkeys_for_address(address):
             raise ValueError(
-                "transfers need a passkey. Register one at "
-                f"{settings.public_url}/settings, then try again."
+                "transfers need a passkey and this account has none. Sign in at "
+                f"{settings.public_url} and you will be prompted to add one, "
+                "then try again."
             )
         last = db.last_passkey_verification(address)
         if last is None or (time.time() - last) > passkey.stepup_validity_seconds():
             raise ValueError(
-                f"verify with your passkey first — open {settings.public_url}/settings "
+                f"verify with your passkey first — open {settings.public_url}/security "
                 f"and press Verify, then try again within "
                 f"{passkey.stepup_validity_seconds() // 60} minutes. Transfers always "
                 "require this, whatever the amount."
@@ -355,6 +356,7 @@ class XLayerRwaProvider:
                 total_usd += value
             positions.append({
                 "symbol": a.symbol, "name": a.name,
+                "logo_url": getattr(a, "logo_url", ""),
                 "quantity": _fmt_units(raw, a.decimals),
                 "price_usdt": round(price, 6) if price is not None else None,
                 "value_usd": round(value, 2) if value is not None else None,
@@ -477,7 +479,7 @@ class XLayerRwaProvider:
         def ui(uri: str) -> dict[str, Any]:
             return {"ui": {"resourceUri": uri}}
 
-        @mcp.tool()
+        @mcp.tool(meta=ui("ui://sarf/list-card"))
         async def get_rwa_list(
             symbol: Annotated[str | None, Field(
                 default=None,
@@ -634,7 +636,7 @@ class XLayerRwaProvider:
             if stepup.blocked:
                 raise ValueError(
                     f"passkey verification required before this order: {stepup.reason}. "
-                    f"Open {settings.public_url}/settings to verify, then ask again."
+                    f"Open {settings.public_url}/security to verify, then ask again."
                 )
 
             # Fee always rides on the stablecoin leg so the user is never
@@ -889,7 +891,7 @@ class XLayerRwaProvider:
             if stepup.blocked:
                 raise ValueError(
                     f"passkey verification required before this swap: {stepup.reason}. "
-                    f"Open {settings.public_url}/settings to verify, then ask again."
+                    f"Open {settings.public_url}/security to verify, then ask again."
                 )
             try:
                 unsigned, quote, fee_applied = await dex.build_swap(
@@ -1130,7 +1132,7 @@ class XLayerRwaProvider:
                 "delegation_installed": on_chain,
                 "auto_execute_under_usd": settings.delegated_auto_usd,
                 "passkey_registered": bool(db.passkeys_for_address(address)),
-                "setup_url": f"{settings.public_url}/settings" if settings.public_url else None,
+                "setup_url": f"{settings.public_url}/security" if settings.public_url else None,
             }
             if not row or not on_chain:
                 base["grant"] = None
@@ -1226,7 +1228,7 @@ class XLayerRwaProvider:
             if not db.passkeys_for_address(address):
                 raise ValueError(
                     "in-chat execution needs a passkey and this account has none "
-                    f"registered. Register one at {settings.public_url}/settings, "
+                    f"registered. Sign in to the site and you will be prompted to add one, "
                     "or sign this order in your wallet instead."
                 )
             # Approval mode, chosen by the user at setup.
@@ -1261,7 +1263,7 @@ class XLayerRwaProvider:
                 raise ValueError(
                     f"{why}. It signs and broadcasts with no wallet prompt, so the "
                     f"passkey is the only thing in front of it. Verify at "
-                    f"{settings.public_url}/settings, then ask again — one "
+                    f"{settings.public_url}/security, then ask again — one "
                     f"verification covers the rest of the session "
                     f"({passkey.stepup_validity_seconds() // 60} minutes)."
                 )
@@ -1279,6 +1281,13 @@ class XLayerRwaProvider:
                     f"{_usd(settings.delegated_auto_usd)} auto-execute threshold you "
                     "set. Sign it in your wallet instead."
                 )
+
+            # Always Ask spends the assertion here, before signing: the next
+            # trade prompts again rather than riding on this one. Autonomous
+            # deliberately does not — inside the user's own limit, not being
+            # asked is the entire feature they chose.
+            if not within_autonomous:
+                db.consume_passkey_verification(address)
 
             deadline = int(time.time()) + 300
             signature, nonce = delegation.sign_swap(

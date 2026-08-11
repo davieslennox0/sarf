@@ -80,6 +80,11 @@ export const api = {
   grant: () => req('/api/grant'),
   grantPrepare: (body) =>
     req('/api/grant/prepare', { method: 'POST', body: JSON.stringify(body) }),
+  // Fallback for wallets that sign a 7702 authorization but cannot broadcast
+  // the type-4 transaction carrying it (Privy's embedded wallet). The relayer
+  // pays gas and presses send; the authorization is still the user's.
+  grantRelay: (body) =>
+    req('/api/grant/relay', { method: 'POST', body: JSON.stringify(body) }),
   grantRevoke: () => req('/api/grant/revoke', { method: 'POST' }),
 
   passkeyStatus: () => req('/api/passkey/status'),

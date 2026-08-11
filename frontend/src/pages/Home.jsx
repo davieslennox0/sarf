@@ -277,7 +277,7 @@ export default function Home() {
           Connect Sarf to Claude or ChatGPT
         </h2>
         <p>Add the MCP server once, then trade and read your portfolio from any chat.</p>
-        <Link className="cta-btn" to="/connect">View setup instructions</Link>
+        <Link className="cta-btn" to="/how">View setup instructions</Link>
       </div>
 
       <footer>

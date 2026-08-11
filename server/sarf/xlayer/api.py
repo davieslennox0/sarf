@@ -312,6 +312,11 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         )
         return {
             "session_key": session_address,
+            # Needed by the browser only for the relayer fallback: EIP-7702
+            # computes the authorization nonce differently when the authority
+            # is not the sender, so a client re-signing for relay has to name
+            # the account that will actually send it.
+            "relayer": delegation.relayer_address(),
             "approval_mode": mode,
             "autonomous_limit_usd": round(
                 autonomous_limit / 10 ** reg.quote.decimals, 2) if autonomous_limit else 0,
@@ -337,6 +342,71 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
                 "It can never move funds to another address, spend your OKB, call any "
                 "contract but the router, or raise these limits. You can revoke it at "
                 "any time without Sarf's involvement."
+            ),
+        }
+
+    @r.post("/grant/relay")
+    async def grant_relay(body: dict[str, Any],
+                          authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Broadcast a user-signed EIP-7702 authorization through the relayer.
+
+        The fallback for wallets that sign a 7702 authorization but cannot send
+        the type-4 transaction carrying it — Privy's embedded wallet being the
+        one that forced this. The browser hands over the signed authorization
+        and the unsigned call; the relayer pays gas and presses send.
+
+        It is a relay, not an authority. The authorization is signed by the
+        user's key, names this server's delegate (checked), and is bound to
+        X Layer (checked). The relayer cannot forge one, point it at another
+        contract, or change the caps — those are inside the signed payload.
+        """
+        addr = _session_addr(authorization)
+        if not settings.delegate_address:
+            raise HTTPException(503, "in-chat execution is not configured on this server")
+
+        # Same passkey bar as /grant/prepare. Relaying is the step that actually
+        # installs the delegation, so it must not be reachable on a weaker gate
+        # than the one that minted the key.
+        if not db.passkeys_for_address(addr):
+            raise HTTPException(400, "register a passkey before installing a session key")
+        last = db.last_passkey_verification(addr)
+        if last is None or (time.time() - last) > passkey.stepup_validity_seconds():
+            raise HTTPException(400, "verify your passkey before installing the session key")
+
+        row = db.get_grant(addr)
+        if not row or row.get("revoked_at"):
+            raise HTTPException(400, "no prepared grant for this wallet — run setup again")
+
+        tx = body.get("transaction") or {}
+        auth = body.get("authorization")
+        if not isinstance(auth, dict):
+            raise HTTPException(400, "authorization object required")
+        to = tx.get("to")
+        data = tx.get("data")
+        if not to or not data:
+            raise HTTPException(400, "transaction with `to` and `data` required")
+        # The call must target the user's OWN account: a 7702 install executes
+        # against the authorising EOA, and relaying one aimed elsewhere would
+        # spend the relayer's gas on a stranger's transaction.
+        if str(to).lower() != addr.lower():
+            raise HTTPException(400, "transaction must target the authorising account")
+
+        try:
+            tx_hash = await delegation.relay_authorization(
+                authorization=auth, to=to, data=data,
+            )
+        except delegation.DelegationError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:  # pragma: no cover - upstream/RPC failure
+            raise HTTPException(502, f"relay failed: {e}")
+
+        return {
+            "tx_hash": tx_hash,
+            "relayer": delegation.relayer_address(),
+            "explorer_url": EXPLORER_TX.format(tx_hash),
+            "note": (
+                "Broadcast by Sarf's relayer, which paid gas. The authorization "
+                "it carried was signed by your wallet and names the limits you set."
             ),
         }
 

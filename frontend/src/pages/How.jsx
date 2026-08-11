@@ -1,92 +1,119 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 /**
- * How it works. Describes the actual mechanism, including where it stops —
- * the point of the page is that nothing executes without a signature, so the
- * steps are written to be checkable rather than reassuring.
+ * How it works — which is, in practice, how you connect.
+ *
+ * This page used to be prose about the design while /connect carried the setup
+ * steps, and the two said the same thing in different words. /connect is gone
+ * and its content lives here, because "how does this work" and "how do I set it
+ * up" were never two questions.
+ *
+ * The endpoint below is the ONLY correct one: the MCP transport is served on
+ * the sarf-mcp host, and nothing but /mcp and health is reachable there. The
+ * main site host does not serve /mcp at all, so a connector pointed at it fails
+ * with a 404 that looks like the server being down.
  */
+const MCP_URL = 'https://sarf-mcp.managerx.xyz/mcp';
+
 export default function How() {
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    navigator.clipboard?.writeText(MCP_URL);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   return (
     <section>
-      <div className="eyebrow tick">Start to finish</div>
-      <h1>How Sarf works</h1>
+      <div className="eyebrow tick">Set up once</div>
+      <h1>How it works</h1>
       <p className="sub">
-        Four steps. Nothing leaves your wallet until the last one, and that one
-        is a signature only you can produce.
+        Add Sarf to Claude or ChatGPT — about a minute, and you only do it once.
       </p>
 
       <div className="steps" style={{ marginTop: 30 }}>
         <div className="step">
           <div className="step-num">01</div>
           <div className="step-body">
-            <h3>Read an address</h3>
-            <p>
-              Yours, or one you are reviewing. Sarf reads tokenized-stock holdings
-              straight from X Layer state — no wallet connection and no signup,
-              because reading public chain state needs neither.
-            </p>
+            <h3>Open Settings → Connectors</h3>
+            <p>In Claude or ChatGPT, choose to add a custom connector.</p>
           </div>
         </div>
         <div className="step">
           <div className="step-num">02</div>
           <div className="step-body">
-            <h3>Get the measurements</h3>
-            <p>
-              Concentration, sector mix and cash buffer, each reported next to the
-              reference point it is measured against — "41% of holdings, against a
-              15–20% band commonly used as a single-name limit". Sarf is not a
-              licensed or registered adviser, it does not know your income, goals
-              or risk tolerance, and it does not tell you what to do.
+            <h3>Paste the Sarf MCP URL</h3>
+            <div className="copy-row">
+              <code>{MCP_URL}</code>
+              <button onClick={copy}>{copied ? 'copied' : 'copy'}</button>
+            </div>
+            <p style={{ marginTop: 8 }}>
+              Your client will send you here to approve the connection. That
+              approval is one signature proving you control the address — it
+              authorizes no transaction and moves no funds.
             </p>
           </div>
         </div>
         <div className="step">
           <div className="step-num">03</div>
           <div className="step-body">
-            <h3>Sign in when you want to act</h3>
+            <h3>Add a passkey</h3>
             <p>
-              Sign in with Google and Sarf provisions a wallet for you, or bring
-              your own. Either way the keys stay with you — the server never
-              receives them and cannot reconstruct them.
+              One touch of Face ID, Touch ID, or your device PIN. It is what
+              approves every transaction from then on — nothing gets signed
+              without it, and it never leaves your device.
             </p>
           </div>
         </div>
         <div className="step">
           <div className="step-num">04</div>
           <div className="step-body">
-            <h3>Confirm the trade</h3>
+            <h3>Choose how it asks</h3>
             <p>
-              Sarf builds the transaction and shows you exactly what it does. You
-              sign it. It settles on X Layer and you get the transaction hash
-              back — verifiable by anyone, not a screenshot.
+              <b>Always Ask</b> — every trade needs your passkey, whatever the
+              size.
+              <br />
+              <b>Autonomous</b> — trades up to a limit you set go through without
+              a prompt; anything above it still asks. Changing that limit needs
+              your passkey again, so the agent can never raise it on its own.
+            </p>
+          </div>
+        </div>
+        <div className="step">
+          <div className="step-num">05</div>
+          <div className="step-body">
+            <h3>Start asking</h3>
+            <p>
+              Try "what can I buy?", "price of NVDAx", or "how is my portfolio
+              balanced?" right in the chat.
             </p>
           </div>
         </div>
       </div>
 
-      <div className="card accent" style={{ marginTop: 30 }}>
-        <h3>Talking to Sarf directly</h3>
-        <p>
-          Once connected, just ask — "how is my portfolio balanced?" or "buy $200
-          of AAPLx" work as plain requests inside Claude or ChatGPT. No separate
-          app to open.
-        </p>
+      <div className="code-block">
+        <span className="k">MCP endpoint:</span>{'\n'}
+        {MCP_URL}{'\n\n'}
+        <span className="k">Chain:</span> X Layer (chain id 196){'\n'}
+        <span className="k">Assets:</span> 40 tokenized equities and ETFs
       </div>
 
-      <div className="card">
-        <h3>Trading inside the chat</h3>
+      <div className="card accent">
+        <h3>What the connector can and cannot do</h3>
         <p>
-          Optionally, you can grant a session key so small trades settle without
-          leaving the conversation. The caps are enforced by the contract, not by
-          Sarf — and transfers are excluded from it entirely, so a session key can
-          never move funds to someone else. You set the limits and can revoke at
-          any time from <Link to="/settings">settings</Link>.
+          It can read your holdings, price assets, and build transactions. It
+          cannot sign one without your passkey. Every trade comes back as an
+          unsigned transaction to review and sign in your own wallet — unless you
+          have granted a session key, in which case trades settle in chat under
+          limits the contract enforces, still gated by your passkey. Transfers to
+          another address always need a fresh passkey and can never be delegated.
         </p>
       </div>
 
       <div className="connect-cta">
-        <p>Ready to try it? Reading a portfolio needs no account at all.</p>
+        <p>No wallet needed to try the analysis first.</p>
         <Link className="cta-btn" to="/portfolio">Read a portfolio</Link>
       </div>
     </section>

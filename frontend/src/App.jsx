@@ -1,15 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Link, Route, Routes, useLocation } from 'react-router-dom';
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import Home from './pages/Home.jsx';
 import Activity from './pages/Activity.jsx';
 import Portfolio from './pages/Portfolio.jsx';
 import Markets from './pages/Markets.jsx';
 import How from './pages/How.jsx';
 import SecurityInfo from './pages/SecurityInfo.jsx';
-import Connect from './pages/Connect.jsx';
-import Settings from './pages/Settings.jsx';
 import Dashboard from './pages/Dashboard.jsx';
-import Transfer from './pages/Transfer.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
 import { api, clearSession, getSession, registerPasskey } from './api.js';
@@ -77,9 +74,9 @@ function AccountControl({ session, setSession }) {
             MCP connector — ending it here ends it in Claude.
           </p>
           <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <Link className="cta-btn" to="/settings" style={{ padding: '9px 14px', fontSize: 11 }}
+            <Link className="cta-btn" to="/security" style={{ padding: '9px 14px', fontSize: 11 }}
                   onClick={() => setOpen(false)}>
-              Settings
+              Security
             </Link>
             <button className="danger" onClick={end}>End session</button>
           </div>
@@ -132,7 +129,7 @@ function WarningBar({ setSession }) {
  *
  * It renders in place rather than redirecting home, because the URL is often
  * the payload: /sign?o=... is the link Claude hands the user from chat, and
- * /connect carries the OAuth request. Bouncing to / would sign them in and
+ * /approve carries the OAuth request. Bouncing to / would sign them in and
  * then leave them staring at the markets page with the order id gone.
  */
 function SignInRequired({ what, onDone }) {
@@ -273,15 +270,13 @@ export default function App() {
               are appended once there is a session rather than shown and then
               refused — each of them opens by asking the wallet who you are. */}
           <Link className={pathname === '/' ? 'on' : ''} to="/">Home</Link>
-          <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
           <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
           <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
           <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
-          <Link className={pathname === '/connect' ? 'on' : ''} to="/connect">Connect</Link>
           {signedIn && (
             <>
+              <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
               <Link className={pathname === '/dashboard' ? 'on' : ''} to="/dashboard">Dashboard</Link>
-              <Link className={pathname === '/send' ? 'on' : ''} to="/send">Send</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
             </>
           )}
@@ -296,21 +291,34 @@ export default function App() {
           {/* Public. Portfolio is public on purpose: reading an address needs
               no account, and it degrades to a prompt only for "my holdings". */}
           <Route path="/" element={<Home />} />
-          <Route path="/portfolio" element={<Portfolio />} />
+          {/* Portfolio is account-only. It used to read any pasted address,
+              which made a wallet-shaped page look public. */}
+          <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
           <Route path="/markets" element={<Markets />} />
           <Route path="/how" element={<How />} />
-          <Route path="/security" element={<SecurityInfo />} />
-          <Route path="/connect" element={<Connect />} />
+          <Route path="/security" element={gate('Your security settings', <SecurityInfo />)} />
+          {/* /connect was the setup page; its content is now the whole of
+              "How it works", since how it works and how you set it up were
+              never two questions. Redirected rather than removed: the URL was
+              printed in setup instructions and is out in the wild. */}
+          <Route path="/connect" element={<Navigate to="/how" replace />} />
 
           {/* Account-only. */}
-          <Route path="/settings" element={gate('Your security settings', <Settings />)} />
+          {/* /settings folded into /security: same subject, two URLs, and the
+              half with the controls was not the half users were sent to. */}
+          <Route path="/settings" element={<Navigate to="/security" replace />} />
           <Route path="/dashboard" element={gate('Your dashboard', <Dashboard />)} />
+          {/* Same component: no :section renders the index, a section renders
+              its own page. One data fetch, two layouts. */}
+          <Route path="/dashboard/:section" element={gate('Your dashboard', <Dashboard />)} />
           <Route path="/activity" element={gate('Your activity', <Activity />)} />
-          <Route path="/send" element={gate('Sending', <Transfer />)} />
+          {/* /send removed — transfers belong in chat, where the passkey
+              prompt is already the approval step. */}
+          <Route path="/send" element={<Navigate to="/portfolio" replace />} />
           <Route path="/sign" element={gate('This transaction', <Sign />)} />
           {/* OAuth consent. /authorize is the server endpoint, which validates
-              and hands off here; this route moved off /connect when that name
-              was taken by the public setup page. */}
+              and hands off here; it lives on /approve rather than /connect,
+              which used to be the public setup page. */}
           <Route path="/approve" element={gate('This connection request', <Authorize />)} />
         </Routes>
       </main>

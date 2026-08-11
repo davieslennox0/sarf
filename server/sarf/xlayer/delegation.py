@@ -53,7 +53,7 @@ from eth_utils import keccak
 from ..config import settings
 from ..validation import ValidationError
 from . import rpc
-from .evm import validate_evm_address
+from .evm import to_checksum_address, validate_evm_address
 from .registry import CHAIN_ID
 
 # Must match SarfSessionKey.SWAP_TYPEHASH exactly. Verified against
@@ -272,6 +272,111 @@ async def relay(*, to: str, data: str, gas_limit: int = 900_000) -> str:
     }
     raw = acct.sign_transaction(tx).raw_transaction
     return await rpc.send_raw_transaction("0x" + raw.hex())
+
+
+async def relay_authorization(
+    *, authorization: dict[str, Any], to: str, data: str, gas_limit: int = 900_000,
+) -> str:
+    """Broadcast the user's signed EIP-7702 authorization and return the hash.
+
+    Why this exists: Privy's embedded wallet SIGNS a 7702 authorization without
+    complaint but will not BROADCAST the type-4 transaction that carries it —
+    it fails with an opaque "An unexpected error occurred". X Layer is not the
+    obstacle; its RPC parses type-4 fine (a truncated one errors on RLP
+    decoding, not on an unknown type). So the signature is obtainable and the
+    chain is willing; only the browser's send path is missing, and that is the
+    one part a relayer can stand in for.
+
+    This changes nothing about custody. The authorization is signed by the
+    user's own key and names the delegate contract; the relayer only pays gas
+    and presses send. A compromised relayer could submit an authorization the
+    user already signed, and nothing else — it cannot forge one, alter the
+    delegate, or raise the caps, all of which live inside the signed payload.
+
+    The signing wallet must therefore NOT be the authority: the authorization is
+    built with the relayer as `executor`, so its own nonce advances rather than
+    the user's.
+    """
+    key = settings.relayer_private_key
+    if not key:
+        raise DelegationError(
+            "no relayer configured — set SARF_RELAYER_PRIVATE_KEY to a gas-only "
+            "wallet before enabling in-chat execution"
+        )
+    acct = Account.from_key(key)
+    validate_evm_address(to)
+
+    auth = _normalise_authorization(authorization)
+    nonce = await rpc.transaction_count(acct.address)
+    # eth_account validates addresses as EIP-55 checksummed and rejects the
+    # lowercase form outright ("Transaction had invalid fields: {'to': ...}").
+    # validate_evm_address normalises to lowercase — right for storage and
+    # comparison, wrong for handing to the signer — so checksum on the way in.
+    to = to_checksum_address(to)
+    gas_price = await rpc.gas_price()
+    tx = {
+        "to": to, "data": data, "value": 0, "gas": gas_limit,
+        "maxFeePerGas": gas_price * 2,
+        "maxPriorityFeePerGas": gas_price,
+        "nonce": nonce, "chainId": CHAIN_ID, "type": 4,
+        "authorizationList": [auth],
+    }
+    signed = acct.sign_transaction(tx)
+    return await rpc.send_raw_transaction("0x" + signed.raw_transaction.hex())
+
+
+def _normalise_authorization(a: dict[str, Any]) -> dict[str, Any]:
+    """Accept what the browser actually sends and reject what it must not.
+
+    Wallet SDKs disagree on shape and casing (chainId/chain_id, address/
+    contractAddress, hex strings vs ints), so the fields are read tolerantly
+    and then validated strictly — a malformed authorization that reached
+    eth_account would produce an unhelpful encoding error rather than a
+    statement about what was wrong.
+    """
+    if not isinstance(a, dict):
+        raise DelegationError("authorization must be an object")
+
+    def pick(*names: str) -> Any:
+        for n in names:
+            if a.get(n) is not None:
+                return a[n]
+        return None
+
+    def as_int(v: Any, what: str) -> int:
+        if isinstance(v, bool) or v is None:
+            raise DelegationError(f"authorization {what} is missing")
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            try:
+                return int(v, 16) if v.startswith("0x") else int(v)
+            except ValueError:
+                raise DelegationError(f"authorization {what} is not a number")
+        raise DelegationError(f"authorization {what} is not a number")
+
+    delegate = validate_evm_address(pick("address", "contractAddress"))
+    # The delegate is the whole point of the authorization: accepting one that
+    # names some other contract would install an arbitrary implementation on the
+    # user's account, which is the single worst thing this endpoint could do.
+    if not settings.delegate_address or delegate.lower() != settings.delegate_address.lower():
+        raise DelegationError(
+            "authorization names a different delegate than this server's — refusing to relay"
+        )
+    chain = as_int(pick("chainId", "chain_id"), "chainId")
+    if chain != CHAIN_ID:
+        raise DelegationError(f"authorization is for chain {chain}, not X Layer ({CHAIN_ID})")
+
+    return {
+        "chainId": chain,
+        # Checksummed for the same reason as `to` above: eth_account rejects
+        # the lowercase form when it encodes the authorization list.
+        "address": to_checksum_address(delegate),
+        "nonce": as_int(pick("nonce"), "nonce"),
+        "yParity": as_int(pick("yParity", "v"), "yParity") & 1,
+        "r": as_int(pick("r"), "r"),
+        "s": as_int(pick("s"), "s"),
+    }
 
 
 async def relayer_status() -> dict[str, Any]:
