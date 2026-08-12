@@ -324,13 +324,18 @@ function render(d){
     if(d.explorer_url){const a=$('a','btn wide');a.href=d.explorer_url;a.target='_blank';
       a.textContent='View transaction';foot.appendChild(a);}
     else txt(foot.appendChild($('span','footnote')),'Settled on X Layer');
-  } else if(d.sign_url){
+  } else if(d.sign_url&&!d.can_execute){
+    // Only when there is no live grant. Under a grant the trade settles from
+    // the chat on the "Execute now" chip below, and showing a link out to the
+    // website beside it offered two routes to the same order — the slower one
+    // styled as the primary action. The passkey has not gone anywhere; it is
+    // what bought the grant, so it is spent already rather than owed here.
     const a=$('a','btn wide primary');a.href=d.sign_url;a.target='_blank';
     a.textContent='Approve & sign';foot.appendChild(a);
     txt(foot.appendChild($('span','footnote')),
         'Verify with your passkey \\u2014 Sarf holds no keys.');
   }
-  card.appendChild(foot);
+  if(foot.childNodes.length)card.appendChild(foot);
 
   const sym=d.symbol||'';
   card.appendChild(chips(done

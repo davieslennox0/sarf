@@ -24,6 +24,8 @@ will actually read.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import json
 import time
 from decimal import Decimal
@@ -47,6 +49,24 @@ from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import (
     CHAIN_ID, EXPLORER_TX, NATIVE, RwaAsset, XStocksRegistry,
 )
+
+# --- display-only price cache ------------------------------------------------
+# symbol -> (monotonic timestamp, price). Only read by paths that opted in with
+# an explicit max_age; order sizing and cap checks always quote fresh.
+_PRICE_CACHE: dict[str, tuple[float, float | None]] = {}
+# symbol -> the single in-flight quote for it, so concurrent callers share one.
+_PRICE_INFLIGHT: dict[str, Any] = {}
+PRICE_CACHE_TTL = float(os.environ.get("RWA_PRICE_CACHE_TTL", "90"))
+
+# How long the token-list card may spend waiting on the aggregator before it
+# renders with whatever it has. Rows still carry logo, symbol and name; a
+# missing price shows as "tap to price".
+LIST_PRICE_BUDGET = float(os.environ.get("RWA_LIST_PRICE_BUDGET", "6"))
+
+# Gap between assets in the background warmer. 40 assets at 1.5s is a full
+# sweep every minute, which keeps a 90s cache permanently warm without ever
+# looking like a burst to the aggregator.
+PRICE_WARM_SPACING = float(os.environ.get("RWA_PRICE_WARM_SPACING", "1.5"))
 
 SYNTHETIC_DISCLOSURE = (
     "xStocks are tokenized SYNTHETIC exposure to the underlying share price. "
@@ -135,20 +155,113 @@ class XLayerRwaProvider:
 
     # ------------------------------------------------------------------ util
 
-    async def _unit_price_usd(self, asset: RwaAsset) -> float | None:
+    async def _unit_price_usd(
+        self, asset: RwaAsset, *, max_age: float = 0.0
+    ) -> float | None:
         """USD price of one whole token, via a 1-unit sell quote into USDT.
 
         Priced by asking the same venue the trade would execute on, so the cap
         and the fill agree. Returns None if the venue cannot price it — callers
         must then fail closed, never assume a value.
+
+        `max_age` opts in to a cached price and defaults to OFF. Anything that
+        sizes an order or checks a cap gets a fresh quote; only display paths
+        (the list card, which prices forty assets at once) pass an age, and
+        they accept a slightly stale number in exchange for existing at all.
         """
+        now = time.monotonic()
+        if max_age > 0:
+            hit = _PRICE_CACHE.get(asset.symbol)
+            if hit and hit[1] is not None and now - hit[0] <= max_age:
+                return hit[1]
         try:
             q = await self.dex.quote(asset.address, self.reg.quote.address, 10 ** asset.decimals)
         except DexError:
             return None
         if q.to_amount <= 0:
             return None
-        return float(Decimal(q.to_amount) / (Decimal(10) ** self.reg.quote.decimals))
+        price = float(Decimal(q.to_amount) / (Decimal(10) ** self.reg.quote.decimals))
+        _PRICE_CACHE[asset.symbol] = (now, price)
+        return price
+
+    async def _prices_within_budget(
+        self, assets: list[RwaAsset]
+    ) -> dict[str, float | None]:
+        """Best prices obtainable in LIST_PRICE_BUDGET seconds, cache included.
+
+        Never raises and never blocks past the budget: a display surface that
+        waits on forty upstream calls is a display surface that times out.
+        """
+        out: dict[str, float | None] = {}
+        pending: list[RwaAsset] = []
+        now = time.monotonic()
+        for a in assets:
+            hit = _PRICE_CACHE.get(a.symbol)
+            if hit and hit[1] is not None and now - hit[0] <= PRICE_CACHE_TTL:
+                out[a.symbol] = hit[1]
+            else:
+                out[a.symbol] = None
+                pending.append(a)
+        if not pending:
+            return out
+
+        # One quote in flight per symbol, process-wide. Without this the second
+        # call arrives while the first is still working through the backlog and
+        # asks for the same forty prices again, so the fix for rate limiting
+        # becomes the cause of it.
+        tasks: dict[asyncio.Task[Any], RwaAsset] = {}
+        for a in pending:
+            t = _PRICE_INFLIGHT.get(a.symbol)
+            if t is None or t.done():
+                t = asyncio.create_task(
+                    self._unit_price_usd(a, max_age=PRICE_CACHE_TTL))
+                _PRICE_INFLIGHT[a.symbol] = t
+                t.add_done_callback(
+                    lambda fut, sym=a.symbol: _PRICE_INFLIGHT.pop(sym, None))
+            tasks[t] = a
+
+        done, unfinished = await asyncio.wait(
+            tasks.keys(), timeout=LIST_PRICE_BUDGET,
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        for t in done:
+            try:
+                p = t.result()
+            except (Exception, asyncio.CancelledError):
+                p = None
+            if isinstance(p, (int, float)):
+                out[tasks[t].symbol] = p
+        # Whatever did not finish is deliberately NOT cancelled: it is already
+        # in flight and its result lands in the cache, so the next call — the
+        # user scrolling, or asking again — is answered from memory instead of
+        # paying this cost twice. The callback only exists to stop asyncio
+        # complaining about an exception nobody retrieved.
+        for t in unfinished:
+            t.add_done_callback(
+                lambda fut: fut.cancelled() or fut.exception())
+        return out
+
+    async def warm_prices_forever(self) -> None:
+        """Refresh every listed asset's price on a slow, never-ending loop.
+
+        One asset at a time on purpose. The point is to be finished before the
+        user asks, not to be quick — a burst here would trip the same rate limit
+        it exists to avoid, and would do it while somebody is mid-trade.
+        """
+        allow = settings.rwa_allowlist
+        while True:
+            try:
+                assets = [a for a in self.reg.assets
+                          if not allow or a.symbol.upper() in allow]
+                for a in assets:
+                    await self._unit_price_usd(a, max_age=PRICE_CACHE_TTL / 2)
+                    await asyncio.sleep(PRICE_WARM_SPACING)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - a warmer must never die
+                logging.getLogger("sarf").debug("price warmer cycle failed",
+                                                exc_info=True)
+            await asyncio.sleep(PRICE_WARM_SPACING)
 
     @staticmethod
     def fee_plan(stable_leg_usd: float | None) -> dict[str, Any]:
@@ -527,22 +640,20 @@ class XLayerRwaProvider:
             allow = settings.rwa_allowlist
             assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
 
-            # Price the whole list, concurrently.
+            # Price the whole list — but bounded by a clock, not by the venue.
             #
-            # The list card shows a price per row and this response carried none,
-            # so every row rendered blank — the card was right and the payload
-            # was empty. Forty sequential quotes would be unusable; gathered,
-            # it is one round trip's latency. Failures come back as None rather
-            # than raising, because one unpriceable asset must not blank the
-            # other thirty-nine.
-            import asyncio as _asyncio
-            prices = await _asyncio.gather(
-                *(self._unit_price_usd(a) for a in assets), return_exceptions=True
-            )
-            price_by_symbol = {
-                a.symbol: (p if isinstance(p, (int, float)) else None)
-                for a, p in zip(assets, prices)
-            }
+            # Firing forty quotes at once earned 429s on thirty-seven of them
+            # and the card printed a column of dashes, which reads as "these
+            # assets cannot be priced" rather than "we asked too fast". Paced
+            # and retried they nearly all land, but that takes ~25s, which is
+            # its own kind of broken for a card the user is waiting on.
+            #
+            # So: serve whatever the cache already holds, spend at most
+            # LIST_PRICE_BUDGET seconds filling the gaps, and let the rest keep
+            # warming in the background for the next call. A row with no price
+            # renders as "tap to price" — honest, and the row still shows its
+            # logo, symbol and name.
+            price_by_symbol = await self._prices_within_budget(assets)
             return {
                 "chain": {"name": "X Layer", "chain_id": CHAIN_ID},
                 "quote_asset": reg.quote.symbol,

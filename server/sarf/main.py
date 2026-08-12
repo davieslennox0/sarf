@@ -161,8 +161,19 @@ async def lifespan(app: FastAPI):
         logging.getLogger("sarf").error("X Layer RPC check failed: %s", e)
         if settings.env == "production":
             raise
-    async with mcp.session_manager.run():
-        yield
+    # Keep the token-list prices warm in the background.
+    #
+    # Pricing forty assets on demand cannot be fast: OKX rate-limits the fan-out
+    # and the list card can only wait a few seconds before it has to render. So
+    # the prices are gathered continuously and quietly instead, and the card
+    # reads them from memory. Paced through the same limiter as everything else,
+    # so this yields to real user requests rather than competing with them.
+    warmer = asyncio.create_task(provider.warm_prices_forever())
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        warmer.cancel()
 
 
 app = FastAPI(title="Sarf", lifespan=lifespan)

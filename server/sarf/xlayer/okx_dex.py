@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import shutil
 import time
 from dataclasses import dataclass
@@ -38,6 +39,43 @@ import httpx
 from .registry import CHAIN_ID
 
 _OKX_BASE = os.environ.get("OKX_BASE_URL", "https://web3.okx.com").rstrip("/")
+
+# --- pacing ------------------------------------------------------------------
+# OKX rate-limits per key, and the whole product fans out: a list card prices
+# forty assets, a portfolio prices every holding. Fired at once those become
+# forty simultaneous requests and OKX answers 429 to most of them, which
+# surfaced as assets that "cannot be priced" rather than as the throttle it was.
+#
+# One shared pacer for the whole process, not per client instance: the limit is
+# per API key, so two clients spacing themselves independently would still
+# collide. Requests go out at most one per _MIN_INTERVAL, and a 429 is retried
+# with exponential backoff and jitter rather than surfaced as an unpriceable
+# asset. Serialised this way, forty quotes take a few seconds instead of
+# failing in one.
+_MIN_INTERVAL = float(os.environ.get("OKX_MIN_REQUEST_INTERVAL", "0.22"))
+_MAX_RETRIES = int(os.environ.get("OKX_MAX_RETRIES", "4"))
+_RETRY_BASE = float(os.environ.get("OKX_RETRY_BASE_SECONDS", "0.4"))
+
+# Transient upstream conditions, not verdicts about the pair. 50026 is OKX's
+# generic "System error. Try again later" and arrives in bursts under load —
+# treated as fatal it becomes an asset that cannot be priced, which is a claim
+# about the asset that is simply untrue.
+_RETRYABLE_CODES = {"50026", "50011", "50013"}
+
+_pace_lock = asyncio.Lock()
+_last_request = 0.0
+
+
+async def _pace() -> None:
+    """Space outbound calls so a fan-out does not trip the rate limit."""
+    global _last_request
+    async with _pace_lock:
+        wait = _last_request + _MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _last_request = time.monotonic()
+
+
 _CLI = os.environ.get("ONCHAINOS_BIN") or shutil.which("onchainos") or "/root/.local/bin/onchainos"
 
 # A quote is a price snapshot. Anything older than this must not be used to
@@ -143,14 +181,31 @@ class OkxDexClient:
     async def _http(self, path: str, params: dict[str, Any]) -> Any:
         qs = "&".join(f"{k}={v}" for k, v in params.items() if v is not None)
         full = f"{path}?{qs}" if qs else path
-        async with httpx.AsyncClient(timeout=self._timeout) as c:
-            r = await c.get(_OKX_BASE + full, headers=self._sign_headers("GET", full))
-        if r.status_code != 200:
-            raise DexError(f"OKX DEX API returned HTTP {r.status_code}")
-        body = r.json()
-        if str(body.get("code")) != "0":
-            raise DexError(f"OKX DEX API error {body.get('code')}: {body.get('msg')}")
-        return body.get("data")
+        last: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            await _pace()
+            async with httpx.AsyncClient(timeout=self._timeout) as c:
+                r = await c.get(_OKX_BASE + full, headers=self._sign_headers("GET", full))
+            # Not a failure of the pair — a failure of how fast we asked. Priced
+            # one asset at a time neither of these appears; pricing forty for a
+            # list card, they took 37 of them, and the card showed a column of
+            # dashes as though the assets themselves were unpriceable.
+            if r.status_code == 429:
+                last = DexError("OKX DEX API returned HTTP 429")
+            elif r.status_code != 200:
+                raise DexError(f"OKX DEX API returned HTTP {r.status_code}")
+            else:
+                body = r.json()
+                code = str(body.get("code"))
+                if code == "0":
+                    return body.get("data")
+                if code not in _RETRYABLE_CODES:
+                    raise DexError(f"OKX DEX API error {code}: {body.get('msg')}")
+                last = DexError(f"OKX DEX API error {code}: {body.get('msg')}")
+            if attempt >= _MAX_RETRIES:
+                raise last
+            await asyncio.sleep(_RETRY_BASE * (2 ** attempt) * (0.5 + random.random()))
+        raise last or DexError("OKX DEX API did not answer")
 
     async def _cli(self, args: list[str]) -> Any:
         proc = await asyncio.create_subprocess_exec(
