@@ -45,25 +45,42 @@ contract MockToken {
     }
 }
 
-/// @dev Stands in for the OKX aggregator: pulls the sell token, pays the buy
-///      token at a fixed rate. `rateBps` lets a test make it pay badly.
+/// @dev The piece the first version of these tests was missing. Real
+///      aggregators do not spend the allowance themselves: OKX's router holds
+///      no tokens and reaches them through a separate TokenApprove contract,
+///      so the allowance has to sit on THAT address. A mock router that called
+///      `transferFrom` directly made approving the router look correct, which
+///      is exactly how a swap that always reverted got shipped.
+contract MockCollector {
+    function claim(address token, address from, address to, uint256 v) external {
+        MockToken(token).transferFrom(from, to, v);
+    }
+}
+
+/// @dev Stands in for the OKX aggregator: pulls the sell token through the
+///      collector, pays the buy token at a fixed rate. `rateBps` lets a test
+///      make it pay badly.
 contract MockRouter {
     uint256 public rateBps = 10_000;
+    MockCollector public immutable collector;
+
+    constructor(MockCollector c) { collector = c; }
+
     function setRate(uint256 b) external { rateBps = b; }
 
     function swap(address sell, address buy, uint256 amountIn, uint256 out) external {
-        MockToken(sell).transferFrom(msg.sender, address(this), amountIn);
+        collector.claim(sell, msg.sender, address(this), amountIn);
         MockToken(buy).mint(msg.sender, (out * rateBps) / 10_000);
     }
 
     /// Takes the allowance and gives nothing back.
     function rug(address sell, uint256 amountIn) external {
-        MockToken(sell).transferFrom(msg.sender, address(this), amountIn);
+        collector.claim(sell, msg.sender, address(this), amountIn);
     }
 
     /// Tries to drain far beyond what was authorised for this trade.
     function overdraw(address sell, uint256 amountIn) external {
-        MockToken(sell).transferFrom(msg.sender, address(this), amountIn);
+        collector.claim(sell, msg.sender, address(this), amountIn);
     }
 }
 
@@ -72,6 +89,7 @@ contract SarfSessionKeyTest is Test {
     MockToken usdt;
     MockToken aapl;
     MockRouter router;
+    MockCollector collector;
 
     // The user's EOA, delegated to `impl` via EIP-7702 in setUp.
     uint256 userPk = 0xA11CE;
@@ -89,7 +107,8 @@ contract SarfSessionKeyTest is Test {
         impl = new SarfSessionKey();
         usdt = new MockToken("USDT", 6, true);   // silent approve, like real USDT
         aapl = new MockToken("AAPLx", 18, false);
-        router = new MockRouter();
+        collector = new MockCollector();
+        router = new MockRouter(collector);
 
         // EIP-7702: point the EOA at the implementation. This is the exact
         // mechanism the contract relies on, so the tests use it rather than
@@ -104,7 +123,7 @@ contract SarfSessionKeyTest is Test {
         vm.prank(user);
         SarfSessionKey(payable(user)).authorize(
             sessionKey, uint64(block.timestamp + 7 days), address(router),
-            address(usdt), PER_TRADE, DAILY, toks
+            address(collector), address(usdt), PER_TRADE, DAILY, toks
         );
     }
 
@@ -213,7 +232,7 @@ contract SarfSessionKeyTest is Test {
     // ------------------------------------------------------------- scoping
 
     function test_only_the_granted_router_may_be_called() public {
-        MockRouter evil = new MockRouter();
+        MockRouter evil = new MockRouter(collector);
         bytes memory data = abi.encodeCall(MockRouter.rug, (address(usdt), 100e6));
         bytes32 inner = keccak256(abi.encode(
             keccak256(
@@ -329,8 +348,45 @@ contract SarfSessionKeyTest is Test {
         vm.expectRevert(SarfSessionKey.GrantTooLong.selector);
         SarfSessionKey(payable(user)).authorize(
             sessionKey, uint64(block.timestamp + 31 days), address(router),
-            address(usdt), PER_TRADE, DAILY, toks
+            address(collector), address(usdt), PER_TRADE, DAILY, toks
         );
+    }
+
+    // ------------------------------------------------- the allowance target
+
+    /// The bug this contract shipped with. Approving the router looks right
+    /// and is wrong: the router never calls `transferFrom` itself, so the
+    /// allowance sits unspent and the swap dies inside the collector. Every
+    /// trade reverted with SwapFailed after the user had paid for the gas.
+    function test_approving_the_router_instead_of_the_collector_reverts() public {
+        address[] memory toks = new address[](1);
+        toks[0] = address(aapl);
+        vm.prank(user);
+        SarfSessionKey(payable(user)).authorize(
+            sessionKey, uint64(block.timestamp + 1 days), address(router),
+            address(router), address(usdt), PER_TRADE, DAILY, toks
+        );
+        vm.expectRevert(SarfSessionKey.SwapFailed.selector);
+        _buy(100e6, 0.3e18, 1);
+    }
+
+    function test_spender_defaults_to_the_router_when_left_unset() public {
+        address[] memory toks = new address[](0);
+        vm.prank(user);
+        SarfSessionKey(payable(user)).authorize(
+            sessionKey, uint64(block.timestamp + 1 days), address(router),
+            address(0), address(usdt), PER_TRADE, DAILY, toks
+        );
+        (, , address r, address sp, , , , , ) = SarfSessionKey(payable(user)).grant();
+        assertEq(sp, r);
+    }
+
+    /// The allowance is exact and gone again by the end of the call, so a
+    /// collector that is later compromised has nothing standing to spend.
+    function test_no_allowance_survives_the_swap() public {
+        _buy(100e6, 0.3e18, 1);
+        assertEq(usdt.allowance(user, address(collector)), 0);
+        assertEq(usdt.allowance(user, address(router)), 0);
     }
 
     // --------------------------------------------------------- revocation
@@ -348,7 +404,7 @@ contract SarfSessionKeyTest is Test {
         vm.expectRevert(SarfSessionKey.NotSelf.selector);
         SarfSessionKey(payable(user)).authorize(
             sessionKey, uint64(block.timestamp + 1 days), address(router),
-            address(usdt), type(uint128).max, type(uint128).max, toks
+            address(collector), address(usdt), type(uint128).max, type(uint128).max, toks
         );
 
         vm.prank(sessionKey);
@@ -363,7 +419,7 @@ contract SarfSessionKeyTest is Test {
         vm.prank(user);
         SarfSessionKey(payable(user)).authorize(
             newKey, uint64(block.timestamp + 1 days), address(router),
-            address(usdt), PER_TRADE, DAILY, toks
+            address(collector), address(usdt), PER_TRADE, DAILY, toks
         );
         vm.expectRevert(SarfSessionKey.BadSignature.selector);
         _buy(100e6, 0, 1);  // still signing with the retired key

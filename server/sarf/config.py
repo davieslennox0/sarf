@@ -170,9 +170,14 @@ class Settings:
     # The deployed SarfSessionKey implementation users delegate to. Empty
     # disables in-chat execution entirely: with no delegate there is nothing
     # to grant, so the feature fails closed rather than half-on.
+    # v2 (2026-08-12). v1 was 0x30eeC302C6D98253dCcA7d970343dBb95c920D76, which
+    # approved the swap router rather than the aggregator's TokenApprove — the
+    # router never spends that allowance, so every trade reverted with
+    # SwapFailed at the user's expense. Grants signed against v1 cannot be
+    # repaired server-side; execute_order refuses them by name.
     delegate_address: str = field(
         default_factory=lambda: _env(
-            "SARF_DELEGATE_ADDRESS", "0x30eeC302C6D98253dCcA7d970343dBb95c920D76"
+            "SARF_DELEGATE_ADDRESS", "0xaeBc963A2e8c3e42d070f5767Def5Fe430151946"
         ).strip()
     )
     # Gas-only wallet that submits signed swaps. Deliberately NOT any wallet

@@ -217,7 +217,8 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
                 int((row or {}).get("autonomous_limit") or 0)
                 / 10 ** reg.quote.decimals, 2),
             "auto_execute_under_usd": settings.delegated_auto_usd,
-            "max_grant_days": delegation.MAX_GRANT_SECONDS // 86400,
+            "max_grant_days": delegation.MAX_GRANT_SECONDS / 86400,
+            "max_grant_seconds": delegation.MAX_GRANT_SECONDS,
             "passkey_registered": bool(db.passkeys_for_address(addr)),
         }
         if not row:
@@ -263,7 +264,10 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
                 "minutes.",
             )
         try:
-            expiry = delegation.requested_expiry(body.get("days", 7))
+            # Default to the ceiling rather than to a week. A session key that
+            # trades unattended should die with the passkey that bought it.
+            expiry = delegation.requested_expiry(
+                body.get("days", delegation.MAX_GRANT_SECONDS / 86400))
             per_trade = _stable_units(body.get("per_trade_cap_usd", 500))
             daily = _stable_units(body.get("daily_cap_usd", 2000))
             # Autonomous is the only mode. Always Ask was removed on 2026-08-11
@@ -300,11 +304,15 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         tokens = [a.address for a in reg.assets if not allow or a.symbol.upper() in allow]
         data = delegation.grant_calldata(
             session_key=session_address, expiry=expiry,
-            # The SWAP router, not the approval spender. The contract enforces
-            # target == grant.router, so authorising the approve address here
-            # made every executeSwap revert with TargetNotAllowed — verified
-            # on-chain before this was found.
-            router=reg.dex_router_address, stable=reg.quote.address,
+            # Two different contracts, and getting either wrong reverts every
+            # trade on-chain at the user's expense. The ROUTER is what the swap
+            # calls — the contract enforces target == grant.router, so naming
+            # the approve address here reverted with TargetNotAllowed. The
+            # SPENDER is who the sell-side allowance goes to — OKX's router
+            # pulls through its TokenApprove, so naming the router here
+            # reverted with SwapFailed. Both were observed on-chain.
+            router=reg.dex_router_address, spender=reg.dex_approve_address,
+            stable=reg.quote.address,
             per_trade_cap=per_trade, daily_cap=daily, tokens=tokens,
         )
         # Stored before the user signs. If they abandon the flow the key is

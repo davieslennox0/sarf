@@ -376,6 +376,72 @@ def test_registry_pins_the_swap_router_explicitly(reg):
     assert raw["dex_router_address"].lower() != raw["dex_token_approve_address"].lower()
 
 
+# The second half of the same mistake. Naming the approve address as the router
+# reverts with TargetNotAllowed; naming the router as the SPENDER reverts with
+# SwapFailed, because OKX's router never calls transferFrom itself — it reaches
+# the tokens through its TokenApprove, so an allowance held by the router is one
+# nobody ever spends. That shipped too: 223,459 gas a time, four trades, all
+# reverted. The grant has to carry both addresses, and they have to be the right
+# way round.
+
+def test_grant_calldata_approves_the_spender_not_the_router(reg):
+    from eth_abi import decode as abi_decode
+
+    from sarf.xlayer import delegation
+
+    data = delegation.grant_calldata(
+        session_key=ADDR_A, expiry=int(time.time()) + 3600,
+        router=reg.dex_router_address, spender=reg.dex_approve_address,
+        stable=reg.quote.address, per_trade_cap=1, daily_cap=2, tokens=[],
+    )
+    router, spender = abi_decode(
+        ["address", "uint64", "address", "address", "address",
+         "uint128", "uint128", "address[]"],
+        bytes.fromhex(data[10:]),
+    )[2:4]
+    assert router.lower() == reg.dex_router_address.lower()
+    assert spender.lower() == reg.dex_approve_address.lower()
+    assert router.lower() != spender.lower()
+
+
+def test_grant_signature_carries_the_spender_argument():
+    """The selector must match the deployed contract's 8-argument authorize.
+
+    A 7-argument grant is not a weaker grant — it is calldata the new delegate
+    has no function for, so it reverts at the point of authorising.
+    """
+    from eth_utils import keccak
+
+    from sarf.xlayer import delegation
+
+    expected = "0x" + keccak(text=(
+        "authorize(address,uint64,address,address,address,uint128,uint128,address[])"
+    ))[:4].hex()
+    data = delegation.grant_calldata(
+        session_key=ADDR_A, expiry=int(time.time()) + 3600, router=ADDR_A,
+        spender=ADDR_B, stable=ADDR_A, per_trade_cap=1, daily_cap=2, tokens=[],
+    )
+    assert data.startswith(expected)
+
+
+# --- grant lifetime ----------------------------------------------------------
+# A session key trades without asking. Its lifetime is therefore capped at the
+# passkey assertion that bought it rather than at the contract's 30-day ceiling.
+
+def test_grant_lifetime_is_capped_at_one_hour():
+    from sarf.xlayer import delegation
+
+    assert delegation.MAX_GRANT_SECONDS == 3600
+    assert delegation.MAX_GRANT_SECONDS <= delegation.CONTRACT_MAX_GRANT_SECONDS
+
+    now = int(time.time())
+    assert delegation.requested_expiry(1 / 24) - now == pytest.approx(3600, abs=2)
+
+    for too_long in (1, 7, 30):
+        with pytest.raises(ValidationError):
+            delegation.requested_expiry(too_long)
+
+
 # --- approval mode -----------------------------------------------------------
 # The mode decides whether a trade can settle in chat on a session assertion
 # alone. It is read from the grant row, never from a request argument, so these

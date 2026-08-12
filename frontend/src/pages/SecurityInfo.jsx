@@ -149,12 +149,16 @@ export default function SecurityPage() {
   );
 }
 
-/** Days the user can pick. The contract refuses anything over 30 regardless. */
+/**
+ * Lifetimes the user can pick, in days. The contract's own ceiling is 30 days,
+ * but this deployment issues one hour: the key trades without asking, so it
+ * expires with the passkey assertion that bought it instead of outliving it by
+ * weeks. The server enforces the same ceiling — this list only has to agree
+ * with it, and a longer entry here would just be rejected on submit.
+ */
+const HOUR = 1 / 24;
 const LIFETIMES = [
-  { days: 1, label: '24 hours' },
-  { days: 7, label: '7 days' },
-  { days: 14, label: '14 days' },
-  { days: 30, label: '30 days' },
+  { days: HOUR, label: '1 hour' },
 ];
 
 /**
@@ -171,7 +175,7 @@ const LIFETIMES = [
 function SessionGrant({ onMessage, onError, passkey }) {
   const [g, setG] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [days, setDays] = useState(7);
+  const [days, setDays] = useState(HOUR);
   const [perTrade, setPerTrade] = useState(500);
   const [daily, setDaily] = useState(2000);
   // Mode is an explicit choice made here at setup, not a default buried in a

@@ -68,7 +68,17 @@ SWAP_TYPEHASH = keccak(
 # Mirrors the contract's ceiling. Kept in sync deliberately rather than read
 # from chain on every call: if they ever disagree the contract wins, and a
 # grant this module refuses to request is a grant that cannot exist.
-MAX_GRANT_SECONDS = 30 * 24 * 3600
+CONTRACT_MAX_GRANT_SECONDS = 30 * 24 * 3600
+
+# What this deployment will actually issue, which is far shorter than what the
+# contract permits. A session key is a key that trades without asking, so its
+# lifetime should match the assertion that authorised it rather than outliving
+# it by weeks: one passkey, one hour, then prove it is you again. The contract
+# ceiling above is the backstop, not the policy.
+MAX_GRANT_SECONDS = min(
+    int(os.environ.get("SARF_MAX_GRANT_SECONDS", "").strip() or "3600"),
+    CONTRACT_MAX_GRANT_SECONDS,
+)
 
 
 class DelegationError(RuntimeError):
@@ -161,8 +171,9 @@ def requested_expiry(days: float) -> int:
     """Validate the lifetime the user picked and turn it into a timestamp.
 
     Bounded at both ends: under an hour is a grant that expires mid-conversation
-    and reads as breakage, and the contract refuses anything over 30 days
-    regardless of what is asked here.
+    and reads as breakage, and MAX_GRANT_SECONDS is the ceiling this deployment
+    will issue — currently one hour, matching the passkey assertion that bought
+    the key in the first place.
     """
     if not isinstance(days, (int, float)) or days != days:
         raise ValidationError("days must be a number")
@@ -171,10 +182,19 @@ def requested_expiry(days: float) -> int:
         raise ValidationError("the shortest grant is 1 hour")
     if seconds > MAX_GRANT_SECONDS:
         raise ValidationError(
-            f"the longest grant is {MAX_GRANT_SECONDS // 86400} days — the contract "
-            "will not accept more, so a longer one cannot be created"
+            f"the longest grant is {_humanise(MAX_GRANT_SECONDS)} — a key that "
+            "trades without asking should not outlive the passkey that authorised "
+            "it, so this ceiling is policy, not a contract limit"
         )
     return int(time.time()) + seconds
+
+
+def _humanise(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        d = seconds // 86400
+        return f"{d} day" + ("s" if d != 1 else "")
+    h = seconds / 3600
+    return f"{h:g} hour" + ("s" if h != 1 else "")
 
 
 def due_for_rotation(grant: Grant) -> bool:
@@ -405,7 +425,7 @@ async def relayer_status() -> dict[str, Any]:
 
 
 def grant_calldata(
-    *, session_key: str, expiry: int, router: str, stable: str,
+    *, session_key: str, expiry: int, router: str, spender: str, stable: str,
     per_trade_cap: int, daily_cap: int, tokens: list[str],
 ) -> str:
     """Calldata the USER signs with their own wallet to authorise a grant.
@@ -413,13 +433,21 @@ def grant_calldata(
     Built here so the site and the assistant cannot disagree about what is
     being authorised, but it is worthless without the user's signature — this
     is the one step Sarf structurally cannot do on their behalf.
+
+    `router` and `spender` are two different contracts and both are pinned
+    here. The router is what the swap calls; the spender is what the sell-side
+    allowance is granted to, which for OKX is its TokenApprove rather than the
+    router itself. Conflating them is not a mis-configuration that degrades
+    gracefully — it reverts every trade on-chain, after the gas is spent.
     """
     selector = keccak(text=(
-        "authorize(address,uint64,address,address,uint128,uint128,address[])"
+        "authorize(address,uint64,address,address,address,uint128,uint128,address[])"
     ))[:4]
     args = abi_encode(
-        ["address", "uint64", "address", "address", "uint128", "uint128", "address[]"],
-        [session_key, expiry, router, stable, per_trade_cap, daily_cap, tokens],
+        ["address", "uint64", "address", "address", "address",
+         "uint128", "uint128", "address[]"],
+        [session_key, expiry, router, spender, stable,
+         per_trade_cap, daily_cap, tokens],
     )
     return "0x" + (selector + args).hex()
 

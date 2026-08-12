@@ -82,6 +82,7 @@ contract SarfSessionKey {
         address sessionKey;    // the only key that may call executeSwap
         uint64 expiry;         // unix seconds; hard stop, no renewal in place
         address router;        // the single contract a swap may be routed to
+        address spender;       // who the sell-side allowance is granted to
         address stable;        // the unit every cap below is denominated in
         uint128 perTradeCap;   // max stable value of one trade
         uint128 dailyCap;      // max stable value per rolling UTC day
@@ -135,6 +136,7 @@ contract SarfSessionKey {
         address sessionKey,
         uint64 expiry,
         address router,
+        address spender,
         address stable,
         uint128 perTradeCap,
         uint128 dailyCap,
@@ -148,6 +150,7 @@ contract SarfSessionKey {
             sessionKey: sessionKey,
             expiry: expiry,
             router: router,
+            spender: spender == address(0) ? router : spender,
             stable: stable,
             perTradeCap: perTradeCap,
             dailyCap: dailyCap,
@@ -239,12 +242,19 @@ contract SarfSessionKey {
         uint256 sellBefore = _balanceOf(sellToken, address(this));
         uint256 buyBefore = _balanceOf(buyToken, address(this));
 
-        // Exact allowance, zeroed straight after, so no standing approval can
-        // be left behind for the router or anyone who can call it later.
-        _approve(sellToken, target, sellAmount);
+        // The allowance does NOT necessarily go to the router. Aggregators
+        // commonly pull the sell leg through a separate collector contract —
+        // OKX's router reaches the tokens via its own TokenApprove — so
+        // approving the router is an allowance nobody ever spends, and the
+        // swap reverts inside `transferFrom` for lack of one. The spender is
+        // pinned in the grant next to the router so the user signs both, and
+        // it is still exact and zeroed in the same transaction: no standing
+        // approval survives this call for anyone.
+        address spender = g.spender == address(0) ? target : g.spender;
+        _approve(sellToken, spender, sellAmount);
         (bool ok, ) = target.call{value: 0}(data);
         if (!ok) revert SwapFailed();
-        _approve(sellToken, target, 0);
+        _approve(sellToken, spender, 0);
 
         // The real constraints. Everything above decides whether the call is
         // allowed to be attempted; these two decide what it is allowed to have

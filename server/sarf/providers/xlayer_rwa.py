@@ -1193,6 +1193,8 @@ class XLayerRwaProvider:
                 # reverts every trade, so say so HERE rather than let the agent
                 # report execution as live and discover otherwise by spending
                 # the user's gas.
+                stale_delegate = (
+                    row["delegate"].lower() != settings.delegate_address.lower())
                 if row["router"].lower() != reg.dex_router_address.lower():
                     base["grant_usable"] = False
                     base["note"] = (
@@ -1203,6 +1205,17 @@ class XLayerRwaProvider:
                         "time, so it cannot be repaired server-side — tell the user to "
                         f"re-authorise at {base['setup_url']}. Until then, build orders "
                         "and hand over sign_url instead."
+                    )
+                elif stale_delegate:
+                    base["grant_usable"] = False
+                    base["note"] = (
+                        "This grant is installed but UNUSABLE: it was signed against "
+                        f"an older session-key contract ({row['delegate']}, current is "
+                        f"{settings.delegate_address}), which approved the swap router "
+                        "instead of the contract that collects the tokens. Every "
+                        "execute_order would revert on-chain and still cost gas. Tell "
+                        f"the user to re-authorise at {base['setup_url']}. Until then, "
+                        "build orders and hand over sign_url instead."
                     )
                 else:
                     base["grant_usable"] = True
@@ -1302,6 +1315,24 @@ class XLayerRwaProvider:
                     "baked into the signed grant and cannot be changed server-side — "
                     f"re-authorise the session at {settings.public_url}/security, then "
                     "ask again. Nothing has been broadcast and no funds moved."
+                )
+
+            # Same failure, one layer down. A grant signed against a superseded
+            # delegate has no spender field at all, so its allowance goes to the
+            # router, which never spends it — the swap dies inside the
+            # aggregator's collector with SwapFailed, again at the user's
+            # expense. Observed on-chain at 223,459 gas a time. The delegate is
+            # named in the user's own 7702 authorisation and cannot be swapped
+            # out from here, so this is also a re-authorise.
+            if row["delegate"].lower() != settings.delegate_address.lower():
+                raise ValueError(
+                    "this session grant was signed against an older version of the "
+                    f"session-key contract ({row['delegate']}, current is "
+                    f"{settings.delegate_address}). That version approved the swap "
+                    "router rather than the contract that actually collects the "
+                    "tokens, so every trade under it reverts on-chain and still costs "
+                    f"gas. Re-authorise at {settings.public_url}/security to move to "
+                    "the current one. Nothing has been broadcast and no funds moved."
                 )
 
             est = order.get("est_usd")

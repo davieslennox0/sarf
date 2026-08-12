@@ -4,16 +4,25 @@
   "rpc": "https://rpc.xlayer.tech",
   "contracts": {
     "SarfSessionKey": {
-      "address": "0x30eeC302C6D98253dCcA7d970343dBb95c920D76",
-      "deployed_at": "2026-08-07",
-      "tx_hash": "0xf720d8cb258825cbfedb5dae4d4dd523fe3368c6e833f430e27580bde67432a7",
-      "block": 67378132,
-      "runtime_code_bytes": 3651,
-      "deployer": "0x6A9eD66625de4f26be561e3Dab5A59e8e47C8Dfd",
+      "address": "0xaeBc963A2e8c3e42d070f5767Def5Fe430151946",
+      "version": 2,
+      "deployed_at": "2026-08-12",
+      "tx_hash": "0x30eb5183199c31ff18ecfca55130e5d107630f4d3cd8e0fc8d8ba148e02096f1",
+      "block": 67725419,
+      "runtime_code_bytes": 3853,
+      "deployer": "0x1edd083cd06de7c17db8670af7ca054ea99d9110",
+      "supersedes": {
+        "_comment": "v1 pinned the sell-side allowance to the swap router. OKX's router does not call transferFrom itself — it reaches tokens through its TokenApprove — so the allowance was never spent and every swap reverted with SwapFailed after the gas was paid. Observed four times on-chain at 223,459 gas each before the cause was found. v2 pins the spender in the grant alongside the router. Grants signed against v1 are unusable and cannot be migrated: the delegate is named in the user's own 7702 authorisation, so it takes a fresh one.",
+        "address": "0x30eeC302C6D98253dCcA7d970343dBb95c920D76",
+        "deployed_at": "2026-08-07",
+        "tx_hash": "0xf720d8cb258825cbfedb5dae4d4dd523fe3368c6e833f430e27580bde67432a7",
+        "block": 67378132,
+        "retired_at": "2026-08-12"
+      },
       "create2": {
-        "_comment": "Deployed through the canonical deterministic deployer, so the address is a pure function of the salt and the init code — anyone can recompute it from source and confirm nothing else was deployed here.",
+        "_comment": "Deployed through the canonical deterministic deployer, so the address is a pure function of the salt and the init code — anyone can recompute it from source and confirm nothing else was deployed here. Verified after deployment: the on-chain runtime code matches a fresh build of src/SarfSessionKey.sol byte for byte.",
         "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
-        "salt": "0x0000000000000000000000000000000000000000000000000000005361726601"
+        "salt": "0x0000000000000000000000000000000000000000000000000000005361726602"
       },
       "privileges": {
         "_comment": "Stated explicitly because it is the question anyone auditing this should ask first.",
