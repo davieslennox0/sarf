@@ -4,35 +4,44 @@ import { api, ensureSession, getSession } from '../api.js';
 import { currentAccount, short } from '../wallet.js';
 
 /**
- * Portfolio: holdings plus the analysis, for any address.
+ * Portfolio: what is held, and what it is worth.
  *
- * Two sources feed the same view. A pasted address goes through the public
+ * Two sources feed the same view. An address in `?a=` goes through the public
  * read-only endpoint — no session, no signature, nothing granted. Your own
  * address, once signed in, goes through the session-bound one. Same renderer
  * either way, because they are the same numbers read from the same chain.
  *
- * On the wording: every finding here is rendered as an observation next to the
- * reference point it is measured against, and never as an instruction. That is
- * not a copy decision made on this page — analysis.py emits `observation` and
- * `reference_point` as separate fields precisely so no renderer can join them
- * into "sell NVDAx". Sarf is not a licensed adviser and this is not advice.
+ * Deliberately just the assets. The page used to lead with a headline, a
+ * pitch, an address form and a block of analysis findings before it got to a
+ * single holding — so the one thing someone opens a portfolio to see was the
+ * last thing on it. The analysis still exists and is still served by the API;
+ * it is simply not what this page is for.
  */
+
+/** Deterministic hue per ticker so an asset keeps one colour everywhere. */
+function markBg(symbol) {
+  const base = String(symbol || '?').replace(/x$/, '');
+  let h = 0;
+  for (const c of base) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `linear-gradient(140deg, hsl(${h},62%,42%), hsl(${(h + 38) % 360},58%,30%))`;
+}
+
+const PAGE = 8;
+
 export default function Portfolio() {
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
   const queried = params.get('a') || '';
 
-  const [input, setInput] = useState(queried);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
-  // Own holdings: only when signed in and no address is being inspected.
   const loadMine = async () => {
     setErr(null); setBusy(true);
     try {
       const addr = await currentAccount();
-      if (!addr) throw new Error('Sign in to see your own holdings, or paste an address above.');
+      if (!addr) throw new Error('Sign in to see your holdings.');
       await ensureSession(addr);
       setData(await api.portfolio());
     } catch (e) { setErr(e.message || String(e)); }
@@ -53,66 +62,26 @@ export default function Portfolio() {
     else { setData(null); setErr(null); }
   }, [queried]);
 
-  const submit = (e) => {
-    e.preventDefault();
-    const a = input.trim();
-    // Reflected in the URL so a read is shareable — the whole point of a
-    // lookup that needs no account is that you can send someone the result.
-    if (a) setParams({ a });
-    else setParams({});
-  };
-
-  const analysis = data?.analysis;
-  const weights = analysis?.weights || [];
-  const findings = analysis?.findings || [];
-  const conc = analysis?.concentration || {};
+  // Read from positions, not from the analysis weights. A public read carries
+  // no analysis, so a weights-only ledger showed an empty portfolio for any
+  // address that was not your own — the holdings were there the whole time.
   const positions = data?.positions || [];
   const unpriced = data?.unpriced_positions || [];
-
-  // Meter reads top-3 share of the equity sleeve; it is a measurement, not a
-  // score, so the label under it names the number rather than a verdict.
-  const top3 = Number(conc.top_3_percent ?? 0);
-  const visible = showAll ? weights : weights.slice(0, 8);
+  const sorted = [...positions].sort(
+    (a, b) => (b.value_usd || 0) - (a.value_usd || 0));
+  const visible = showAll ? sorted : sorted.slice(0, PAGE);
 
   return (
     <section>
-      <div className="eyebrow tick">Paste an address, get a read</div>
-      <h1>What's in the portfolio.</h1>
-      <p className="sub">
-        Sarf reads any X Layer address and measures it — concentration, sector
-        mix, cash buffer — against the reference points those measures are
-        normally judged by. No wallet connection needed to run it.
-      </p>
-
-      <form className="input-row" onSubmit={submit}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Paste an X Layer address (0x…)"
-          spellCheck="false"
-        />
-        <button className="go" type="submit" disabled={busy}>
-          {busy ? '…' : 'Analyze'}
-        </button>
-      </form>
-      <div className="hint">
-        Read-only. Reading an address grants nothing and moves nothing — it is
-        the same public state any block explorer will show you.
-        {queried && getSession() && (
-          <> · <a href="#" onClick={(e) => { e.preventDefault(); setInput(''); setParams({}); }}>
-            back to my holdings
-          </a></>
-        )}
-      </div>
+      <h1>Portfolio</h1>
 
       {err && <p className="error" style={{ marginTop: 18 }}>{err}</p>}
       {busy && !data && <p className="muted small" style={{ marginTop: 18 }}>Reading X Layer…</p>}
 
       {data && (
         <>
-          <p className="muted small" style={{ marginTop: 18 }}>
+          <p className="muted small" style={{ marginTop: 4 }}>
             {short(data.address)} · read live from X Layer
-            {data.analysis ? '' : ' · sign in for the full analysis'}
           </p>
 
           <div className="stats">
@@ -134,73 +103,71 @@ export default function Portfolio() {
             </div>
           )}
 
-          {weights.length > 0 && (
-            <div className="risk-band">
-              <span className="risk-label">Top 3 concentration</span>
-              <div className="risk-meter" style={{ '--fill': `${Math.min(100, top3)}%` }} />
-              <span className="risk-value">{top3.toFixed(0)}%</span>
-            </div>
-          )}
-
-          {findings.length > 0 && (
+          {sorted.length > 0 && (
             <>
-              <div className="section-label">What the numbers show</div>
-              {findings.map((f, i) => (
-                <div className={`card${f.reference_point ? ' accent' : ''}`} key={i}>
-                  <p>{f.observation}</p>
-                  {f.reference_point && <div className="norm">Measured against: {f.reference_point}</div>}
-                </div>
-              ))}
-            </>
-          )}
-
-          {weights.length > 0 && (
-            <>
-              <div className="section-label">Holdings</div>
+              <div className="section-label">Assets</div>
               <div className="ledger">
-                {visible.map((w) => (
-                  <div className="row" key={w.symbol}>
-                    <div className="row-left">
-                      <span className="sym">{w.symbol}</span>
-                      <span className="name">{w.sector || w.name || ''}</span>
-                    </div>
-                    <div className="row-right">
-                      <span className="price">${Number(w.value_usd).toLocaleString()}</span>
-                      <span className="weight">{Number(w.weight_percent).toFixed(0)}%</span>
-                      {/* States the band, not a verdict on what to do about it. */}
-                      <span className={`band${Number(w.weight_percent) > 20 ? ' over' : ''}`}>
-                        {Number(w.weight_percent) > 20 ? 'above 15–20% band' : 'within band'}
+                {visible.map((p) => (
+                  <a
+                    className="row"
+                    key={p.symbol}
+                    href={p.explorer_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <span className="row-left">
+                      {/* Logo over a generated monogram, same as the chat cards:
+                          the mark is painted first so a blocked or 404 image
+                          leaves a filled square rather than a hole in the row. */}
+                      <span className="tokenmark" style={{ background: markBg(p.symbol) }}>
+                        {p.logo_url
+                          ? <img src={p.logo_url} alt="" loading="lazy" referrerPolicy="no-referrer"
+                                 onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                          : null}
+                        <i>{String(p.symbol).replace(/x$/, '').slice(0, 2).toUpperCase()}</i>
                       </span>
-                    </div>
-                  </div>
+                      <span className="row-id">
+                        <span className="sym">{p.symbol}</span>
+                        <span className="name">{(p.name || '').replace(' xStock', '')}</span>
+                      </span>
+                    </span>
+                    <span className="row-right">
+                      <span className="price">
+                        {p.value_usd != null ? `$${Number(p.value_usd).toLocaleString()}` : '—'}
+                      </span>
+                      <span className="weight">{p.quantity}</span>
+                    </span>
+                  </a>
                 ))}
               </div>
-              {weights.length > 8 && (
+              {sorted.length > PAGE && (
                 <button className="see-all" onClick={() => setShowAll((v) => !v)}>
-                  {showAll ? 'Show fewer' : `Show all ${weights.length} positions →`}
+                  {showAll ? 'Show fewer' : `Show all ${sorted.length} positions →`}
                 </button>
               )}
             </>
           )}
 
-          {weights.length === 0 && positions.length === 0 && (
+          {sorted.length === 0 && (
             <p className="muted small" style={{ marginTop: 20 }}>
               No tokenized stock positions at this address.
             </p>
           )}
 
-          {analysis && (
-            <p className="fine" style={{ marginTop: 24 }}>
-              <strong style={{ color: 'var(--paper)' }}>Informational only.</strong>{' '}
-              {analysis.disclosure} {analysis.missing_context}
-            </p>
-          )}
+          {/* Stays regardless of what else is stripped: these are synthetic
+              instruments, and someone reading a dollar total is exactly who
+              needs to know that. */}
+          <p className="fine" style={{ marginTop: 24 }}>
+            <strong style={{ color: 'var(--paper)' }}>Informational only.</strong>{' '}
+            xStocks track a share price and convey no ownership, dividends or
+            voting rights.
+          </p>
         </>
       )}
 
       {!data && !busy && !err && (
         <p className="muted small" style={{ marginTop: 24 }}>
-          Paste an address above, or sign in to read your own.
+          Sign in to read your holdings.
         </p>
       )}
     </section>
