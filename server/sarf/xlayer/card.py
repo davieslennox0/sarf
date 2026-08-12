@@ -239,7 +239,7 @@ def _write_cached(path: Path, data: bytes) -> None:
         pass
 
 
-def logo_data_uri(url: str, size: int = 48) -> str:
+def logo_data_uri(url: str, size: int = 72) -> str:
     """A token logo as a self-contained `data:` PNG, or "" if unavailable.
 
     The widget runs in the host's sandboxed iframe, and its content policy does
@@ -248,8 +248,10 @@ def logo_data_uri(url: str, size: int = 48) -> str:
     as a letter in a coloured box. An inlined image is part of the document
     rather than a request, so there is no host to be allowed or blocked.
 
-    Deliberately small: these are baked into the widget HTML, so the size is
-    paid once per session per asset, not once per message.
+    72px, not the mark's own 38px: the card is rendered at whatever pixel
+    density the reader's screen has, and a 1x icon on a 2x display is visibly
+    soft. The whole map is ~145KB, paid once per session rather than once per
+    message, which is what buying the extra resolution costs.
     """
     if not url:
         return ""

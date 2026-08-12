@@ -556,15 +556,43 @@ function render(d){
 """)
 
 
+# Bumped when the HTML changes in a way a cached copy would get wrong.
+#
+# Hosts cache ui:// resources by URI for the life of a session, so fixing the
+# body is not enough — a session that already fetched a card keeps rendering the
+# old one. v2 carries the inlined token logos; without a new URI the icons stay
+# missing for everyone already connected, which is exactly what happened.
+WIDGET_VERSION = 2
+
+
+def _uri(name: str) -> str:
+    return f"ui://sarf/{name}-v{WIDGET_VERSION}"
+
+
+ORDER_CARD_URI = _uri("order-card")
+PORTFOLIO_CARD_URI = _uri("portfolio-card")
+LIST_CARD_URI = _uri("list-card")
+ANALYSIS_CARD_URI = _uri("analysis-card")
+
 WIDGETS = {
-    "ui://sarf/order-card": ("sarf_order_card", ORDER_CARD,
-                             "Order card — amounts, platform fee, risks, tips, sign or execute"),
-    "ui://sarf/portfolio-card": ("sarf_portfolio_card", PORTFOLIO_CARD,
-                                 "Holdings card — positions, weights, cash and gas, next steps"),
-    "ui://sarf/list-card": ("sarf_list_card", LIST_CARD,
-                            "Token list — logo, symbol and name per line, price per unit"),
-    "ui://sarf/analysis-card": ("sarf_analysis_card", ANALYSIS_CARD,
-                                "Analysis card — concentration, sectors, observations, how to read it"),
+    ORDER_CARD_URI: ("sarf_order_card", ORDER_CARD,
+                     "Order card — amounts, platform fee, risks, tips, sign or execute"),
+    PORTFOLIO_CARD_URI: ("sarf_portfolio_card", PORTFOLIO_CARD,
+                         "Holdings card — positions, weights, cash and gas, next steps"),
+    LIST_CARD_URI: ("sarf_list_card", LIST_CARD,
+                    "Token list — logo, symbol and name per line, price per unit"),
+    ANALYSIS_CARD_URI: ("sarf_analysis_card", ANALYSIS_CARD,
+                        "Analysis card — concentration, sectors, observations, how to read it"),
+}
+
+# Still served, so a session holding the previous tool definitions reads a card
+# rather than a 404. They get the current HTML: an unversioned URI is stale by
+# cache, not by content.
+LEGACY_WIDGETS = {
+    "ui://sarf/order-card": ("sarf_order_card_v1", ORDER_CARD),
+    "ui://sarf/portfolio-card": ("sarf_portfolio_card_v1", PORTFOLIO_CARD),
+    "ui://sarf/list-card": ("sarf_list_card_v1", LIST_CARD),
+    "ui://sarf/analysis-card": ("sarf_analysis_card_v1", ANALYSIS_CARD),
 }
 
 UI_MIME = "text/html;profile=mcp-app"

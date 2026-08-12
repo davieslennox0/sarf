@@ -440,13 +440,13 @@ def test_every_widget_has_a_logo_injection_point():
 
 def test_widgets_prefer_the_inlined_logo_over_a_remote_url():
     """A payload URL must never win over the baked-in copy."""
-    from sarf.xlayer.widget import WIDGETS
+    from sarf.xlayer.widget import ORDER_CARD_URI, WIDGETS
 
     for uri, (_name, html, _desc) in WIDGETS.items():
         if "logoFor(" not in html:
             continue
         assert "window.SARF_LOGOS" in html, f"{uri} does not read the inlined map"
-    order = WIDGETS["ui://sarf/order-card"][1]
+    order = WIDGETS[ORDER_CARD_URI][1]
     assert "im.src=src0" in order, "the order card bypassed logoFor()"
     assert "im.src=d.logo_url" not in order
 

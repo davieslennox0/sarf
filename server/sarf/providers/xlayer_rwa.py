@@ -43,7 +43,15 @@ from ..validation import ValidationError, validate_amount, validate_usd_cap
 from ..xlayer import delegation, rpc
 from ..xlayer.analysis import analyze
 from ..xlayer.card import logo_data_uri, render_order_card, render_order_card_text
-from ..xlayer.widget import UI_MIME, WIDGETS
+from ..xlayer.widget import (
+    ANALYSIS_CARD_URI,
+    LEGACY_WIDGETS,
+    LIST_CARD_URI,
+    ORDER_CARD_URI,
+    PORTFOLIO_CARD_URI,
+    UI_MIME,
+    WIDGETS,
+)
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import (
@@ -639,10 +647,16 @@ class XLayerRwaProvider:
                 return _read
             mcp.resource(uri, name=wname, description=desc, mime_type=UI_MIME)(_make(html))
 
+        for uri, (wname, html) in LEGACY_WIDGETS.items():
+            mcp.resource(
+                uri, name=wname, description="Superseded card URI, kept readable",
+                mime_type=UI_MIME,
+            )(_make(html))
+
         def ui(uri: str) -> dict[str, Any]:
             return {"ui": {"resourceUri": uri}}
 
-        @mcp.tool(meta=ui("ui://sarf/list-card"))
+        @mcp.tool(meta=ui(LIST_CARD_URI))
         async def get_rwa_list(
             symbol: Annotated[str | None, Field(
                 default=None,
@@ -721,7 +735,7 @@ class XLayerRwaProvider:
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
 
-        @mcp.tool(meta=ui("ui://sarf/portfolio-card"))
+        @mcp.tool(meta=ui(PORTFOLIO_CARD_URI))
         async def get_portfolio() -> dict[str, Any]:
             """The authenticated wallet's tokenized-stock holdings on X Layer.
 
@@ -730,7 +744,7 @@ class XLayerRwaProvider:
             """
             return await self.portfolio(require_address())
 
-        @mcp.tool(meta=ui("ui://sarf/order-card"))
+        @mcp.tool(meta=ui(ORDER_CARD_URI))
         async def place_order(
             symbol: Annotated[str, Field(description="On-chain symbol, e.g. 'AAPLx'")],
             side: Annotated[Side, Field(description="'buy' spends USDT; 'sell' returns USDT")],
@@ -966,7 +980,7 @@ class XLayerRwaProvider:
                 return [text]
             return [text, ImageContent(type="image", data=png, mimeType="image/png")]
 
-        @mcp.tool(meta=ui("ui://sarf/order-card"))
+        @mcp.tool(meta=ui(ORDER_CARD_URI))
         async def swap(
             from_symbol: Annotated[str, Field(
                 description="On-chain symbol to sell, e.g. 'AAPLx' or 'USDT'")],
@@ -1202,7 +1216,7 @@ class XLayerRwaProvider:
                 return [text]
             return [text, ImageContent(type="image", data=png, mimeType="image/png")]
 
-        @mcp.tool(meta=ui("ui://sarf/order-card"))
+        @mcp.tool(meta=ui(ORDER_CARD_URI))
         async def transfer(
             symbol: Annotated[str, Field(
                 description="What to send: 'OKB', 'USDT', or an on-chain symbol like 'AAPLx'")],
@@ -1401,7 +1415,7 @@ class XLayerRwaProvider:
                 )
             return base
 
-        @mcp.tool(meta=ui("ui://sarf/order-card"))
+        @mcp.tool(meta=ui(ORDER_CARD_URI))
         async def execute_order(
             order_id: Annotated[str, Field(description="An order_id returned by place_order")],
         ) -> Any:
@@ -1705,7 +1719,7 @@ class XLayerRwaProvider:
         # at 20 results across three connectors exposing 71 tools between them,
         # and read the partial result as a complete registry. No truncation was
         # ever involved; `swap` was registered and callable throughout.
-        @mcp.tool(meta=ui("ui://sarf/analysis-card"))
+        @mcp.tool(meta=ui(ANALYSIS_CARD_URI))
         async def analyze_portfolio() -> dict[str, Any]:
             """Analyse the authenticated wallet's holdings: concentration,
             diversification, sector and instrument mix.
