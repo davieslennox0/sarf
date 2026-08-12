@@ -451,6 +451,41 @@ def test_widgets_prefer_the_inlined_logo_over_a_remote_url():
     assert "im.src=d.logo_url" not in order
 
 
+def test_a_fetched_logo_survives_the_source_going_down(tmp_path, monkeypatch):
+    """OKX's CDN is the only source that carries X Layer xStock icons.
+
+    DexScreener does not index these tokens, Trustwallet has no X Layer, and
+    xStocks' own icons are Webflow assets with per-asset hashes rather than
+    anything addressable by symbol. So the answer to "what if OKX is down" is
+    not a second source — it is not needing the first one twice.
+    """
+    from PIL import Image
+
+    from sarf.xlayer import card as cardmod
+
+    monkeypatch.setattr(cardmod, "_LOGO_DIR", tmp_path)
+    cardmod._DATA_URI_CACHE.clear()
+    url = "https://static.oklink.com/whatever/logo.png"
+
+    monkeypatch.setattr(
+        cardmod, "_logo", lambda u, s: Image.new("RGBA", (s, s), (1, 2, 3, 255)))
+    live = cardmod.logo_data_uri(url)
+    assert live.startswith("data:image/png;base64,")
+    assert list(tmp_path.glob("*.png")), "the icon was never persisted"
+
+    # Source unreachable, and nothing warm in memory.
+    cardmod._DATA_URI_CACHE.clear()
+    monkeypatch.setattr(cardmod, "_logo", lambda u, s: None)
+    assert cardmod.logo_data_uri(url) == live, "an icon we already hold was lost"
+
+
+def test_an_icon_we_never_had_fails_to_the_monogram_not_to_a_broken_image():
+    from sarf.xlayer import card as cardmod
+
+    cardmod._DATA_URI_CACHE.pop("https://example.invalid/x.png@48", None)
+    assert cardmod.logo_data_uri("") == ""
+
+
 # --- grant lifetime ----------------------------------------------------------
 # A session key trades without asking. Its lifetime is therefore capped at the
 # passkey assertion that bought it rather than at the contract's 30-day ceiling.

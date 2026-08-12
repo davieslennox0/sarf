@@ -27,7 +27,10 @@ page it links to are visibly the same product.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import os
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
@@ -201,6 +204,40 @@ def _logo(url: str, size: int) -> "Image.Image | None":
 
 _DATA_URI_CACHE: dict[str, str] = {}
 
+# On-disk copy of every logo ever fetched successfully.
+#
+# OKX's CDN is the only source that carries X Layer xStock icons — DexScreener
+# does not index these tokens, Trustwallet has no X Layer, CoinGecko refuses the
+# request — so "use another source" is not available as a fallback. What is
+# available is not needing the source twice: once an icon has been fetched it is
+# kept, and an outage upstream then costs nothing. Icons are immutable per
+# contract address, so a stale copy is simply the correct copy.
+_LOGO_DIR = Path(
+    os.environ.get("SARF_LOGO_CACHE_DIR")
+    or Path(__file__).resolve().parents[2] / "data" / "logos"
+)
+
+
+def _cache_path(url: str, size: int) -> Path:
+    return _LOGO_DIR / f"{hashlib.sha256(url.encode()).hexdigest()[:32]}-{size}.png"
+
+
+def _read_cached(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except Exception:
+        return b""
+
+
+def _write_cached(path: Path, data: bytes) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(path)  # atomic, so a crash mid-write cannot leave a torn PNG
+    except Exception:  # pragma: no cover - cosmetic path
+        pass
+
 
 def logo_data_uri(url: str, size: int = 48) -> str:
     """A token logo as a self-contained `data:` PNG, or "" if unavailable.
@@ -219,15 +256,26 @@ def logo_data_uri(url: str, size: int = 48) -> str:
     key = f"{url}@{size}"
     if key in _DATA_URI_CACHE:
         return _DATA_URI_CACHE[key]
-    out = ""
+    path = _cache_path(url, size)
+    data = b""
     try:
         im = _logo(url, size)
         if im is not None:
             buf = io.BytesIO()
             im.save(buf, format="PNG", optimize=True)
-            out = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+            data = buf.getvalue()
+            _write_cached(path, data)
     except Exception:  # pragma: no cover - cosmetic path
-        out = ""
+        data = b""
+    if not data:
+        # Upstream is unreachable or has changed. An icon we already hold is
+        # better than a monogram, and better than a card that waits.
+        data = _read_cached(path)
+    if not data:
+        # Deliberately not memoised: a miss is a condition upstream, not a fact
+        # about the asset, so the next read gets to try again.
+        return ""
+    out = "data:image/png;base64," + base64.b64encode(data).decode()
     _DATA_URI_CACHE[key] = out
     return out
 
