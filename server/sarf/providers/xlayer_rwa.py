@@ -42,7 +42,7 @@ from ..db import Database
 from ..validation import ValidationError, validate_amount, validate_usd_cap
 from ..xlayer import delegation, rpc
 from ..xlayer.analysis import analyze
-from ..xlayer.card import render_order_card, render_order_card_text
+from ..xlayer.card import logo_data_uri, render_order_card, render_order_card_text
 from ..xlayer.widget import UI_MIME, WIDGETS
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
@@ -152,6 +152,8 @@ class XLayerRwaProvider:
         self.db = db
         self.dex = dex
         self.reg = registry
+        # Built on first widget read, then reused for the process's life.
+        self._logo_json: str | None = None
 
     # ------------------------------------------------------------------ util
 
@@ -241,6 +243,25 @@ class XLayerRwaProvider:
                 lambda fut: fut.cancelled() or fut.exception())
         return out
 
+    def _logo_map(self) -> str:
+        """`{SYMBOL: data-uri}` as JSON, for baking into the widget HTML.
+
+        Built once and reused. Assets whose logo cannot be fetched are simply
+        absent, and the widget keeps its monogram for them — the fallback is
+        still the fallback, it just stops being the only outcome.
+        """
+        if self._logo_json is None:
+            allow = settings.rwa_allowlist
+            m: dict[str, str] = {}
+            for a in self.reg.assets:
+                if allow and a.symbol.upper() not in allow:
+                    continue
+                uri = logo_data_uri(getattr(a, "logo_url", ""))
+                if uri:
+                    m[a.symbol.upper()] = uri
+            self._logo_json = json.dumps(m)
+        return self._logo_json
+
     async def warm_prices_forever(self) -> None:
         """Refresh every listed asset's price on a slow, never-ending loop.
 
@@ -248,6 +269,14 @@ class XLayerRwaProvider:
         user asks, not to be quick — a burst here would trip the same rate limit
         it exists to avoid, and would do it while somebody is mid-trade.
         """
+        # Fetching forty logos takes ~12s. Done on the first widget read that
+        # would be twelve seconds of somebody waiting on a card, so it happens
+        # here instead, off the event loop because urllib blocks.
+        try:
+            await asyncio.to_thread(self._logo_map)
+        except Exception:  # pragma: no cover - cosmetic path
+            logging.getLogger("sarf").debug("logo warm failed", exc_info=True)
+
         allow = settings.rwa_allowlist
         while True:
             try:
@@ -596,7 +625,17 @@ class XLayerRwaProvider:
         for uri, (wname, html, desc) in WIDGETS.items():
             def _make(body: str):
                 def _read() -> str:
-                    return body
+                    # Logos are inlined into the page rather than fetched by it.
+                    # The host iframe's content policy blocks static.oklink.com,
+                    # so every remote logo silently failed and each asset fell
+                    # back to its monogram — a bought PLTRx position rendered as
+                    # a "P" in a coloured box. Baked in here it costs nothing per
+                    # message: this resource is read once and cached per session,
+                    # and it never enters the model's context the way a payload
+                    # field would.
+                    return body.replace(
+                        "/*__SARF_LOGOS__*/", f"window.SARF_LOGOS={self._logo_map()};"
+                    )
                 return _read
             mcp.resource(uri, name=wname, description=desc, mime_type=UI_MIME)(_make(html))
 

@@ -199,6 +199,39 @@ def _logo(url: str, size: int) -> "Image.Image | None":
         return None
 
 
+_DATA_URI_CACHE: dict[str, str] = {}
+
+
+def logo_data_uri(url: str, size: int = 48) -> str:
+    """A token logo as a self-contained `data:` PNG, or "" if unavailable.
+
+    The widget runs in the host's sandboxed iframe, and its content policy does
+    not allow images from static.oklink.com — the load simply fails and every
+    asset falls back to its monogram, which is why a bought position showed up
+    as a letter in a coloured box. An inlined image is part of the document
+    rather than a request, so there is no host to be allowed or blocked.
+
+    Deliberately small: these are baked into the widget HTML, so the size is
+    paid once per session per asset, not once per message.
+    """
+    if not url:
+        return ""
+    key = f"{url}@{size}"
+    if key in _DATA_URI_CACHE:
+        return _DATA_URI_CACHE[key]
+    out = ""
+    try:
+        im = _logo(url, size)
+        if im is not None:
+            buf = io.BytesIO()
+            im.save(buf, format="PNG", optimize=True)
+            out = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # pragma: no cover - cosmetic path
+        out = ""
+    _DATA_URI_CACHE[key] = out
+    return out
+
+
 def _monogram(d: "ImageDraw.ImageDraw", box, symbol: str, size: int) -> None:
     """The fallback mark: two letters on a hue derived from the ticker, so an
     asset keeps the same colour here as in the HTML card."""

@@ -140,12 +140,21 @@ const post=(m)=>window.parent.postMessage(Object.assign({jsonrpc:'2.0'},m),'*');
 
 // Token mark: monogram painted first, real logo layered on only once its bytes
 // decode. A blocked CSP or a 404 then leaves a filled square instead of a gap.
+// Prefer the logo baked into this page over any URL in the payload. The host
+// iframe's content policy blocks external image hosts, so a remote URL is a
+// load that quietly never happens; the inlined copy is part of the document.
+function logoFor(symbol, logo){
+  const inline=(window.SARF_LOGOS||{})[String(symbol||'').toUpperCase()];
+  return inline||logo||'';
+}
+
 function mark(symbol, logo){
   const m=$('div','mark sm');
   const base=String(symbol||'?').replace(/x$/,'').split(' ')[0];
   txt(m, base.slice(0,2).toUpperCase());
   let h=0; for(const c of base) h=(h*31+c.charCodeAt(0))%360;
   m.style.background='linear-gradient(140deg,hsl('+h+',62%,42%),hsl('+((h+38)%360)+',58%,30%))';
+  logo=logoFor(symbol,logo);
   if(logo){
     const im=new Image();
     im.onload=()=>{m.textContent='';m.style.background='#fff';im.className='logoImg';m.appendChild(im);_fit();};
@@ -223,6 +232,10 @@ def _page(body_js: str) -> str:
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<style>{_CSS}</style></head><body><div id='root'></div>"
+        # The logo map is substituted in when the resource is read, so the
+        # images travel with the page instead of being requested from a host
+        # the iframe's content policy will not allow.
+        "<script>/*__SARF_LOGOS__*/</script>"
         f"<script>{_BOOT}\n{body_js}</script></body></html>"
     )
 
@@ -254,14 +267,15 @@ function render(d){
   // Real logo on top of the monogram rather than instead of it: the monogram
   // is already painted and correct, so a blocked or 404 image leaves a filled
   // mark instead of a hole. Only swapped in once the bytes actually decode.
-  if(d.logo_url){
+  const src0=logoFor(d.symbol,d.logo_url);
+  if(src0){
     const im=new Image();
     im.onload=()=>{ mark.textContent=''; mark.style.background='#fff';
       im.className='logoImg'; mark.appendChild(im); _fit(); };
     im.onerror=()=>{};
     im.referrerPolicy='no-referrer';
     im.alt='';
-    im.src=d.logo_url;
+    im.src=src0;
   }
   idw.appendChild(mark);
 

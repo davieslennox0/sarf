@@ -424,6 +424,33 @@ def test_grant_signature_carries_the_spender_argument():
     assert data.startswith(expected)
 
 
+# --- widget logos ------------------------------------------------------------
+# The host iframe's content policy blocks external image hosts, so a logo named
+# by URL never loads and every asset falls back to its monogram — a bought
+# PLTRx position rendered as a "P" in a coloured box. Logos are inlined into
+# the page instead. If the placeholder ever disappears the substitution becomes
+# a silent no-op and the monogram comes back, so it is asserted here.
+
+def test_every_widget_has_a_logo_injection_point():
+    from sarf.xlayer.widget import WIDGETS
+
+    for uri, (_name, html, _desc) in WIDGETS.items():
+        assert "/*__SARF_LOGOS__*/" in html, f"{uri} lost its logo injection point"
+
+
+def test_widgets_prefer_the_inlined_logo_over_a_remote_url():
+    """A payload URL must never win over the baked-in copy."""
+    from sarf.xlayer.widget import WIDGETS
+
+    for uri, (_name, html, _desc) in WIDGETS.items():
+        if "logoFor(" not in html:
+            continue
+        assert "window.SARF_LOGOS" in html, f"{uri} does not read the inlined map"
+    order = WIDGETS["ui://sarf/order-card"][1]
+    assert "im.src=src0" in order, "the order card bypassed logoFor()"
+    assert "im.src=d.logo_url" not in order
+
+
 # --- grant lifetime ----------------------------------------------------------
 # A session key trades without asking. Its lifetime is therefore capped at the
 # passkey assertion that bought it rather than at the contract's 30-day ceiling.
