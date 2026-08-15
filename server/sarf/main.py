@@ -397,6 +397,19 @@ def run() -> None:
     for handler in log_config["handlers"].values():
         handler.setdefault("filters", []).append("redact_session_tokens")
 
+    # httpx logs one INFO line per outbound request and the price warmer polls
+    # OKX's quote endpoint continuously, so these drowned everything else:
+    # 98% of a 9.5MB stderr log was two repeated request lines. FastMCP's
+    # configure_logging() puts the root logger at INFO, which is what lets
+    # them propagate — pin the HTTP client loggers to WARNING instead. Set
+    # here rather than at import so dictConfig applies it, same as the filter.
+    log_config.setdefault("loggers", {}).update(
+        {
+            "httpx": {"level": "WARNING"},
+            "httpcore": {"level": "WARNING"},
+        }
+    )
+
     # proxy_headers: Caddy is the only client on loopback; trusting its
     # X-Forwarded-For gives the rate limiter real client IPs instead of one
     # shared 127.0.0.1 bucket for everyone.
