@@ -116,7 +116,10 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         addr = validate_evm_address(body.get("address"))
         verify_wallet_challenge(addr, body.get("signature"))
         db.upsert_user(addr, "wallet")
-        token, ttl = auth.mint_session(db, addr)
+        # Signed in on the site: that is the connection, and naming it as such
+        # keeps the account page honest about which sessions came from a
+        # browser and which from an assistant.
+        token, ttl = auth.mint_session(db, addr, client_name="Sarf website")
         return {
             "token": token, "address": addr, "expires_in": ttl,
             "chain_id": CHAIN_ID,
@@ -189,6 +192,41 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             raise HTTPException(400, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    @r.get("/connections")
+    async def connections(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """What is connected to this wallet right now.
+
+        One row per live session: the assistant that holds a connector, and the
+        browser you are reading this in. The name is the client's own OAuth
+        registration — Claude registers as Claude — so it is a label rather
+        than an authenticated claim, and it authorises nothing. Sessions are
+        short-lived by design, so this list is "connected now", not a history.
+        """
+        addr = _session_addr(authorization)
+        rows = db.active_sessions(addr)
+        return {
+            "address": addr,
+            "count": len(rows),
+            "connections": [
+                {
+                    "name": row["client_name"] or "Unnamed connector",
+                    # Sessions minted before the client was recorded, and
+                    # legacy ?key= connectors, have no name. Said plainly
+                    # rather than guessed at.
+                    "identified": bool(row["client_name"]),
+                    "kind": "browser" if row["client_name"] == "Sarf website" else "assistant",
+                    "connected_at": int(row["created_at"]),
+                    "expires_at": int(row["expires_at"]),
+                }
+                for row in rows
+            ],
+            "note": (
+                "Each connection is one session token. Ending the session in "
+                "the account menu revokes every one of them, which is what "
+                "disconnects the assistant."
+            ),
+        }
 
     # ---------------------------------------------------------------- grants
     # The session-key flow. Sarf prepares the transactions; the user's wallet

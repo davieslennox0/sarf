@@ -672,3 +672,26 @@ def test_every_balance_failing_is_an_error_not_an_empty_wallet():
             asyncio.run(rpc.erc20_balances([ADDR_A, ADDR_B], ADDR_A))
     finally:
         rpc._call = original
+
+
+# --- what is connected -------------------------------------------------------
+# "A session is live" is a poor answer to "what is connected to my wallet".
+# The client's OAuth registration name is carried onto the session so the
+# account page can name it — and it is a LABEL, never an authorisation input.
+
+def test_active_sessions_name_their_client_and_drop_dead_ones(db):
+    from sarf import auth
+
+    auth.mint_session(db, ADDR_A, client_name="Claude", client_id="cid-claude")
+    auth.mint_session(db, ADDR_A, client_name="Sarf website")
+    auth.mint_session(db, ADDR_A)                      # legacy ?key=, unnamed
+    auth.mint_session(db, ADDR_B, client_name="Claude")  # another wallet
+
+    live = db.active_sessions(ADDR_A)
+    assert len(live) == 3, "another wallet's sessions must not appear"
+    assert {s["client_name"] for s in live} == {"Claude", "Sarf website", None}
+    # The token id is a credential half and must never come back out.
+    assert all("token" not in s for s in live)
+
+    db.revoke_sessions_for_address(ADDR_A, reason="user_logout")
+    assert db.active_sessions(ADDR_A) == [], "ending the session disconnects everything"

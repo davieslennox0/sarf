@@ -1,154 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { api, ensureSession, getSession, verifyPasskey } from '../api.js';
-import { connect, currentAccount, sendTransaction, sendWithAuthorization } from '../wallet.js';
-import { formatLeft, useGrantClock } from '../grant.js';
-
 /**
- * Security: what protects the account, and the controls that prove it.
+ * The session-grant panel: the opt-in that lets trades run inside Claude or
+ * ChatGPT without a wallet prompt each time.
  *
- * This page absorbed /settings on 2026-08-10. They were the same subject split
- * across two URLs — one explaining that a passkey gates transactions, the other
- * being where you actually use it — and the split had a cost: every server
- * error message pointed users at /security, which held only prose, so a locked
- * out user was sent to a page with nothing to click.
+ * It used to live on /security, a page that existed to hold this one control
+ * plus three paragraphs explaining it. That page is gone — an account has one
+ * place, and a control that changes what an agent may spend belongs beside the
+ * agent it applies to, not on a separate tab you have to know to visit.
  *
- * The explanation is now short and sits above the controls rather than instead
- * of them. Passkey REGISTRATION still does not live here: it happens once at
- * sign-in, via the blocking prompt in App.jsx.
+ * Unchanged in the move: the passkey is required to obtain a key, the caps and
+ * the expiry are enforced by the contract, and revoking is a transaction from
+ * the user's own wallet that needs nothing from Sarf.
  */
-export default function SecurityPage() {
-  const [status, setStatus] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const [err, setErr] = useState(null);
 
-  // Three states, not two: registered, not registered, and NOT YET KNOWN.
-  // Collapsing the third into "not registered" is what turned a slow wallet
-  // into "Register a passkey first" on an account that had one all along —
-  // and since this load runs once on mount, that verdict then stuck for the
-  // life of the page with no way to clear it.
-  const load = async () => {
-    try {
-      // Do not force connect() here. This page is reachable while Privy is
-      // still rehydrating, and connect() at mount either throws or throws up a
-      // modal nobody asked for; either way status stays null and the passkey
-      // gate reads as a refusal. Wait for the account instead.
-      const addr = await currentAccount();
-      if (!addr) return false;
-      await ensureSession(addr);
-      setStatus(await api.passkeyStatus());
-      return true;
-    } catch (e) {
-      setErr(e.message);
-      return false;
-    }
-  };
-
-  useEffect(() => {
-    let live = true;
-    let tries = 0;
-    const tick = async () => {
-      if (!live) return;
-      if (await load()) return;
-      if (++tries < 10) setTimeout(tick, 500);
-    };
-    tick();
-    return () => { live = false; };
-  }, []);
-
-  // Sign-in already told us whether this account has a passkey, so a status
-  // fetch that has not landed yet does not have to mean "no". Falling back to
-  // it keeps the page honest during rehydration; null means genuinely unknown.
-  const hasPasskey = status ? status.registered : (getSession()?.hasPasskey ?? null);
-
-  const supported = typeof window !== 'undefined' && window.PublicKeyCredential;
-
-  return (
-    <section>
-      <h1>Security</h1>
-
-      <p className="sub">
-        Sarf never holds your wallet key. It builds and prices transactions;
-        your passkey is what approves them.
-      </p>
-
-      <div className="card accent">
-        <h3>Three things worth knowing</h3>
-        <p>
-          <b>No keys, ever.</b> Sarf cannot sign for your wallet. Transfers to
-          another address always need a fresh passkey and can never be delegated.
-          <br /><br />
-          <b>Your passkey gates every transaction.</b> One verification covers a
-          session; after it expires the next trade asks again.
-          <br /><br />
-          <b>Session keys are capped in the contract.</b> A session key can only
-          swap listed assets, under the per-trade and daily limits you set, until
-          it expires — enforced on{' '}
-          <a href="https://web3.okx.com/explorer/x-layer/address/0x30eeC302C6D98253dCcA7d970343dBb95c920D76"
-             target="_blank" rel="noreferrer">X Layer</a>, not by us. Revoking is
-          a transaction from your own wallet, so it works whatever we do.
-        </p>
-      </div>
-
-      {/*
-        Passkey management used to live here: register, verify, remove, plus a
-        step-up threshold readout. It is gone because the passkey stopped being
-        a setting. You register it when you sign in, and it gates every
-        transaction from then on — there is no threshold to read and nothing to
-        turn on. A page offering to "remove passkeys" also invited people to
-        disable the only gate on their session key, which is not a preference
-        worth exposing next to a spending limit.
-
-        Status still surfaces where it is actionable: at sign-in if none is
-        registered, and in the chat prompt when one needs verifying.
-      */}
-
-      {!supported && (
-        <p className="error">This browser does not support passkeys (WebAuthn).</p>
-      )}
-
-      {status && (
-        <div className="kv">
-          <div><span>Wallet</span><b>{status.address}</b></div>
-          <div><span>Passkey</span>
-            <b className={status.registered ? 'ok' : 'error'}>
-              {status.registered ? 'registered — gates every transaction' : 'not registered'}
-            </b>
-          </div>
-        </div>
-      )}
-
-      {/*
-        The recovery path, and the reason it has to exist.
-
-        Registration normally happens at sign-in, so removing passkey
-        MANAGEMENT from this page was right. Removing registration entirely was
-        not: onboarding lets you skip the prompt ("a passkey prompt that cannot
-        be dismissed is a dead end on any device where the ceremony fails"), and
-        the skip handler's own comment pointed here as the way back. Anyone who
-        signed up before the passkey became mandatory, or who skipped once, was
-        left holding an account that could not transact and could not register —
-        locked out by a gate with no door.
-
-        Shown ONLY when none is registered. Once one exists there is nothing to
-        manage here, which is the state this page was trimmed down to.
-      */}
-      {/*
-        No standing "verify" button, deliberately.
-
-        A passkey prompt belongs to the action that needs it — Sign.jsx calls
-        verifyPasskey() when a trade requires step-up, so the device prompt
-        appears because you are approving something, not because you remembered
-        to press a button here first. A button on this page was a second way to
-        do the same thing that only worked if you knew to come and find it.
-      */}
-      {msg && <p className="ok">{msg}</p>}
-      {err && <p className="error">{err}</p>}
-
-      <SessionGrant onMessage={setMsg} onError={setErr} passkey={hasPasskey} />
-    </section>
-  );
-}
+import React, { useEffect, useState } from 'react';
+import { api, verifyPasskey } from './api.js';
+import { currentAccount, sendTransaction, sendWithAuthorization } from './wallet.js';
+import { formatLeft, useGrantClock } from './grant.js';
 
 /**
  * Lifetimes the user can pick, in days. The contract's own ceiling is 30 days,
@@ -173,7 +40,7 @@ const LIFETIMES = [
  * those clauses is enforced by the contract, not by this page, and the page
  * should not imply otherwise.
  */
-function SessionGrant({ onMessage, onError, passkey }) {
+export default function SessionGrant({ onMessage, onError, passkey }) {
   const [g, setG] = useState(null);
   const [busy, setBusy] = useState(false);
   const [days, setDays] = useState(HOUR);

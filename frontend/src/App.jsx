@@ -5,7 +5,6 @@ import Activity from './pages/Activity.jsx';
 import Portfolio from './pages/Portfolio.jsx';
 import Markets from './pages/Markets.jsx';
 import How from './pages/How.jsx';
-import SecurityInfo from './pages/SecurityInfo.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
@@ -75,7 +74,7 @@ function AccountControl({ session, setSession }) {
             MCP connector — ending it here ends it in Claude.
           </p>
           <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <Link className="cta-btn" to="/security" style={{ padding: '9px 14px', fontSize: 11 }}
+            <Link className="cta-btn" to="/dashboard/security" style={{ padding: '9px 14px', fontSize: 11 }}
                   onClick={() => setOpen(false)}>
               Security
             </Link>
@@ -295,9 +294,9 @@ export default function App() {
               session rather than shown and then refused — each of them opens by
               asking the wallet who you are.
 
-              Security moved into that group: it is the account's own controls
-              (session key, caps, revoke), so with no wallet connected it has
-              nothing to show and the link only led to a sign-in prompt. */}
+              Security is not in the list at all any more: it was one control
+              and three paragraphs about it, and it now unfolds inside the
+              dashboard beside the agent it applies to. */}
           <Link className={pathname === '/' ? 'on' : ''} to="/">Home</Link>
           <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
           <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
@@ -306,7 +305,6 @@ export default function App() {
               <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
               <Link className={pathname === '/dashboard' ? 'on' : ''} to="/dashboard">Dashboard</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
-              <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
             </>
           )}
         </div>
@@ -325,7 +323,10 @@ export default function App() {
           <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
           <Route path="/markets" element={<Markets />} />
           <Route path="/how" element={<How />} />
-          <Route path="/security" element={gate('Your security settings', <SecurityInfo />)} />
+          {/* /security is now a section of the dashboard. Kept as a redirect
+              because the URL is printed in server error messages ("verify at
+              …/security"), in the README, and in links already handed out. */}
+          <Route path="/security" element={<Navigate to="/dashboard/security" replace />} />
           {/* /connect was the setup page; its content is now the whole of
               "How it works", since how it works and how you set it up were
               never two questions. Redirected rather than removed: the URL was
@@ -335,7 +336,7 @@ export default function App() {
           {/* Account-only. */}
           {/* /settings folded into /security: same subject, two URLs, and the
               half with the controls was not the half users were sent to. */}
-          <Route path="/settings" element={<Navigate to="/security" replace />} />
+          <Route path="/settings" element={<Navigate to="/dashboard/security" replace />} />
           <Route path="/dashboard" element={gate('Your dashboard', <Dashboard />)} />
           {/* Same component: no :section renders the index, a section renders
               its own page. One data fetch, two layouts. */}
@@ -367,8 +368,6 @@ export default function App() {
           <div className="footlinks">
             <Link to="/markets">Markets</Link>
             <Link to="/how">How it works</Link>
-            {/* Same rule as the nav: an account page is not a site page. */}
-            {signedIn && <Link to="/security">Security</Link>}
             <a href="https://web3.okx.com/explorer/x-layer" target="_blank" rel="noreferrer">
               Explorer
             </a>

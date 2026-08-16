@@ -227,7 +227,14 @@ def build_oauth(db: Database) -> APIRouter:
         digest = hashlib.sha256(verifier.encode()).digest()
         if base64.urlsafe_b64encode(digest).rstrip(b"=").decode() != rec["code_challenge"]:
             return _token_error("invalid_grant", "PKCE verification failed")
-        token_str, ttl = auth.mint_session(db, rec["address"])
+        # Carry the client's registered name onto the session, so the account
+        # page can say what is connected — "Claude", not "a session".
+        client = db.get_oauth_client(rec["client_id"])
+        token_str, ttl = auth.mint_session(
+            db, rec["address"],
+            client_name=(client or {}).get("client_name"),
+            client_id=rec["client_id"],
+        )
         return JSONResponse(
             {"access_token": token_str, "token_type": "Bearer", "expires_in": ttl},
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},

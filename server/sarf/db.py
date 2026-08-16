@@ -189,6 +189,16 @@ _MIGRATIONS = [
     # authorised on-chain.
     "UPDATE grants SET approval_mode='autonomous' WHERE approval_mode<>'autonomous'",
     "UPDATE grants SET autonomous_limit=per_trade_cap WHERE autonomous_limit<=0",
+    # Which client this session was minted for. The dashboard could say "a
+    # session is live" and nothing more, which is a poor answer to the question
+    # people actually have — *what* is connected to my wallet? The name comes
+    # from RFC 7591 dynamic registration, i.e. the client's own declaration
+    # ("Claude"), so it is a label, not an authenticated fact: it says which
+    # registration minted the token, and two clients could register the same
+    # name. It is displayed as such and nothing is authorised on the strength
+    # of it.
+    "ALTER TABLE sessions ADD COLUMN client_name TEXT",
+    "ALTER TABLE sessions ADD COLUMN client_id TEXT",
 ]
 
 # Stop-loss / take-profit levels, one row per (address, symbol).
@@ -419,7 +429,9 @@ class Database:
         cur = self._conn.execute("SELECT DISTINCT user_address FROM obligation_caps")
         return [r[0] for r in cur.fetchall()]
 
-    def put_session(self, token_id: str, address: str, ttl_seconds: int) -> None:
+    def put_session(self, token_id: str, address: str, ttl_seconds: int,
+                    *, client_name: str | None = None,
+                    client_id: str | None = None) -> None:
         """Store a session row. Token minting/verification (HMAC over the id)
         lives in auth.py; this table only decides expiry and revocation."""
         now = time.time()
@@ -434,9 +446,37 @@ class Database:
                 (now - REVOKED_SESSION_RETENTION_SECONDS,),
             )
             self._conn.execute(
-                "INSERT INTO sessions (token, address, created_at, expires_at) VALUES (?,?,?,?)",
-                (token_id, address, now, now + ttl_seconds),
+                "INSERT INTO sessions (token, address, created_at, expires_at,"
+                " client_name, client_id) VALUES (?,?,?,?,?,?)",
+                (token_id, address, now, now + ttl_seconds, client_name, client_id),
             )
+
+    def active_sessions(self, address: str) -> list[dict[str, Any]]:
+        """Live sessions for an address, newest first.
+
+        What "connected" means on the dashboard: an unrevoked, unexpired token.
+        The client name is whatever the OAuth client registered as — Claude
+        calls itself Claude — and is None for a session minted on the website
+        or for a legacy ?key= connector, which the caller renders as such
+        rather than inventing an attribution.
+        """
+        rows = self._conn.execute(
+            "SELECT token, created_at, expires_at, client_name, client_id FROM sessions "
+            "WHERE address=? AND revoked_at IS NULL AND expires_at > ? "
+            "ORDER BY created_at DESC",
+            (address.lower(), time.time()),
+        ).fetchall()
+        return [
+            {
+                # The token id is a credential half — never returned. The row is
+                # identified by when it was created, which is all the UI needs.
+                "created_at": r[1],
+                "expires_at": r[2],
+                "client_name": r[3],
+                "client_id": r[4],
+            }
+            for r in rows
+        ]
 
     def session_address(self, token_id: str) -> str | None:
         r = self._conn.execute(

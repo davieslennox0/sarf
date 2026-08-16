@@ -77,6 +77,9 @@ export const api = {
   transferPrepare: (body) =>
     req('/api/transfer/prepare', { method: 'POST', body: JSON.stringify(body) }),
 
+  // What is holding a live session for this wallet — the assistants and
+  // this browser. Read by the dashboard's Agents section.
+  connections: () => req('/api/connections'),
   grant: () => req('/api/grant'),
   grantPrepare: (body) =>
     req('/api/grant/prepare', { method: 'POST', body: JSON.stringify(body) }),

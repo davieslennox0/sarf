@@ -675,6 +675,31 @@ pre, code { overflow-x: auto; max-width: 100%; }
   nav .links.open a { padding: 11px 4px; }
 }
 
+/* ---- folding sections (the dashboard) ----------------------------------- */
+/* Closed, this is the index it replaced: one line per section saying what is
+   in it. Open, the content sits in place — no navigation, so comparing what is
+   connected against what it may spend is a scroll rather than two page loads. */
+.folds { margin-top: 24px; border-top: 1px solid var(--line); }
+.fold { border-bottom: 1px solid var(--line); }
+.fold-head {
+  display: flex; align-items: center; gap: 14px; width: 100%;
+  padding: 18px 4px; background: none; border: 0; border-radius: 0;
+  text-align: left; text-transform: none; letter-spacing: normal;
+  font-family: var(--sans); font-size: inherit; color: inherit; cursor: pointer;
+}
+.fold-head:hover { background: var(--panel); border: 0; }
+.fold-main { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.fold-main b { font-size: 15px; font-family: var(--mono); font-weight: 600; }
+.fold.on .fold-main b { color: var(--amber); }
+.fold-go {
+  font-family: var(--mono); font-size: 18px; color: var(--paper-dim);
+  flex: none; line-height: 1; width: 18px; text-align: center;
+}
+.fold-body { padding: 2px 4px 26px; }
+/* The first block inside an open section should not add a second gap on top of
+   the header's padding. */
+.fold-body > .kv:first-child, .fold-body > .card:first-child { margin-top: 0; }
+
 /* ---- tappable row list (dashboard index) -------------------------------- */
 /* Rows, not cards: an index should say what exists and get out of the way.
    Sized for a thumb — the whole row is the target, not the label inside it. */

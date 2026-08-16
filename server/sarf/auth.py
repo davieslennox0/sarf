@@ -86,15 +86,22 @@ def _sign(token_id: str) -> str:
     return hmac.new(settings.session_secret.encode(), token_id.encode(), hashlib.sha256).hexdigest()
 
 
-def mint_session(db: "Database", address: str, ttl_seconds: int | None = None) -> tuple[str, int]:
+def mint_session(db: "Database", address: str, ttl_seconds: int | None = None,
+                 *, client_name: str | None = None,
+                 client_id: str | None = None) -> tuple[str, int]:
     """Create a session for an address whose ownership was JUST proven.
 
     Returns (token, ttl_seconds). Only api.py's auth_verify may call this,
     after the sidecar accepted the wallet/zkLogin signature.
+
+    `client_name` records WHICH client the token was minted for, so the account
+    can be shown what is connected to it rather than just that something is.
+    It is the client's own registered name and is never trusted for anything —
+    it decides no permission and gates nothing.
     """
     ttl = ttl_seconds if ttl_seconds is not None else settings.session_ttl_seconds
     token_id = secrets.token_hex(16)
-    db.put_session(token_id, address, ttl)
+    db.put_session(token_id, address, ttl, client_name=client_name, client_id=client_id)
     return f"sarf_sess_{token_id}.{_sign(token_id)}", ttl
 
 
