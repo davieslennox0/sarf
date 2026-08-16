@@ -106,8 +106,11 @@ export default function Portfolio() {
             {/* "positions" read as the whole ledger; it is only the equity
                 sleeve, which is now one part of a list that also holds cash. */}
             <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>tokenized stocks</span></div>
-            <div><b>{data.usdt_balance}</b><span>USDT</span></div>
-            <div><b>{Number(data.gas_balance_okb || 0).toFixed(5)}</b><span>OKB gas</span></div>
+            {/* The USDT and OKB tiles that sat here are gone. They are rows in
+                the ledger below now, with a value and a quantity like every
+                other holding — a tile repeating the same balance in a second
+                format, directly above the row that states it properly, was the
+                only place on the page that said a number twice. */}
           </div>
 
           {unpriced.length > 0 && (

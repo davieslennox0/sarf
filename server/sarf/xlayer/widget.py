@@ -69,6 +69,10 @@ body{
 .brand{font-weight:600;letter-spacing:.06em;font-size:11px}
 .brand span{color:var(--amber)}
 .tag{font-size:10px;color:var(--dim);letter-spacing:.1em}
+/* The CASH / GAS label on a holding row. Small, outlined, and never the
+   same weight as the ticker it sits beside. */
+.sym .tag{font-size:9px;padding:1px 6px;border:1px solid var(--line);
+  border-radius:999px;vertical-align:1px}
 .tag.ok{color:var(--green)}
 .title{padding:13px 14px 2px;font-size:19px;font-weight:600;color:var(--amber)}
 .sub{padding:0 14px 11px;color:var(--dim);font-size:11px}
@@ -376,17 +380,32 @@ function render(d){
   s.textContent='/ HOLDINGS'; b.appendChild(s); head.appendChild(b);
   txt(head.appendChild($('div','tag')),'X LAYER \\u00b7 196'); card.appendChild(head);
 
-  const ps=(d.positions||[]).slice().sort((a,b)=>(b.value_usd||0)-(a.value_usd||0));
+  // USDT and OKB are holdings, listed with everything else.
+  //
+  // They used to appear only in the subtitle — "3 positions · 412 USDT ·
+  // 0.004 OKB gas" — which said them twice over in a form you cannot compare
+  // against anything: no value, no weight, no row. A wallet that was mostly
+  // stablecoin read as a three-asset portfolio with a footnote. They are rows
+  // now, and the subtitle that carried them is gone.
+  //
+  // They stay out of `positions` server-side, deliberately: that array is the
+  // equity sleeve the concentration analysis is computed against, and cash is
+  // not a single-name exposure. Listing them together is presentation;
+  // measuring them together would be wrong.
+  const extra=[];
+  if(d.usdt&&parseFloat(d.usdt.quantity||'0')>0) extra.push(Object.assign({tag:'CASH'},d.usdt));
+  if(d.okb&&parseFloat(d.okb.quantity||'0')>0) extra.push(Object.assign({tag:'GAS'},d.okb));
+  const ps=(d.positions||[]).concat(extra)
+    .sort((a,b)=>(b.value_usd||0)-(a.value_usd||0));
   const total=d.total_value_usd!=null?d.total_value_usd:d.positions_value_usd;
   txt(card.appendChild($('div','title')), total!=null
     ? '$'+Number(total).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})
     : '\\u2014');
   txt(card.appendChild($('div','sub')),
-    ps.length+' position'+(ps.length===1?'':'s')+' \\u00b7 '+
-    (d.usdt_balance||'0')+' USDT \\u00b7 '+(d.gas_balance_okb||'0')+' OKB gas');
+    ps.length+' holding'+(ps.length===1?'':'s')+' \\u00b7 X Layer');
 
   if(!ps.length){
-    txt(card.appendChild($('div','empty')),'No tokenized stocks in this wallet yet.');
+    txt(card.appendChild($('div','empty')),'Nothing held in this wallet yet.');
   } else {
     const rows=$('div','rows');
     ps.slice(0,8).forEach(p=>{
@@ -394,7 +413,12 @@ function render(d){
       const l=$('div'); l.style.display='flex'; l.style.alignItems='center'; l.style.gap='9px';
       l.appendChild(mark(p.symbol,p.logo_url));
       const lt=$('div');
-      txt(lt.appendChild($('div','sym')),p.symbol);
+      const sym=$('div','sym'); txt(sym,p.symbol);
+      // Cash and gas are labelled rather than left to be read as equities
+      // sitting in the same list.
+      if(p.tag){ const tg=$('span','tag'); tg.style.marginLeft='7px';
+                 txt(tg,p.tag); sym.appendChild(tg); }
+      lt.appendChild(sym);
       txt(lt.appendChild($('div','muted')),p.quantity);
       l.appendChild(lt);
       const rr=$('div'); rr.style.textAlign='right'; rr.style.minWidth='110px';
@@ -420,8 +444,9 @@ function render(d){
   if((d.unpriced_positions||[]).length)
     t.push(['Not priced',(d.unpriced_positions||[]).join(', ')+
       ' could not be quoted just now and are excluded from the total.']);
-  if(ps.length===1) t.push(['Breadth','One position means the whole wallet moves with '+
-    'one price. Concentration is measurable \\u2014 ask for an analysis.']);
+  if((d.positions||[]).length===1) t.push(['Breadth','One tokenized stock means the '+
+    'equity side of this wallet moves with one price. Concentration is measurable '+
+    '\\u2014 ask for an analysis.']);
   if(t.length) card.appendChild(tips(t.slice(0,2)));
 
   const foot=$('div','foot');
@@ -562,7 +587,7 @@ function render(d){
 # body is not enough — a session that already fetched a card keeps rendering the
 # old one. v2 carries the inlined token logos; without a new URI the icons stay
 # missing for everyone already connected, which is exactly what happened.
-WIDGET_VERSION = 2
+WIDGET_VERSION = 3
 
 
 def _uri(name: str) -> str:
@@ -593,6 +618,13 @@ LEGACY_WIDGETS = {
     "ui://sarf/portfolio-card": ("sarf_portfolio_card_v1", PORTFOLIO_CARD),
     "ui://sarf/list-card": ("sarf_list_card_v1", LIST_CARD),
     "ui://sarf/analysis-card": ("sarf_analysis_card_v1", ANALYSIS_CARD),
+    # v2 URIs, still readable by a session that fetched the tool definitions
+    # before the version bump. They serve the CURRENT html: an old URI is
+    # stale by cache, not by content.
+    "ui://sarf/order-card-v2": ("sarf_order_card_v2", ORDER_CARD),
+    "ui://sarf/portfolio-card-v2": ("sarf_portfolio_card_v2", PORTFOLIO_CARD),
+    "ui://sarf/list-card-v2": ("sarf_list_card_v2", LIST_CARD),
+    "ui://sarf/analysis-card-v2": ("sarf_analysis_card_v2", ANALYSIS_CARD),
 }
 
 UI_MIME = "text/html;profile=mcp-app"
