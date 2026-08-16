@@ -186,10 +186,18 @@ def analyze(portfolio: dict[str, Any]) -> dict[str, Any]:
     positions = [p for p in portfolio.get("positions") or [] if p.get("value_usd")]
     unpriced = list(portfolio.get("unpriced_positions") or [])
     equity = float(portfolio.get("positions_value_usd") or 0.0)
+    # Both stablecoins count as the cash buffer. USDC arrives here from fiat
+    # deposits (CCTP mints it natively on X Layer), and a buffer measure that
+    # counted only USDT would report a wallet as having no dry powder while it
+    # sat on the dollars it had just deposited.
     try:
         stable = float(portfolio.get("usdt_balance") or 0)
     except (TypeError, ValueError):
         stable = 0.0
+    try:
+        stable += float(portfolio.get("usdc_balance") or 0)
+    except (TypeError, ValueError):
+        pass
     # OKB carries real value, so it belongs in the wallet total. It is kept out
     # of `equity` on purpose: concentration is measured against the tokenized-
     # stock sleeve, and folding a gas coin in would dilute every weight by

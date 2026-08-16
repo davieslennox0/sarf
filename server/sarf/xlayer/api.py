@@ -27,7 +27,7 @@ from .. import auth, passkey
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError
-from . import analysis, delegation, rpc
+from . import analysis, delegation, deposit, rpc
 from .evm import validate_evm_address, validate_tx_hash
 from .okx_dex import DexError, OkxDexClient
 from .registry import CHAIN_ID, EXPLORER_TX, XStocksRegistry
@@ -192,6 +192,97 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             raise HTTPException(400, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    # -------------------------------------------------------------- deposits
+    # Dollars in, by burn and mint. See xlayer/deposit.py for the route and
+    # why it is CCTP rather than a bridge. Sarf builds; the user signs the
+    # burn; the relayer submits the mint, which it can only ever deliver to
+    # the address written into the message the user signed.
+
+    @r.get("/deposit/quote")
+    async def deposit_quote(amount: float, fast: bool = True) -> dict[str, Any]:
+        try:
+            return deposit.quote(amount, fast=fast)
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        except deposit.DepositError as e:
+            raise HTTPException(502, str(e))
+
+    @r.post("/deposit/prepare")
+    async def deposit_prepare(body: dict[str, Any],
+                              authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """The unsigned approve + burn, for the session's own wallet.
+
+        The address is the session's, never the caller's: a deposit built for
+        someone else's address would mint someone else's funds, and there is
+        no reason this endpoint should be able to express that.
+        """
+        addr = _session_addr(authorization)
+        try:
+            return deposit.prepare(body.get("amount"), addr,
+                                   fast=bool(body.get("fast", True)))
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        except deposit.DepositError as e:
+            raise HTTPException(502, str(e))
+
+    @r.get("/deposit/allowance")
+    async def deposit_allowance(amount: float,
+                                authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Whether the Base approval is already in place for this amount."""
+        addr = _session_addr(authorization)
+        try:
+            need = deposit.units(amount)
+            have = deposit.allowance(addr)
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        except deposit.DepositError as e:
+            raise HTTPException(502, str(e))
+        return {"enough": have >= need, "allowance": str(have), "needed": str(need)}
+
+    @r.post("/deposit/complete")
+    async def deposit_complete(body: dict[str, Any],
+                               authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Finish a deposit: fetch Circle's attestation and mint on X Layer.
+
+        Idempotent in the way that matters — CCTP records spent nonces, so a
+        second submission of the same message reverts on-chain rather than
+        minting twice. Pending is a normal answer; the caller polls.
+        """
+        _session_addr(authorization)
+        try:
+            tx_hash = validate_tx_hash(body.get("tx_hash"))
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        try:
+            att = deposit.attestation(tx_hash)
+        except deposit.DepositError as e:
+            raise HTTPException(502, str(e))
+        if not att.get("ready"):
+            return {"settled": False, "state": att.get("state"),
+                    "detail": att.get("detail"),
+                    "note": "Circle has not attested the burn yet. Poll this again."}
+        try:
+            mint_hash = await delegation.relay(
+                to=deposit.MESSAGE_TRANSMITTER_V2,
+                data=deposit.receive_calldata(att["message"], att["attestation"]),
+                gas_limit=400_000,
+            )
+        except delegation.DelegationError as e:
+            raise HTTPException(503, str(e))
+        except Exception as e:  # pragma: no cover - RPC/upstream failure
+            raise HTTPException(502, f"the mint could not be submitted: {e}")
+        return {
+            "settled": True,
+            "burn_tx": tx_hash,
+            "mint_tx": mint_hash,
+            "explorer_url": EXPLORER_TX.format(mint_hash),
+            "note": (
+                "Minted on X Layer to your own address. Sarf's relayer paid the "
+                "gas and could not have sent it anywhere else — the recipient is "
+                "inside the message you signed."
+            ),
+        }
 
     @r.get("/connections")
     async def connections(authorization: str | None = Header(default=None)) -> dict[str, Any]:

@@ -77,6 +77,11 @@ export default function Portfolio() {
   if (data?.usdt && Number(data.usdt.quantity) > 0) {
     cashAndGas.push({ ...data.usdt, tag: 'CASH' });
   }
+  // USDC is what a fiat deposit mints, so a wallet that has just been funded
+  // holds it and nothing else — leaving it out would show that wallet empty.
+  if (data?.usdc && Number(data.usdc.quantity) > 0) {
+    cashAndGas.push({ ...data.usdc, tag: 'CASH' });
+  }
   if (data?.okb && Number(data.okb.quantity) > 0) {
     cashAndGas.push({ ...data.okb, tag: 'GAS' });
   }

@@ -6,6 +6,7 @@ import Portfolio from './pages/Portfolio.jsx';
 import Markets from './pages/Markets.jsx';
 import How from './pages/How.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Deposit from './pages/Deposit.jsx';
 import Sign from './pages/Sign.jsx';
 import Authorize from './pages/Authorize.jsx';
 import { api, clearSession, getSession, registerPasskey } from './api.js';
@@ -302,6 +303,7 @@ export default function App() {
           <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
           {signedIn && (
             <>
+              <Link className={pathname === '/deposit' ? 'on' : ''} to="/deposit">Deposit</Link>
               <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
               <Link className={pathname === '/dashboard' ? 'on' : ''} to="/dashboard">Dashboard</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
@@ -320,6 +322,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           {/* Portfolio is account-only. It used to read any pasted address,
               which made a wallet-shaped page look public. */}
+          <Route path="/deposit" element={gate('Depositing funds', <Deposit />)} />
           <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
           <Route path="/markets" element={<Markets />} />
           <Route path="/how" element={<How />} />
@@ -376,7 +379,7 @@ export default function App() {
         <p className="fine" style={{ margin: 0, textAlign: 'left' }}>
           Synthetic exposure. xStocks track the underlying share price only — no
           ownership, dividends, or voting rights, and redemption depends on the
-          issuer. Sarf is not a broker and is not a licensed adviser. A flat $0.10
+          issuer. Sarf is not a broker and is not a licensed adviser. A flat $0.01
           platform fee is charged per swap in the stablecoin leg, inside the same
           transaction you sign; network gas is separate and paid in OKB.
         </p>

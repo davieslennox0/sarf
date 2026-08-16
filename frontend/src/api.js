@@ -80,6 +80,16 @@ export const api = {
   // What is holding a live session for this wallet — the assistants and
   // this browser. Read by the dashboard's Agents section.
   connections: () => req('/api/connections'),
+  // Deposits: dollars in, by burn and mint. The quote comes from Circle, the
+  // transactions are built server-side and signed by the user on Base.
+  depositQuote: (amount) => req(`/api/deposit/quote?amount=${encodeURIComponent(amount)}`),
+  depositAllowance: (amount) =>
+    req(`/api/deposit/allowance?amount=${encodeURIComponent(amount)}`),
+  depositPrepare: (amount, fast = true) =>
+    req('/api/deposit/prepare', { method: 'POST', body: JSON.stringify({ amount, fast }) }),
+  depositComplete: (txHash) =>
+    req('/api/deposit/complete', { method: 'POST', body: JSON.stringify({ tx_hash: txHash }) }),
+
   grant: () => req('/api/grant'),
   grantPrepare: (body) =>
     req('/api/grant/prepare', { method: 'POST', body: JSON.stringify(body) }),

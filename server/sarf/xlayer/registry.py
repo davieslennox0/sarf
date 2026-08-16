@@ -79,6 +79,22 @@ NATIVE = QuoteAsset(
     is_native=True,
 )
 
+# Circle's native USDC on X Layer — the asset a CCTP deposit mints, so the
+# money a user brings in has to be nameable here or it arrives as something
+# the rest of the product cannot see.
+#
+# Verified on chain rather than taken from a token list: currency() returns
+# "USD", decimals 6, and it has a masterMinter — the Circle FiatToken
+# interface, not a wrapper wearing the ticker. It is NOT the quote asset:
+# pricing and caps stay denominated in USDT (reg.quote), and this is a
+# tradable stable alongside it.
+USDC = QuoteAsset(
+    symbol="USDC",
+    onchain_symbol="USDC",
+    address="0xb6ceceab302e2e4948951ee7843fc24e92933061",
+    decimals=6,
+)
+
 
 class XStocksRegistry:
     """Immutable, load-once view of the tradable universe."""

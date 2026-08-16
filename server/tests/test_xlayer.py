@@ -248,10 +248,12 @@ def test_flat_fee_becomes_the_right_percentage(monkeypatch):
     monkeypatch.setattr(m, "settings", Settings())
     for order_usd in (20.0, 100.0, 1000.0, 25_000.0):
         f = m.XLayerRwaProvider.fee_plan(order_usd)
-        assert f["charge"] and abs(f["usd"] - 0.10) < 1e-6, (order_usd, f)
+        assert f["charge"] and abs(f["usd"] - 0.01) < 1e-6, (order_usd, f)
 
 
 def test_fee_is_zero_without_a_recipient_address(monkeypatch):
+    from sarf.xlayer import delegation
+    monkeypatch.setattr(delegation, "relayer_address", lambda: None)
     # An unset address must mean NO fee, never a fee sent somewhere unowned.
     import sarf.providers.xlayer_rwa as m
     monkeypatch.setenv("PLATFORM_FEE_ADDRESS", "")
@@ -272,8 +274,10 @@ def test_fee_percentage_is_capped(monkeypatch):
     monkeypatch.setenv("PLATFORM_FEE_ADDRESS", ADDR_A)
     monkeypatch.setenv("MAX_FEE_PERCENT", "1.0")
     monkeypatch.setattr(m, "settings", Settings())
-    f = m.XLayerRwaProvider.fee_plan(1.0)
-    assert f["capped"] and f["percent"] <= 1.0 and f["usd"] < 0.10
+    # $0.01 on a $0.50 order is 2%, over the 1% ceiling, so the RATE is cut
+    # rather than the order refused.
+    f = m.XLayerRwaProvider.fee_plan(0.5)
+    assert f["capped"] and f["percent"] <= 1.0 and f["usd"] < 0.01
 
 
 def test_signer_page_gets_fee_and_risk_notes(db):
@@ -695,3 +699,85 @@ def test_active_sessions_name_their_client_and_drop_dead_ones(db):
 
     db.revoke_sessions_for_address(ADDR_A, reason="user_logout")
     assert db.active_sessions(ADDR_A) == [], "ending the session disconnects everything"
+
+
+# --- where the fee goes ------------------------------------------------------
+
+def test_fee_defaults_to_the_relayer_when_no_recipient_is_configured(monkeypatch):
+    """The wallet that pays gas is the wallet the fee funds.
+
+    Fails to ZERO fee if there is no relayer either — never to an address
+    nobody controls.
+    """
+    from sarf.providers import xlayer_rwa
+    from sarf.xlayer import delegation
+
+    monkeypatch.setenv("PLATFORM_FEE_USD", "0.01")
+    monkeypatch.setenv("PLATFORM_FEE_ADDRESS", "")
+    monkeypatch.setattr(xlayer_rwa, "settings", Settings())
+    monkeypatch.setattr(delegation, "relayer_address", lambda: ADDR_B)
+
+    plan = xlayer_rwa.XLayerRwaProvider.fee_plan(100.0)
+    assert plan["charge"] is True
+    assert plan["recipient"] == ADDR_B
+    assert plan["usd"] == 0.01
+
+    monkeypatch.setattr(delegation, "relayer_address", lambda: None)
+    assert xlayer_rwa.XLayerRwaProvider.fee_plan(100.0)["charge"] is False
+
+
+def test_an_explicit_recipient_still_wins(monkeypatch):
+    from sarf.providers import xlayer_rwa
+    from sarf.xlayer import delegation
+
+    monkeypatch.setenv("PLATFORM_FEE_USD", "0.01")
+    monkeypatch.setenv("PLATFORM_FEE_ADDRESS", ADDR_A)
+    monkeypatch.setattr(xlayer_rwa, "settings", Settings())
+    monkeypatch.setattr(delegation, "relayer_address", lambda: ADDR_B)
+    assert xlayer_rwa.XLayerRwaProvider.fee_plan(100.0)["recipient"] == ADDR_A
+
+
+# --- deposits: dollars in, by burn and mint ----------------------------------
+# The route is CCTP, not a bridge: USDC is burned on Base and minted on
+# X Layer 1:1. The parts worth pinning in a test are the ones that decide
+# where money lands.
+
+def test_the_burn_names_x_layer_and_the_users_own_address():
+    from eth_abi import decode
+
+    from sarf.xlayer import deposit as d
+
+    data = d.burn_calldata(amount=100_000000, recipient=ADDR_A, max_fee=13_000)
+    assert data.startswith("0x8e0250ee"), "must be the V2 depositForBurn selector"
+    a = decode(["uint256", "uint32", "bytes32", "address", "bytes32", "uint256", "uint32"],
+               bytes.fromhex(data[10:]))
+    assert a[0] == 100_000000
+    assert a[1] == 37, "destination domain must be X Layer, not a chain id"
+    assert "0x" + a[2].hex()[24:] == ADDR_A, "the recipient is the user, always"
+    assert a[3].lower() == d.USDC_BASE, "burning anything but Base USDC is a bug"
+    assert a[4] == bytes(32), "destinationCaller stays open so the relayer can mint"
+    assert a[6] == d.FAST_FINALITY_THRESHOLD
+
+
+def test_deposit_bounds_are_enforced_in_one_place():
+    from sarf.xlayer import deposit as d
+
+    with pytest.raises(ValidationError):
+        d.units(d.MIN_DEPOSIT_USD - 0.01)
+    with pytest.raises(ValidationError):
+        d.units(d.MAX_DEPOSIT_USD + 1)
+    with pytest.raises(ValidationError):
+        d.units("not a number")
+    assert d.units(100) == 100_000000
+
+
+def test_the_domain_and_the_chain_id_are_not_the_same_number():
+    """A burn that quotes a chain id where a domain belongs mints somewhere
+    else entirely. They are different numbering schemes and this is the
+    cheapest possible guard against conflating them."""
+    from sarf.xlayer import deposit as d
+
+    assert d.DESTINATION.domain == 37
+    assert d.DESTINATION.chain_id == 196
+    assert d.SOURCE.domain == 6
+    assert d.SOURCE.chain_id == 8453

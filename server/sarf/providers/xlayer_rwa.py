@@ -41,6 +41,7 @@ from ..config import settings
 from ..db import Database
 from ..validation import ValidationError, validate_amount, validate_usd_cap
 from ..xlayer import delegation, rpc
+from ..xlayer import deposit as deposit_route
 from ..xlayer.analysis import analyze
 from ..xlayer.card import logo_data_uri, render_order_card, render_order_card_text
 from ..xlayer.widget import (
@@ -55,7 +56,7 @@ from ..xlayer.widget import (
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import (
-    CHAIN_ID, EXPLORER_TOKEN, EXPLORER_TX, NATIVE, RwaAsset, XStocksRegistry,
+    CHAIN_ID, EXPLORER_TOKEN, EXPLORER_TX, NATIVE, USDC, RwaAsset, XStocksRegistry,
 )
 
 # --- display-only price cache ------------------------------------------------
@@ -140,6 +141,11 @@ def _resolve_any(reg: XStocksRegistry, symbol: str) -> Any:
         return NATIVE
     if s.upper() in ("USDT", "USDT0", "USD₮0", reg.quote.symbol.upper()):
         return reg.quote
+    # USDC is what a fiat deposit mints (CCTP burns on Base, mints here), so
+    # it has to be tradable by name or the money someone just deposited is
+    # money the assistant cannot spend.
+    if s.upper() in ("USDC", "USD COIN"):
+        return USDC
     return reg.resolve(s, allowlist=settings.rwa_allowlist)
 
 
@@ -304,16 +310,20 @@ class XLayerRwaProvider:
     def fee_plan(stable_leg_usd: float | None) -> dict[str, Any]:
         """Turn the flat dollar fee into a percentage of the stablecoin leg.
 
-        The aggregator charges a percentage, so a fixed $0.10 would be 5% of a
-        $2 trade. max_fee_percent caps the rate instead of the order being
+        The aggregator charges a percentage, so a fixed $0.01 would be 5% of a
+        $0.20 trade. max_fee_percent caps the rate instead of the order being
         refused, so small orders pay proportionally rather than being turned
-        away: a $2 order is charged $0.02.
+        away.
 
         Fails to ZERO fee if no recipient address is configured: an unset
         address must never mean "send the fee somewhere else".
         """
         fee_usd = settings.platform_fee_usd
-        recipient = settings.platform_fee_address
+        # The relayer is the default recipient: the wallet that pays gas for
+        # in-chat trades is the wallet the fee helps fund. An explicitly
+        # configured address still wins, and with neither there is no fee —
+        # never a fee sent to an address nobody controls.
+        recipient = settings.platform_fee_address or (delegation.relayer_address() or "")
         if fee_usd <= 0 or not recipient:
             return {"charge": False, "usd": 0.0, "percent": 0.0, "recipient": None}
         if stable_leg_usd is None or stable_leg_usd <= 0:
@@ -507,6 +517,9 @@ class XLayerRwaProvider:
         # disappear from the portfolio.
         unread_symbols = [a.symbol for a in assets if a.address in unread]
         usdt_raw = await rpc.erc20_balance(reg.quote.address, address)
+        # USDC is read alongside USDT because that is what a fiat deposit
+        # mints. A wallet that just funded itself would otherwise look empty.
+        usdc_raw = await rpc.erc20_balance(USDC.address, address)
         okb_raw = await rpc.native_balance(address)
 
         positions: list[dict[str, Any]] = []
@@ -553,6 +566,7 @@ class XLayerRwaProvider:
             unpriced.append(NATIVE.symbol)
 
         usdt_value = float(Decimal(usdt_raw) / (Decimal(10) ** reg.quote.decimals))
+        usdc_value = float(Decimal(usdc_raw) / (Decimal(10) ** USDC.decimals))
         return {
             "address": address,
             "chain": {"name": "X Layer", "chain_id": CHAIN_ID},
@@ -575,6 +589,19 @@ class XLayerRwaProvider:
                 # return nothing useful.
                 "price_usdt": 1.0,
                 "value_usd": round(usdt_value, 2),
+            },
+            "usdc_balance": _fmt_units(usdc_raw, USDC.decimals),
+            # Same shape as `usdt`, so every surface that lists holdings gets
+            # this one for free rather than growing a special case.
+            "usdc": {
+                "symbol": USDC.symbol,
+                "onchain_symbol": USDC.onchain_symbol,
+                "name": "USDC · Circle, native on X Layer",
+                "address": USDC.address,
+                "explorer_url": EXPLORER_TOKEN.format(USDC.address),
+                "quantity": _fmt_units(usdc_raw, USDC.decimals),
+                "price_usdt": 1.0,
+                "value_usd": round(usdc_value, 2),
             },
             # Kept under its original key so the dashboard and any stored
             # snapshots keep reading the balance they already read.
@@ -602,7 +629,7 @@ class XLayerRwaProvider:
             # Either way the total is suppressed rather than quietly understated.
             "unread_positions": unread_symbols,
             "total_value_usd": round(
-                total_usd + usdt_value + (okb_value or 0.0), 2
+                total_usd + usdt_value + usdc_value + (okb_value or 0.0), 2
             ) if not (unpriced or unread_symbols) else None,
             "disclosure": SYNTHETIC_DISCLOSURE,
         }
@@ -1293,6 +1320,62 @@ class XLayerRwaProvider:
         # for an assistant to discover by keyword search — which is how tools
         # get found when several connectors are enabled at once. Fewer, richer
         # tools beat many narrow ones for discoverability.
+        @mcp.tool()
+        async def deposit(
+            amount_usd: Annotated[float | None, Field(
+                default=None,
+                description="Optional deposit size in US dollars, for a quote")] = None,
+        ) -> dict[str, Any]:
+            """How to fund this wallet with dollars from a bank account.
+
+            Read-only. Explains the route and quotes the cost; it moves
+            nothing. The bank transfer itself is done by a licensed provider
+            on the website — Sarf never touches fiat, and there is no tool
+            here that could.
+            """
+            address = require_address()
+            out: dict[str, Any] = {
+                "address": address,
+                "deposit_url": (
+                    f"{settings.public_url}/deposit" if settings.public_url else None),
+                "route": [
+                    "Bank (ACH) or card -> USDC on Base, through a licensed provider "
+                    "with its own KYC. It pays out to the user's own address; Sarf is "
+                    "not a party to the transfer and never sees bank details.",
+                    "USDC on Base -> USDC on X Layer, through Circle's CCTP: the USDC "
+                    "is BURNED on Base and MINTED on X Layer 1:1 against Circle's "
+                    "attestation. No bridge, no wrapped token, no pooled collateral.",
+                    "USDC -> any xStock, on the normal trading path. USDC buys them "
+                    "directly; there is no need to convert to USDT first.",
+                ],
+                "user_signs": (
+                    "One transaction, the burn on Base. The mint on X Layer is "
+                    "submitted by Sarf's relayer, which pays that gas and cannot send "
+                    "the funds anywhere else — the recipient is written into the "
+                    "message the user signed."
+                ),
+                "already_hold_usdc_elsewhere": (
+                    "Same route: the deposit page bridges USDC from Base without any "
+                    "fiat step."
+                ),
+                "next_step": (
+                    "Give the user deposit_url and describe the route in plain words. "
+                    "Do NOT imply Sarf takes the bank transfer — a licensed provider "
+                    "does, on that page. Nothing is deposited by calling this tool."
+                ),
+                "disclosure": SYNTHETIC_DISCLOSURE,
+            }
+            if amount_usd is not None:
+                try:
+                    out["quote"] = deposit_route.quote(amount_usd)
+                except ValidationError as e:
+                    raise ValueError(str(e))
+                except deposit_route.DepositError as e:
+                    # Circle being unreachable is not a reason to withhold the
+                    # instructions — the route still exists.
+                    out["quote_error"] = str(e)
+            return out
+
         @mcp.tool()
         async def set_risk_params(
             symbol: Annotated[str, Field(description="On-chain symbol, e.g. 'AAPLx'")],

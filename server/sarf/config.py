@@ -142,14 +142,29 @@ class Settings:
     # transaction the user signs — there is no second transfer and no custody.
     #
     # It is expressed in dollars but applied as a percentage, so a small order
-    # would otherwise carry an absurd rate: $0.10 on a $2 order is 5%. That is
-    # handled by max_fee_percent, which caps the rate — a $2 order pays $0.02,
-    # not $0.10 — so no order size has to be refused to keep the fee honest.
+    # would otherwise carry an absurd rate: $0.01 on a $0.20 order is 5%. That
+    # is handled by max_fee_percent, which caps the RATE rather than refusing
+    # the order, so a very small trade pays a fair fraction instead of a cent.
     platform_fee_usd: float = field(
-        default_factory=lambda: float(_env("PLATFORM_FEE_USD", "0.10"))
+        default_factory=lambda: float(_env("PLATFORM_FEE_USD", "0.01"))
     )
-    # Where the fee lands. No address = no fee is charged at all (fails to
-    # ZERO fee, never to an unowned address).
+    # Where the fee lands.
+    #
+    # Left unset it now falls back to the RELAYER — the wallet that pays gas
+    # for every in-chat trade — so the fee funds the thing it is charged
+    # alongside instead of accumulating somewhere that has to be swept back.
+    # See fee_plan() in providers/xlayer_rwa.py, which resolves it: config
+    # cannot import the delegation module without a cycle.
+    #
+    # Note the trade-off this creates, because it is a real one: the relayer
+    # is documented as a gas-only wallet precisely so that compromising the
+    # server buys an attacker a gas bill and nothing else. Fees landing there
+    # give it a balance worth taking. It stays small (a cent a trade) and
+    # should be swept, but "gas-only" is now an aspiration rather than a fact.
+    #
+    # An explicit address still wins, and an unset address with NO relayer
+    # configured means no fee is charged at all — it fails to ZERO fee, never
+    # to an unowned address.
     platform_fee_address: str = field(
         default_factory=lambda: _env("PLATFORM_FEE_ADDRESS", "").strip().lower()
     )

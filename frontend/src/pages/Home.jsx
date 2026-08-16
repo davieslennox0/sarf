@@ -214,7 +214,7 @@ export default function Home() {
         <div className="stats">
           <div><b>{assets.length || '\u2014'}</b><span>assets</span></div>
           <div><b>X Layer</b><span>chain 196</span></div>
-          <div><b>$0.10</b><span>flat fee per swap</span></div>
+          <div><b>$0.01</b><span>flat fee per swap</span></div>
           <div><b>Non-custodial</b><span>you hold the keys</span></div>
         </div>
       </section>

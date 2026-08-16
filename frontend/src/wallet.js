@@ -168,6 +168,50 @@ export async function sendTransaction(address, tx) {
   return p.request({ method: 'eth_sendTransaction', params: [params] });
 }
 
+/**
+ * Send a transaction on a SPECIFIC chain.
+ *
+ * sendTransaction() forces X Layer, which is right for every trade and wrong
+ * for exactly one thing: a deposit is burned on Base. Rather than loosening
+ * that guarantee, this is a separate door — it switches to the chain the
+ * caller names, sends, and switches back, so the app is never left sitting on
+ * a chain the rest of it does not expect.
+ */
+export async function sendOnChain(address, tx, chainId) {
+  const p = provider();
+  if (!p) throw new Error('No wallet');
+  const target = Number(chainId);
+  const before = await chainIdOf(p);
+  if (before !== target) await switchChain(p, target);
+  try {
+    const params = {
+      from: address,
+      to: tx.to,
+      data: tx.data,
+      value: tx.value && tx.value !== '0' ? toHex(tx.value) : '0x0',
+    };
+    if (tx.gas) params.gas = toHex(tx.gas);
+    return await p.request({ method: 'eth_sendTransaction', params: [params] });
+  } finally {
+    // Back to X Layer whatever happened, including a rejection: leaving the
+    // wallet on Base would make the next trade fail for a reason that has
+    // nothing to do with the trade.
+    if (before !== target) await switchChain(p, before || CHAIN_ID).catch(() => {});
+  }
+}
+
+async function chainIdOf(p) {
+  try { return parseInt(await p.request({ method: 'eth_chainId' }), 16); }
+  catch { return null; }
+}
+
+async function switchChain(p, id) {
+  await p.request({
+    method: 'wallet_switchEthereumChain',
+    params: [{ chainId: '0x' + Number(id).toString(16) }],
+  });
+}
+
 function toHex(v) {
   if (typeof v === 'string' && v.startsWith('0x')) return v;
   return '0x' + BigInt(v).toString(16);

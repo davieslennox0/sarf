@@ -19,7 +19,7 @@
 
 import React, { useEffect } from 'react';
 import {
-  PrivyProvider, usePrivy, useWallets, useSign7702Authorization,
+  PrivyProvider, usePrivy, useWallets, useSign7702Authorization, useAddFunds,
 } from '@privy-io/react-auth';
 
 export const PRIVY_APP_ID = import.meta.env.VITE_PRIVY_APP_ID || '';
@@ -39,6 +39,10 @@ let _ctx = {
   login: null,
   logout: null,
   signAuthorization: null,
+  // Privy's unified funding flow — card, bank transfer (ACH) and exchange,
+  // whichever the dashboard has enabled. Published here for the same reason
+  // the signer is: the deposit page calls it from a plain handler.
+  addFunds: null,
 };
 
 const _subs = new Set();
@@ -142,6 +146,7 @@ function PrivyBridge() {
   const { ready, authenticated, login, logout } = usePrivy();
   const { wallets } = useWallets();
   const { signAuthorization } = useSign7702Authorization();
+  const { addFunds } = useAddFunds();
 
   useEffect(() => {
     let cancelled = false;
@@ -172,6 +177,7 @@ function PrivyBridge() {
       login,
       logout,
       signAuthorization,
+      addFunds,
       address: w?.address ? w.address.toLowerCase() : null,
     });
 
@@ -210,7 +216,7 @@ function PrivyBridge() {
     })();
 
     return () => { cancelled = true; };
-  }, [ready, authenticated, wallets, login, logout, signAuthorization]);
+  }, [ready, authenticated, wallets, login, logout, signAuthorization, addFunds]);
 
   return null;
 }
@@ -220,6 +226,14 @@ function PrivyBridge() {
 // X Layer as viem expects it. Declared inline rather than imported from
 // viem/chains so a viem version bump cannot silently change what chain 196
 // means to this app.
+const base = {
+  id: 8453,
+  name: 'Base',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: ['https://mainnet.base.org'] } },
+  blockExplorers: { default: { name: 'Basescan', url: 'https://basescan.org' } },
+};
+
 const xLayer = {
   id: 196,
   name: 'X Layer',
@@ -266,7 +280,10 @@ export function WalletProvider({ children }) {
           showWalletUIs: false,
         },
         defaultChain: xLayer,
-        supportedChains: [xLayer],
+        // Base is here for deposits ONLY: no fiat on-ramp settles onto X
+        // Layer, so dollars land as USDC on Base and CCTP burns them across.
+        // Trading stays on X Layer — this does not make Base a venue.
+        supportedChains: [xLayer, base],
       }}
     >
       <PrivyBridge />
