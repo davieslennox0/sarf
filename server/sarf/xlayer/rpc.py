@@ -67,26 +67,34 @@ async def erc20_balance(token_address: str, holder: str) -> int:
         raise RpcError(f"unreadable balance response for token {token_address}")
 
 
-async def erc20_balances(token_addresses: list[str], holder: str) -> dict[str, int]:
-    """Concurrent balanceOf across many tokens.
+async def erc20_balances(
+    token_addresses: list[str], holder: str
+) -> tuple[dict[str, int], list[str]]:
+    """Concurrent balanceOf across many tokens -> ({address: units}, unread).
 
-    A failing token read is reported as a raised error rather than silently
-    becoming a zero balance — showing someone 0 when they hold a position is a
-    worse failure than showing them an error.
+    A read that failed is NOT a zero balance, and the difference is the whole
+    point of returning two things. This used to return the dict alone and drop
+    failures out of it; the caller then read a missing address as "holds none"
+    and the position vanished from the portfolio — during an RPC wobble, a
+    wallet could be shown as empty while holding everything it always had.
+
+    Failures are handed back by address so the caller can say which assets it
+    could not read. Only a total failure raises: one token flaking should not
+    take down a page that can still show the other thirty-nine.
     """
     results = await asyncio.gather(
         *(erc20_balance(a, holder) for a in token_addresses), return_exceptions=True
     )
     out: dict[str, int] = {}
-    errors = 0
+    unread: list[str] = []
     for addr, res in zip(token_addresses, results):
-        if isinstance(res, Exception):
-            errors += 1
+        if isinstance(res, BaseException):
+            unread.append(addr)
             continue
         out[addr] = res
-    if errors and not out:
+    if unread and not out:
         raise RpcError("could not read any balances from X Layer")
-    return out
+    return out, unread
 
 
 async def native_balance(holder: str) -> int:

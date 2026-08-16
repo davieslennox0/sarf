@@ -199,6 +199,12 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
     @r.get("/grant")
     async def grant_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         addr = _session_addr(authorization)
+        # Retire anything past its expiry before reading. The background sweep
+        # (main.py) does this on a timer, but a page load must never be the
+        # thing that races it: whoever opens Security a second after their hour
+        # is up should see the key gone, not a live-looking panel that is one
+        # sweep behind.
+        db.expire_grants()
         row = db.get_grant(addr)
         # Read the chain, not just our row: a grant is only real if the
         # authorisation transaction actually landed, and a user can revoke
@@ -231,6 +237,25 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             daily_cap=row["daily_cap"], created_at=row["created_at"],
             rotated_at=row["rotated_at"], revoked_at=row["revoked_at"],
         )
+        if not g.active:
+            # A dead grant is not a grant. It used to be returned in full —
+            # session key, caps, expiry — with an `active: false` buried in it,
+            # and every caller that asked the obvious question ("is there a
+            # grant?") answered yes for an hour-old key. What the page needs
+            # here is the same thing a user needs: it is gone, here is when,
+            # authorise a new one.
+            out["grant"] = None
+            out["previous_grant"] = {
+                "ended_at": int(row["revoked_at"] or row["expiry"]),
+                "expires_at": int(row["expiry"]),
+                "reason": "revoked" if (row["revoked_at"] or 0) < row["expiry"] else "expired",
+                "note": (
+                    "This account's session key is no longer valid. Authorising "
+                    "again issues a NEW key — nothing about the old one carries "
+                    "over, and it cannot trade even if someone still holds it."
+                ),
+            }
+            return out
         out["grant"] = g.view(reg.quote.decimals)
         out["key_due_for_rotation"] = delegation.due_for_rotation(g)
         return out

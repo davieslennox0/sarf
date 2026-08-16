@@ -308,91 +308,154 @@ def render_order_card(order: dict[str, Any]) -> str:
         return ""
 
 
+def _fit_size(value: str, *, big: int, small: int, threshold: int) -> int:
+    """Step a value down one size rather than truncating it.
+
+    An amount clipped to fit is worse than a smaller amount: the digits are
+    what the card exists to show. Only two sizes, so the layout stays
+    predictable — a recipient address takes the small one, "0.319 AAPLx" the
+    large one.
+    """
+    return small if len(value) > threshold else big
+
+
+def _cell(d: ImageDraw.ImageDraw, x: int, y: int, label: str, value: str,
+          *, anchor_right: bool = False, colour=PAPER) -> None:
+    """A label above a value — the only repeated unit in the layout."""
+    a = "ra" if anchor_right else "la"
+    _text(d, (x, y), label, _f(10), PAPER_DIM, anchor=a)
+    size = _fit_size(value, big=19, small=13, threshold=20)
+    _text(d, (x, y + 22), value, _f(size, True), colour, anchor=a)
+
+
+# The card's fixed skeleton. Every band is a constant so the height is derived
+# from the layout rather than guessed at — the previous version computed it
+# from a separate estimate, and the risk notes printed over the footer the
+# first time a disclosure ran long.
+_HEAD_RULE = 76
+_IDENT_TOP = 104
+_PANEL_TOP = 192
+_PANEL_H = 96
+_FACTS_TOP = 320
+_TAIL_TOP = 384        # disclosure line
+_FOOTER_H = 74
+
+
 def _render(o: dict[str, Any]) -> str:
+    """Four bands: who/what, the two amounts, the facts, the state.
+
+    Deliberately shorter than what it replaced. The old card carried a
+    READ BEFORE SIGNING block of up to eight wrapped lines, which made the
+    image tall enough that the amounts — the reason anyone looks at it —
+    competed with standing boilerplate nobody reads twice. The risk notes
+    still travel on the tool response and the model relays them beside the
+    card; what stays here is the one disclosure that must never be optional,
+    plus a warning only when THIS order has something specific wrong with it.
+    """
     side = str(o.get("side", "")).upper()
-    symbol = o.get("symbol", "")
+    symbol = str(o.get("symbol", "") or "")
     name = (o.get("name") or "").replace(" xStock", "")
-    fee = o.get("platform_fee") or {}
-    notes = [n for n in (o.get("risk_notes") or []) if n]
+    is_transfer = side == "TRANSFER"
+    settled = bool(o.get("tx_hash"))
+    usd = o.get("estimated_usd")
 
-    # Height is content-driven so a long risk list is never clipped. These
-    # constants mirror the layout below: the notes start at NOTES_TOP and the
-    # footer needs FOOTER_H beneath the last line. Deriving the height from a
-    # guess instead is how the notes ended up printed over the footer.
-    NOTES_TOP, LINE_H, FOOTER_H = 396, 22, 62
-    note_lines: list[str] = []
-    for n in notes[:4]:
-        note_lines += _wrap(n, 76)[:2]
-    h = NOTES_TOP + len(note_lines) * LINE_H + FOOTER_H
+    impact = o.get("price_impact_percent")
+    try:
+        impact_f = float(impact) if impact is not None else None
+    except (TypeError, ValueError):
+        impact_f = None
+    warn = (
+        f"Price impact {impact_f:.2f}% — this order moves the pool. "
+        "A smaller trade fills closer to quote."
+        if (impact_f is not None and impact_f >= 1.0 and not settled) else ""
+    )
 
+    h = _TAIL_TOP + (30 if warn else 0) + _FOOTER_H
     img = Image.new("RGB", (W, h), BG)
     d = ImageDraw.Draw(img)
 
     # ---- header -----------------------------------------------------------
-    _text(d, (PAD, 34), "SARF", _f(24, True), PAPER)
-    _text(d, (PAD + 78, 40), "/  X LAYER RWA", _f(15), AMBER)
-    _text(d, (W - PAD, 40), "REVIEW & SIGN", _f(13), PAPER_DIM, anchor="ra")
-    d.line([(PAD, 76), (W - PAD, 76)], fill=LINE, width=1)
+    _text(d, (PAD, 30), "SARF", _f(22, True), PAPER)
+    _text(d, (PAD + 72, 36), "/  X LAYER RWA", _f(13), AMBER)
+    tag = "SETTLED" if settled else ("REVIEW & SEND" if is_transfer else "REVIEW & SIGN")
+    _text(d, (W - PAD, 36), tag, _f(12), GREEN if settled else PAPER_DIM, anchor="ra")
+    d.line([(PAD, _HEAD_RULE), (W - PAD, _HEAD_RULE)], fill=LINE, width=1)
 
-    # ---- headline ---------------------------------------------------------
-    # Token mark, then the text shifted right to clear it. The PNG had no logo
-    # at all — logos were added to the HTML widget only, so the image card that
-    # actually renders in chat kept showing bare text.
-    MARK = 46
-    mark_box = (PAD, 100, PAD + MARK, 100 + MARK)
+    # ---- identity ---------------------------------------------------------
+    MARK = 52
+    mark_box = (PAD, _IDENT_TOP, PAD + MARK, _IDENT_TOP + MARK)
     logo = _logo(str(o.get("logo_url") or ""), MARK)
     if logo is not None:
-        d.rounded_rectangle(mark_box, radius=9, fill=(255, 255, 255))
-        img.paste(logo, (PAD, 100), logo)
+        d.rounded_rectangle(mark_box, radius=11, fill=(255, 255, 255))
+        img.paste(logo, (PAD, _IDENT_TOP), logo)
     else:
-        _monogram(d, mark_box, str(symbol), MARK)
+        _monogram(d, mark_box, symbol, MARK)
 
-    tx = PAD + MARK + 14
-    _text(d, (tx, 100), f"{side} {symbol}", _f(34, True), AMBER)
+    tx = PAD + MARK + 18
+    _text(d, (tx, _IDENT_TOP - 2), f"{side} {symbol}"[:34], _f(30, True), AMBER)
     if name:
-        _text(d, (tx, 146), name, _f(15), PAPER_DIM)
+        _text(d, (tx, _IDENT_TOP + 38), name[:46], _f(14), PAPER_DIM)
 
-    # ---- amounts panel ----------------------------------------------------
-    y = 180
-    d.rectangle([PAD, y, W - PAD, y + 92], fill=PANEL, outline=LINE)
-    cells = [
-        ("YOU PAY", o.get("spending") or "—"),
-        ("YOU RECEIVE", o.get("receiving_estimated") or "—"),
-        ("MINIMUM", o.get("minimum_received") or "—"),
+    # The order's value, right-aligned against the ticker. It is the number
+    # people check first, so it gets the opposite corner rather than a cell in
+    # a strip of three.
+    _text(d, (W - PAD, _IDENT_TOP - 2),
+          f"${float(usd):,.2f}" if usd is not None else "—",
+          _f(28, True), PAPER, anchor="ra")
+    _text(d, (W - PAD, _IDENT_TOP + 38), "ORDER VALUE", _f(10), PAPER_DIM, anchor="ra")
+
+    # ---- the two amounts --------------------------------------------------
+    d.rounded_rectangle(
+        [PAD, _PANEL_TOP, W - PAD, _PANEL_TOP + _PANEL_H],
+        radius=10, fill=PANEL, outline=LINE,
+    )
+    left_label = "YOU SEND" if is_transfer else "YOU PAY"
+    right_label = ("RECIPIENT" if is_transfer
+                   else ("YOU RECEIVED" if settled else "YOU RECEIVE (EST.)"))
+    right_value = (str(o.get("recipient") or "—") if is_transfer
+                   else str(o.get("receiving_estimated") or "—"))
+    _cell(d, PAD + 26, _PANEL_TOP + 26, left_label, str(o.get("spending") or "—"))
+    _text(d, (W // 2, _PANEL_TOP + _PANEL_H // 2), "→", _f(22), AMBER, anchor="mm")
+    _cell(d, W - PAD - 26, _PANEL_TOP + 26, right_label, right_value, anchor_right=True)
+
+    # ---- facts ------------------------------------------------------------
+    # Three, never more. Gas is here rather than the platform fee because it is
+    # the one people ask about before signing; the fee is disclosed in the text
+    # card and on the tool response, where it can be read in full.
+    gas = ("paid from your OKB" if o.get("gas_sponsored") is False
+           else "sponsored by Sarf")
+    facts = [
+        ("MINIMUM RECEIVED", str(o.get("minimum_received") or "—")),
+        ("GAS", gas),
+        ("NETWORK", f"X Layer · {o.get('chain_id', 196)}"),
     ]
-    cw = (W - 2 * PAD) / len(cells)
-    for i, (label, value) in enumerate(cells):
-        cx = PAD + cw * i + 22
-        _text(d, (cx, y + 20), label, _f(11), PAPER_DIM)
-        _text(d, (cx, y + 44), str(value)[:22], _f(17, True), PAPER)
-        if i:
-            lx = PAD + cw * i
-            d.line([(lx, y + 12), (lx, y + 80)], fill=LINE, width=1)
+    if is_transfer:
+        facts[0] = ("REVERSIBLE", "no — final once mined")
+    cw = (W - 2 * PAD) / len(facts)
+    for i, (label, value) in enumerate(facts):
+        cx = int(PAD + cw * i)
+        _text(d, (cx, _FACTS_TOP), label, _f(10), PAPER_DIM)
+        _text(d, (cx, _FACTS_TOP + 20), value[:30], _f(13), PAPER)
 
-    # ---- fee + value strip ------------------------------------------------
-    y += 116
-    charged = bool(fee.get("charged"))
-    fee_txt = (f"${float(fee.get('usd', 0)):.2f} {fee.get('denominated_in', '')}".strip()
-               if charged else "none")
-    strip = [
-        ("ORDER VALUE", f"${float(o['estimated_usd']):,.2f}" if o.get("estimated_usd") is not None else "—", PAPER),
-        # Stated on the card, not left to the model to mention or not.
-        ("PLATFORM FEE", fee_txt, AMBER if charged else PAPER_DIM),
-        ("NETWORK", "X LAYER · 196", PAPER_DIM),
-    ]
-    for i, (label, value, col) in enumerate(strip):
-        cx = PAD + cw * i + 22
-        _text(d, (cx, y), label, _f(11), PAPER_DIM)
-        _text(d, (cx, y + 20), value, _f(15, True), col)
-
-    # ---- risk notes -------------------------------------------------------
-    y = NOTES_TOP - 58
-    d.line([(PAD, y), (W - PAD, y)], fill=LINE, width=1)
-    _text(d, (PAD, y + 16), "READ BEFORE SIGNING", _f(11, True), AMBER)
-    y = NOTES_TOP
-    for line in note_lines:
-        _text(d, (PAD, y), line, _f(12), PAPER_DIM)
-        y += 22
+    # ---- tail -------------------------------------------------------------
+    y = _TAIL_TOP
+    if warn:
+        _text(d, (PAD, y), warn, _f(12), AMBER)
+        y += 30
+    # One standing line, and it is the one that fits the operation. A transfer
+    # of USDT is not synthetic equity exposure, so printing that disclosure
+    # over it would be boilerplate in the literal sense — words that do not
+    # describe what is on the card. What a transfer needs said is the part
+    # that cannot be undone.
+    _text(
+        d, (PAD, y),
+        "Final once mined — check the recipient character by character. "
+        "No recall, no reversal."
+        if is_transfer else
+        "Synthetic exposure — tracks the share price only. No ownership, "
+        "dividends or voting rights.",
+        _f(11), PAPER_DIM,
+    )
 
     # ---- footer -----------------------------------------------------------
     # Must agree with can_execute, same as the text card's closing line. This
@@ -400,14 +463,18 @@ def _render(o: dict[str, Any]) -> str:
     # execute this" over an order the payload advertised as auto-executable —
     # the two halves of one response disagreeing about a fund-moving action,
     # which is a trust problem rather than a cosmetic one.
-    y = h - 46
-    d.line([(PAD, y - 14), (W - PAD, y - 14)], fill=LINE, width=1)
-    if o.get("can_execute"):
-        _text(d, (PAD, y), "UNSIGNED — approve in chat to execute", _f(12), PAPER)
-        _text(d, (W - PAD, y), "within your session grant", _f(12), PAPER_DIM, anchor="ra")
+    fy = h - 30
+    d.line([(PAD, fy - 22), (W - PAD, fy - 22)], fill=LINE, width=1)
+    if settled:
+        left, right = "SETTLED ON X LAYER", "confirm with get_status"
+    elif is_transfer:
+        left, right = "UNSIGNED — you sign in your own wallet", "never delegated"
+    elif o.get("can_execute"):
+        left, right = "UNSIGNED — approve in chat to execute", "within your session grant"
     else:
-        _text(d, (PAD, y), "UNSIGNED — you sign in your own wallet", _f(12), PAPER)
-        _text(d, (W - PAD, y), "Sarf cannot execute this", _f(12), PAPER_DIM, anchor="ra")
+        left, right = "UNSIGNED — you sign in your own wallet", "Sarf holds no keys"
+    _text(d, (PAD, fy), left, _f(12), GREEN if settled else PAPER)
+    _text(d, (W - PAD, fy), right, _f(12), PAPER_DIM, anchor="ra")
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)

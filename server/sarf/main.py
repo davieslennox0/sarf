@@ -169,11 +169,36 @@ async def lifespan(app: FastAPI):
     # reads them from memory. Paced through the same limiter as everything else,
     # so this yields to real user requests rather than competing with them.
     warmer = asyncio.create_task(provider.warm_prices_forever())
+    # Retire lapsed session grants on a timer as well as on every read.
+    #
+    # Reads already sweep before answering, so the timer is not what makes the
+    # dashboard correct — it is what stops an expired grant's signing key
+    # sitting in the database until somebody happens to look. A key that can no
+    # longer authorise anything should not outlive the grant by however long it
+    # takes for the next page load.
+    retirer = asyncio.create_task(_retire_grants_forever())
     try:
         async with mcp.session_manager.run():
             yield
     finally:
         warmer.cancel()
+        retirer.cancel()
+
+
+GRANT_SWEEP_SECONDS = 60
+
+
+async def _retire_grants_forever() -> None:
+    while True:
+        try:
+            n = db.expire_grants()
+            if n:
+                logging.getLogger("sarf").info("retired %d expired session grant(s)", n)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - a sweeper must never die
+            logging.getLogger("sarf").debug("grant sweep failed", exc_info=True)
+        await asyncio.sleep(GRANT_SWEEP_SECONDS)
 
 
 app = FastAPI(title="Sarf", lifespan=lifespan)

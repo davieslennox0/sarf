@@ -693,15 +693,48 @@ class Database:
         return cur.rowcount > 0
 
     def revoke_grant(self, address: str) -> bool:
-        """Mark a grant revoked locally. NOT the security boundary — the
-        on-chain revoke() is. This stops Sarf from trying to use the key;
-        the contract is what stops anyone else."""
+        """Mark a grant revoked locally and destroy the key material. NOT the
+        security boundary — the on-chain revoke() is. This stops Sarf from
+        trying to use the key; the contract is what stops anyone else.
+
+        The sealed key is blanked rather than kept: a revoked grant will never
+        be signed with again (every path checks revoked_at first), so retaining
+        an encrypted signing key for it is storage with no purpose and a
+        window if the session secret ever leaks. The row survives for the audit
+        trail; only the secret goes.
+        """
         with self._lock, self._conn:
             cur = self._conn.execute(
-                "UPDATE grants SET revoked_at=? WHERE address=? AND revoked_at IS NULL",
+                "UPDATE grants SET revoked_at=?, sealed_key='' "
+                "WHERE address=? AND revoked_at IS NULL",
                 (time.time(), address.lower()),
             )
         return cur.rowcount > 0
+
+    def expire_grants(self, now: float | None = None) -> int:
+        """Retire every grant whose expiry has passed. -> rows retired.
+
+        Expiry is already enforced on-chain — SarfSessionKey refuses a swap
+        past `expiry`, and nothing here can extend that — so this is not what
+        stops a trade. It closes two gaps on our side of the line:
+
+        1. Sarf stops holding a signing key for a grant that can no longer
+           authorise anything.
+        2. The row stops reading as live. A grant that lapsed an hour ago was
+           still returned with its session key attached, and every surface that
+           only asked "is there a grant?" showed the expired one as the
+           account's current key.
+
+        Idempotent, so it is safe to call on every read as well as on a timer.
+        """
+        t = time.time() if now is None else now
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE grants SET revoked_at=?, sealed_key='' "
+                "WHERE revoked_at IS NULL AND expiry <= ?",
+                (t, t),
+            )
+        return cur.rowcount
 
     def rotate_grant_key(self, address: str, *, session_address: str, sealed_key: str) -> None:
         with self._lock, self._conn:

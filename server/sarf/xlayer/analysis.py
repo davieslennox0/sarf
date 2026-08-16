@@ -397,6 +397,21 @@ def analyze(portfolio: dict[str, Any]) -> dict[str, Any]:
             "incomplete rather than as a full picture of this wallet.",
         ))
 
+    # Different from unpriced, and worth its own line: an unpriced asset is
+    # known to be held and merely unvalued, while an unread one is an asset
+    # whose balance the chain read never returned — it may be held in size and
+    # is simply absent from everything above.
+    unread = list(portfolio.get("unread_positions") or [])
+    if unread:
+        findings.append(_observe(
+            "data_quality",
+            f"{', '.join(unread)} could not be read from X Layer just now, so "
+            "any holding of {} is missing from this analysis entirely.".format(
+                "it" if len(unread) == 1 else "them"),
+            "This is a node failure, not a zero balance — the figures above "
+            "describe the assets that could be read.",
+        ))
+
     if not findings:
         findings.append(_observe(
             "balanced",

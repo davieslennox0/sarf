@@ -55,7 +55,7 @@ from ..xlayer.widget import (
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import (
-    CHAIN_ID, EXPLORER_TX, NATIVE, RwaAsset, XStocksRegistry,
+    CHAIN_ID, EXPLORER_TOKEN, EXPLORER_TX, NATIVE, RwaAsset, XStocksRegistry,
 )
 
 # --- display-only price cache ------------------------------------------------
@@ -457,6 +457,9 @@ class XLayerRwaProvider:
             "sign_url": (f"{settings.public_url}/sign?o={order_id}"
                          if settings.public_url else None),
             "status": "awaiting_signature", "can_execute": False,
+            # A transfer is always signed and paid for by the user: it can
+            # never run under a session grant, so the relayer never touches it.
+            "gas_sponsored": False,
             "next_step": (
                 "Print the `card` verbatim and read the FULL recipient address back "
                 "to the user before they sign. This moves funds out and cannot be "
@@ -497,7 +500,12 @@ class XLayerRwaProvider:
         allow = settings.rwa_allowlist
         assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
 
-        balances = await rpc.erc20_balances([a.address for a in assets], address)
+        balances, unread = await rpc.erc20_balances([a.address for a in assets], address)
+        # An asset whose balance could not be read is not an asset the wallet
+        # does not hold, and the two must not render the same way: a dropped
+        # read used to fall through the `raw <= 0` test below and simply
+        # disappear from the portfolio.
+        unread_symbols = [a.symbol for a in assets if a.address in unread]
         usdt_raw = await rpc.erc20_balance(reg.quote.address, address)
         okb_raw = await rpc.native_balance(address)
 
@@ -550,14 +558,36 @@ class XLayerRwaProvider:
             "chain": {"name": "X Layer", "chain_id": CHAIN_ID},
             "positions": positions,
             "usdt_balance": _fmt_units(usdt_raw, reg.quote.decimals),
+            # The stablecoin as a HOLDING, in the same shape as a position, so
+            # the site can list it beside the equities instead of hiding a real
+            # balance in a stat strip. It stays out of `positions` for the same
+            # reason OKB does: that list is the equity sleeve analyze() computes
+            # concentration against, and a dollar is not a single-name risk.
+            "usdt": {
+                "symbol": reg.quote.symbol,
+                "onchain_symbol": reg.quote.onchain_symbol,
+                "name": f"{reg.quote.onchain_symbol} · stablecoin",
+                "address": reg.quote.address,
+                "explorer_url": EXPLORER_TOKEN.format(reg.quote.address),
+                "quantity": _fmt_units(usdt_raw, reg.quote.decimals),
+                # A dollar stablecoin is marked at a dollar rather than quoted
+                # against itself — the aggregator would route USDT→USDT and
+                # return nothing useful.
+                "price_usdt": 1.0,
+                "value_usd": round(usdt_value, 2),
+            },
             # Kept under its original key so the dashboard and any stored
             # snapshots keep reading the balance they already read.
             "gas_balance_okb": _fmt_units(okb_raw, 18),
             "okb": {
                 "symbol": NATIVE.symbol,
+                "name": "OKB · gas on X Layer",
                 "quantity": _fmt_units(okb_raw, 18),
                 "price_usdt": round(okb_price, 6) if okb_price is not None else None,
                 "value_usd": round(okb_value, 2) if okb_value is not None else None,
+                # No explorer link: OKB is the native coin, not a contract, so
+                # there is no token page to send anyone to.
+                "explorer_url": None,
                 "note": "OKB pays for gas on X Layer as well as being a holding, "
                         "so some of this balance has to stay put to transact.",
             },
@@ -567,9 +597,13 @@ class XLayerRwaProvider:
             # Stated explicitly so a partial pricing outage can never be
             # mistaken for "these positions are worth nothing".
             "unpriced_positions": unpriced,
+            # Assets whose on-chain balance could not be read at all. Distinct
+            # from unpriced: those are held and unvalued, these are unknown.
+            # Either way the total is suppressed rather than quietly understated.
+            "unread_positions": unread_symbols,
             "total_value_usd": round(
                 total_usd + usdt_value + (okb_value or 0.0), 2
-            ) if not unpriced else None,
+            ) if not (unpriced or unread_symbols) else None,
             "disclosure": SYNTHETIC_DISCLOSURE,
         }
 
@@ -951,6 +985,16 @@ class XLayerRwaProvider:
                     f"{settings.public_url}/sign?o={order_id}" if settings.public_url else None
                 ),
                 "status": "awaiting_signature",
+                # Who pays the gas, stated rather than defaulted.
+                #
+                # The cards read this field and BOTH of them treat a missing
+                # value as "sponsored by Sarf" — and it was missing on every
+                # order, so a trade the user was about to sign and pay OKB for
+                # was captioned "Gas: sponsored by Sarf". Sponsorship is real
+                # but it is exactly as narrow as can_execute: the relayer pays
+                # only when Sarf submits the swap under a live grant. A
+                # wallet-signed order is the user's gas.
+                "gas_sponsored": can_execute,
                 # Drives the widget's "Execute now" chip. Advisory only —
                 # execute_order re-checks the grant, the threshold and the
                 # chain, because a flag computed here is a flag a caller
@@ -1206,6 +1250,9 @@ class XLayerRwaProvider:
                 "sign_url": (f"{settings.public_url}/sign?o={order_id}"
                              if settings.public_url else None),
                 "status": "awaiting_signature", "can_execute": can_execute,
+                # See place_order: sponsorship applies only to swaps Sarf's
+                # relayer submits, which is exactly the can_execute case.
+                "gas_sponsored": can_execute,
                 "next_step": _EXECUTE_STEP if can_execute else _SIGN_STEP,
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
@@ -1326,6 +1373,10 @@ class XLayerRwaProvider:
             history_limit for recent orders. Combine them freely.
             """
             address = require_address()
+            # Same reason as the /grant endpoint: retire lapsed grants before
+            # reading, so "is in-chat execution live?" is answered against the
+            # clock rather than against whenever the sweeper last ran.
+            db.expire_grants()
             row = db.get_grant(address)
             installed = await rpc.delegated_to(address)
             on_chain = bool(installed and settings.delegate_address
@@ -1337,15 +1388,33 @@ class XLayerRwaProvider:
                 "passkey_registered": bool(db.passkeys_for_address(address)),
                 "setup_url": f"{settings.public_url}/security" if settings.public_url else None,
             }
-            if not row or not on_chain:
+            # "A row exists" was treated as "a grant exists", so an expired or
+            # locally revoked grant still produced "A live grant exists: orders
+            # … can be executed with execute_order" — while the grant object in
+            # the same response carried active: false. One response, two
+            # answers, about whether an agent may move money without asking.
+            g = _grant_from_row(row) if row else None
+            if not g or not g.active or not on_chain:
                 base["grant"] = None
+                lapsed = bool(g and not g.active)
                 base["note"] = (
-                    "No live session grant. Orders here are BUILT only — give the user "
-                    "sign_url and they sign in their own wallet. They can set up in-chat "
-                    "execution at setup_url; it is optional and revocable."
+                    (
+                        "The session grant for this wallet has ENDED "
+                        + ("(revoked)" if g and g.revoked_at and g.revoked_at < g.expiry
+                           else "(it expired)")
+                        + ". Sarf holds no usable key for this account: execute_order will "
+                        "refuse, and it cannot be renewed from here. Orders are BUILT only "
+                        "— hand the user sign_url so they sign in their own wallet, and "
+                        f"tell them a new grant can be authorised at {base['setup_url']}."
+                    ) if lapsed else (
+                        "No live session grant. Orders here are BUILT only — give the user "
+                        "sign_url and they sign in their own wallet. They can set up in-chat "
+                        "execution at setup_url; it is optional and revocable."
+                    )
                 )
+                if lapsed:
+                    base["grant_ended_at"] = int(g.revoked_at or g.expiry)
             else:
-                g = _grant_from_row(row)
                 base["grant"] = g.view(reg.quote.decimals)
                 base["note"] = (
                     "A live grant exists: orders at or under auto_execute_under_usd can be "
@@ -1654,6 +1723,9 @@ class XLayerRwaProvider:
                 "receiving_estimated": order.get("receiving_estimated"),
                 "estimated_usd": est,
                 "platform_fee": order.get("platform_fee"),
+                # This path is the sponsored one by definition: the relayer
+                # submitted the swap and paid the OKB for it.
+                "gas_sponsored": True,
                 "status": state if state != "unknown" else "submitted",
                 "executed": confirmed,
                 "settlement": settle,

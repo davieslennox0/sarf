@@ -559,3 +559,116 @@ def test_consuming_a_verification_forces_the_next_one(db, monkeypatch):
     db.consume_passkey_verification(ADDR_A)
     assert db.last_passkey_verification(ADDR_A) is None
     assert passkey.check_stepup(db, ADDR_A, 10.0).blocked
+
+
+# --- grant retirement --------------------------------------------------------
+# The grant lasts an hour. What happens at the end of that hour is not just a
+# matter of a flag flipping: Sarf holds a signing key for it, and every surface
+# that showed the grant read the row rather than the clock.
+
+def test_an_expired_grant_is_retired_and_its_key_destroyed(db):
+    db.put_grant(address=ADDR_A, session_address=ADDR_B, sealed_key="sealed",
+                 delegate=ADDR_A, router=ADDR_A, stable=ADDR_A,
+                 expiry=int(time.time()) - 1, per_trade_cap=500, daily_cap=2000)
+
+    assert db.expire_grants() == 1
+    row = db.get_grant(ADDR_A)
+    assert row["revoked_at"] is not None, "an expired grant must not read as live"
+    assert row["sealed_key"] == "", "a key that can authorise nothing must not be kept"
+    # Idempotent: the sweeper runs every minute and on every read.
+    assert db.expire_grants() == 0
+
+
+def test_a_live_grant_survives_the_sweep(db):
+    db.put_grant(address=ADDR_A, session_address=ADDR_B, sealed_key="sealed",
+                 delegate=ADDR_A, router=ADDR_A, stable=ADDR_A,
+                 expiry=int(time.time()) + 3600, per_trade_cap=500, daily_cap=2000)
+    assert db.expire_grants() == 0
+    row = db.get_grant(ADDR_A)
+    assert row["revoked_at"] is None
+    assert row["sealed_key"] == "sealed"
+
+
+def test_revoking_destroys_the_key_material(db):
+    db.put_grant(address=ADDR_A, session_address=ADDR_B, sealed_key="sealed",
+                 delegate=ADDR_A, router=ADDR_A, stable=ADDR_A,
+                 expiry=int(time.time()) + 3600, per_trade_cap=500, daily_cap=2000)
+    assert db.revoke_grant(ADDR_A) is True
+    row = db.get_grant(ADDR_A)
+    assert row["revoked_at"] is not None
+    assert row["sealed_key"] == ""
+    # A second revoke changes nothing — the row is already dead.
+    assert db.revoke_grant(ADDR_A) is False
+
+
+def test_an_expired_grant_is_not_active(db):
+    """The dataclass is what every execution path consults."""
+    from sarf.xlayer.delegation import Grant
+
+    g = Grant(address=ADDR_A, session_address=ADDR_B, delegate=ADDR_A,
+              router=ADDR_A, stable=ADDR_A, expiry=int(time.time()) - 1,
+              per_trade_cap=500, daily_cap=2000, created_at=0.0, rotated_at=0.0)
+    assert not g.active
+    assert g.view()["expires_in_seconds"] == 0
+
+
+# --- who pays the gas --------------------------------------------------------
+
+def test_the_card_only_claims_sponsored_gas_when_sarf_pays():
+    """Both cards default a missing `gas_sponsored` to "sponsored by Sarf", and
+    the field was never set on an order — so a trade the user was about to sign
+    and pay OKB for was captioned as free. Sponsorship is exactly as narrow as
+    can_execute: it is the relayer submitting the swap, nothing else."""
+    from sarf.xlayer.card import render_order_card_text
+
+    o = {"side": "buy", "symbol": "AAPLx", "spending": "10 USDT",
+         "receiving_estimated": "0.03 AAPLx", "estimated_usd": 10.0}
+
+    assert "paid from your OKB" in render_order_card_text({**o, "gas_sponsored": False})
+    assert "sponsored by Sarf" in render_order_card_text({**o, "gas_sponsored": True})
+
+
+# --- balances: a failed read is not a zero balance ---------------------------
+
+def test_a_failed_balance_read_is_reported_not_silently_zeroed():
+    """`erc20_balances` used to return only the successes, so a token whose
+    read failed looked exactly like a token the wallet does not hold — during
+    an RPC wobble a position simply vanished from the portfolio. The failures
+    now come back by address so the caller can say which ones it could not
+    read."""
+    import asyncio
+
+    from sarf.xlayer import rpc
+
+    async def fake_call(method, params, **kw):
+        to = params[0]["to"] if method == "eth_call" else ""
+        if to == ADDR_B:
+            raise rpc.RpcError("node said no")
+        return hex(42)
+
+    original = rpc._call
+    rpc._call = fake_call
+    try:
+        got, unread = asyncio.run(rpc.erc20_balances([ADDR_A, ADDR_B], ADDR_A))
+    finally:
+        rpc._call = original
+
+    assert got == {ADDR_A: 42}
+    assert unread == [ADDR_B]
+
+
+def test_every_balance_failing_is_an_error_not_an_empty_wallet():
+    import asyncio
+
+    from sarf.xlayer import rpc
+
+    async def fake_call(method, params, **kw):
+        raise rpc.RpcError("node down")
+
+    original = rpc._call
+    rpc._call = fake_call
+    try:
+        with pytest.raises(rpc.RpcError):
+            asyncio.run(rpc.erc20_balances([ADDR_A, ADDR_B], ADDR_A))
+    finally:
+        rpc._call = original
