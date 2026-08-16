@@ -26,3 +26,94 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -r server/requirements.txt
       - run: cd server && python -m pytest tests/ -q
+
+  # ---------------------------------------------------------------------------
+  # The frontend bundle, built here because it cannot reliably be built on the
+  # server.
+  #
+  # The box has 961 MB of RAM with ~50 MB free once the other services on it are
+  # running. `vite build` on this dependency tree (Privy pulls in WalletConnect,
+  # viem and a large wallet-connector graph) peaked past that twice and died with
+  # a V8 "FatalProcessOutOfMemory", and the runs that did finish took 6m38s,
+  # most of it swapping. Worse, vite empties dist/ before it starts — so a build
+  # that OOMs takes the live site down with it and leaves nothing to serve. That
+  # happened during this work: the site returned 500 until a build finally
+  # completed.
+  #
+  # A GitHub runner has 16 GB and builds it in well under a minute. The bundle is
+  # published to the `frontend-dist` branch and the server fetches it, so the
+  # deploy box never runs npm at all.
+  # ---------------------------------------------------------------------------
+  frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # only to push the built bundle to frontend-dist
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+        working-directory: frontend
+
+      # VITE_* values are compiled INTO the bundle, so a missing one is not a
+      # runtime warning — it is a different application. With no app id,
+      # privyEnabled() returns false and the whole sign-in path silently falls
+      # back to injected wallets, which is not what this deployment is. Fail
+      # here instead of shipping that.
+      #
+      # It lives in a repository VARIABLE rather than a secret because a Privy
+      # app id is a public client identifier: it ships in the bundle either way,
+      # and pretending otherwise only makes it harder to see what was built.
+      # Set it at Settings → Secrets and variables → Actions → Variables.
+      - name: Check build-time configuration
+        env:
+          VITE_PRIVY_APP_ID: ${{ vars.VITE_PRIVY_APP_ID }}
+        run: |
+          if [ -z "$VITE_PRIVY_APP_ID" ]; then
+            echo "::error::VITE_PRIVY_APP_ID repository variable is not set."
+            echo "Without it the bundle is built with Privy disabled — Google"
+            echo "sign-in and the embedded wallet would be missing from the site."
+            exit 1
+          fi
+          echo "build config OK"
+
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_PRIVY_APP_ID: ${{ vars.VITE_PRIVY_APP_ID }}
+        run: npm run build
+
+      # Kept for every push, including pull requests: a bundle you can download
+      # and diff is how you answer "is what is deployed what I think it is".
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist-${{ github.sha }}
+          path: frontend/dist
+          retention-days: 14
+
+      # Publish only from master. A branch build proves the code compiles; it
+      # must not become the thing production pulls.
+      - name: Publish bundle to the frontend-dist branch
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        working-directory: frontend/dist
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # A throwaway repo INSIDE dist/, so the root .gitignore (which ignores
+          # frontend/dist/, correctly — built output does not belong on master)
+          # has no say over what gets committed here.
+          git init -q
+          git config user.name "sarf-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -q -b frontend-dist
+          git add -A
+          git commit -q -m "build ${GITHUB_SHA::12}"
+          git push -q --force \
+            "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            frontend-dist
+          echo "published $(git rev-parse --short HEAD) from ${GITHUB_SHA::12}"
