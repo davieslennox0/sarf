@@ -204,7 +204,10 @@ alphxc.duckdns.org {
 sarf.managerx.xyz {
 	encode zstd gzip
 
-	@allowed path / /assets/* /portfolio /activity /security /sign /connect /authorize /favicon.ico /dashboard /dashboard/* /api/* /.well-known/* /healthz
+	# EVERY client-side route must be listed. A page missing from here 404s
+	# at the proxy and never reaches the app, which looks like a broken
+	# build rather than a config gap — /deposit shipped that way.
+	@allowed path / /assets/* /portfolio /markets /how /security /connect /settings /activity /deposit /send /sign /approve /authorize /favicon.ico /dashboard /dashboard/* /legacy /legacy/* /api/* /.well-known/* /healthz
 	handle @allowed {
 		reverse_proxy 127.0.0.1:8760
 	}

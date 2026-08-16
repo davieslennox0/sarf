@@ -326,9 +326,14 @@ class _SPAStaticFiles(StaticFiles):
 
 
 _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+# Every client-side route needs an entry here, or the server has nothing to
+# serve when someone lands on it directly and the page 404s — which is what
+# happened to /deposit the moment it shipped. Adding a page to the SPA is
+# two edits, and this is the one that is easy to forget.
 _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
     "/settings", "/activity", "/send", "/sign", "/approve", "/dashboard",
+    "/deposit",
 ]
 
 # Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with

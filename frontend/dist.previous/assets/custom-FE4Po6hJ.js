@@ -1,1 +1,0 @@
-import{bu as m}from"./index-rKSqu6XN.js";function a(t,r={}){const{key:e="custom",methods:o,name:u="Custom Provider",retryDelay:s}=r;return({retryCount:n})=>m({key:e,methods:o,name:u,request:t.request.bind(t),retryCount:r.retryCount??n,retryDelay:s,type:"custom"})}export{a as c};
