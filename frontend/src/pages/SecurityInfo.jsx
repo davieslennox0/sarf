@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, ensureSession, getSession, verifyPasskey } from '../api.js';
 import { connect, currentAccount, sendTransaction, sendWithAuthorization } from '../wallet.js';
+import { formatLeft, useGrantClock } from '../grant.js';
 
 /**
  * Security: what protects the account, and the controls that prove it.
@@ -185,6 +186,11 @@ function SessionGrant({ onMessage, onError, passkey }) {
 
   const load = () => api.grant().then(setG).catch(() => {});
   useEffect(() => { load(); }, []);
+  // The grant this deployment issues lasts an hour, and this page is one
+  // people leave open. Without a clock it kept showing an expired key as
+  // active — including its address and caps — until someone reloaded. The
+  // refetch on expiry swaps that for the server's own account of it.
+  const { live, left } = useGrantClock(g, load);
 
   const authorize = async () => {
     setBusy(true); onError(null); onMessage(null);
@@ -275,7 +281,6 @@ function SessionGrant({ onMessage, onError, passkey }) {
   };
 
   if (!g) return null;
-  const live = g.grant && g.grant.active && g.delegation_installed;
 
   return (
     <>
@@ -284,7 +289,7 @@ function SessionGrant({ onMessage, onError, passkey }) {
       {live ? (
         <>
           <div className="kv">
-            <div><span>Status</span><b className="ok">active</b></div>
+            <div><span>Status</span><b className="ok">active · {formatLeft(left)} left</b></div>
             <div><span>Expires</span>
               <b>{new Date(g.grant.expires_at * 1000).toLocaleString()}</b></div>
             <div><span>Per trade</span><b>${Number(g.grant.per_trade_cap_usd).toLocaleString()}</b></div>
@@ -311,6 +316,18 @@ function SessionGrant({ onMessage, onError, passkey }) {
         </>
       ) : (
         <>
+          {/* Say what happened to the last one. Landing on an empty setup form
+              an hour after authorising reads as the grant having failed; the
+              truth is that it ran its course, which is the design. */}
+          {g.previous_grant && (
+            <p className="muted small">
+              Your previous session key{' '}
+              {g.previous_grant.reason === 'revoked' ? 'was revoked' : 'expired'}{' '}
+              {new Date(g.previous_grant.ended_at * 1000).toLocaleString()} and
+              has been destroyed server-side. Authorizing below issues a new
+              one — the old key cannot trade even if someone still holds it.
+            </p>
+          )}
           {passkey === false && (
             <p className="error">
               Register a passkey first — you will be prompted at sign-in. It gates

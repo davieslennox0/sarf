@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, ensureSession, getSession } from '../api.js';
 import { connect, currentAccount, short } from '../wallet.js';
+import { formatLeft, useGrantClock } from '../grant.js';
 
 /**
  * The account dashboard: an index, then a page per section.
@@ -25,39 +26,57 @@ function useAccountData() {
   const [data, setData] = useState({ session: getSession() });
   const [err, setErr] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const addr = (await currentAccount()) || (await connect());
-        await ensureSession(addr);
-        const [grant, passkey, orders] = await Promise.all([
-          api.grant().catch(() => null),
-          api.passkeyStatus().catch(() => null),
-          api.myOrders().catch(() => null),
-        ]);
-        setData({ session: getSession(), grant, passkey, orders });
-      } catch (e) {
-        setErr(e.message || String(e));
-      }
-    })();
-  }, []);
+  const loadGrant = async () => {
+    const grant = await api.grant().catch(() => null);
+    setData((d) => ({ ...d, grant }));
+  };
 
-  return { ...data, err };
+  // Named, so the error state can offer it again. The effect runs once; a
+  // transient failure on it used to leave the dashboard permanently showing
+  // an error with nothing to press.
+  const load = async () => {
+    setErr(null);
+    try {
+      const addr = (await currentAccount()) || (await connect());
+      await ensureSession(addr);
+      const [grant, passkey, orders] = await Promise.all([
+        api.grant().catch(() => null),
+        api.passkeyStatus().catch(() => null),
+        api.myOrders().catch(() => null),
+      ]);
+      setData({ session: getSession(), grant, passkey, orders });
+    } catch (e) {
+      setErr(e.message || String(e));
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return { ...data, err, loadGrant, reload: load };
 }
 
 export default function Dashboard() {
   const { section } = useParams();
   const navigate = useNavigate();
-  const { session, grant, passkey, orders, err } = useAccountData();
+  const { session, grant, passkey, orders, err, loadGrant, reload } = useAccountData();
 
-  const live = grant?.grant && grant.grant.active && grant.delegation_installed;
+  // Liveness is decided against the clock, not against whatever the fetch said
+  // when the page opened — see grant.js. The refetch on expiry replaces the
+  // stale object with the server's own "this ended, and when".
+  const { live, left } = useGrantClock(grant, loadGrant);
   const autonomous = grant?.approval_mode === 'autonomous';
+  const previous = grant?.previous_grant;
 
   if (!section) {
     return (
       <section>
         <h1>Dashboard</h1>
-        {err && <p className="error">{err}</p>}
+        {err && (
+          <>
+            <p className="error">{err}</p>
+            <div className="cta"><button onClick={reload}>Try again</button></div>
+          </>
+        )}
         <div className="rowlist">
           {SECTIONS.map((s) => (
             <Link key={s.id} className="rowlink" to={`/dashboard/${s.id}`}>
@@ -85,7 +104,12 @@ export default function Dashboard() {
     <section>
       <Link className="backlink" to="/dashboard">‹ Dashboard</Link>
       <h1>{meta.title}</h1>
-      {err && <p className="error">{err}</p>}
+      {err && (
+          <>
+            <p className="error">{err}</p>
+            <div className="cta"><button onClick={reload}>Try again</button></div>
+          </>
+        )}
 
       {section === 'agents' && (
         session ? (
@@ -95,7 +119,11 @@ export default function Dashboard() {
               <div><span>Session expires</span>
                 <b>{new Date(session.expiresAt).toLocaleString()}</b></div>
               <div><span>In-chat execution</span>
-                <b className={live ? 'ok' : ''}>{live ? 'live' : 'not set up'}</b></div>
+                <b className={live ? 'ok' : ''}>
+                  {live
+                    ? `live · ${formatLeft(left)} left`
+                    : previous ? 'ended — authorize again' : 'not set up'}
+                </b></div>
               <div><span>Approval mode</span>
                 <b>{autonomous ? 'Autonomous' : 'Always Ask'}</b></div>
               <div><span>Asks for a passkey</span>
@@ -130,7 +158,7 @@ export default function Dashboard() {
                 : 'never'}
             </b>
           </div>
-          {live && (
+          {live ? (
             <>
               <div><span>Session key</span>
                 <b className="addr">{short(grant.grant.session_key || '')}</b></div>
@@ -139,8 +167,18 @@ export default function Dashboard() {
               <div><span>Per day</span>
                 <b>${Number(grant.grant.daily_cap_usd).toLocaleString()}</b></div>
               <div><span>Key expires</span>
-                <b>{new Date(grant.grant.expires_at * 1000).toLocaleString()}</b></div>
+                <b>{new Date(grant.grant.expires_at * 1000).toLocaleString()}
+                  {' · '}{formatLeft(left)} left</b></div>
             </>
+          ) : (
+            // Never the old key. Once a grant ends there is no session key on
+            // this account — the row is revoked server-side and its signing
+            // material destroyed — so showing the address it used to have
+            // would be describing something that no longer exists.
+            <div><span>Session key</span>
+              <b>{previous
+                ? `none — ${previous.reason} ${new Date(previous.ended_at * 1000).toLocaleString()}`
+                : 'none'}</b></div>
           )}
         </div>
       )}
@@ -154,7 +192,13 @@ export default function Dashboard() {
             {orders.orders.map((o) => (
               <div key={o.order_id}>
                 <span>{o.side} {o.symbol}</span>
-                <b>{o.status}{o.estimated_usd ? ` · $${o.estimated_usd}` : ''}</b>
+                {/* est_usd, not estimated_usd: /api/me/orders returns the
+                    column name, so the old key was undefined on every row and
+                    no order here has ever shown its value. */}
+                <b>
+                  {o.status}
+                  {o.est_usd != null ? ` · $${Number(o.est_usd).toFixed(2)}` : ''}
+                </b>
               </div>
             ))}
           </div>

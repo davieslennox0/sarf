@@ -21,6 +21,18 @@ const ROLES = [
   'Desk',
 ];
 
+/**
+ * Deterministic hue per ticker, so an asset keeps one colour on every surface
+ * — market row, holding, chat card. Exported because Markets and Portfolio
+ * each carried their own byte-identical copy of it.
+ */
+export function markBg(symbol) {
+  const base = String(symbol || '?').replace(/x$/, '');
+  let h = 0;
+  for (const c of base) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `linear-gradient(140deg, hsl(${h},62%,42%), hsl(${(h + 38) % 360},58%,30%))`;
+}
+
 /** Cycles a word every `every` ms, sliding the next one up into place. */
 function Rotator({ words, every = 5000 }) {
   const [i, setI] = useState(0);
@@ -191,12 +203,23 @@ export default function Home() {
           ChatGPT. Sarf prices and builds every trade; you sign it in your own
           wallet. The server holds no keys and cannot move your funds.
         </p>
+        {/* The action, above the fold. It used to be the last thing on the
+            page, under the board, the whole market list and three steps —
+            a landing page whose only call to action is a screen and a half
+            down is asking every visitor to go looking for it. */}
+        <div className="hero-cta">
+          <Link className="cta-btn" to="/how">Connect to Claude or ChatGPT</Link>
+          <Link className="cta-btn ghost" to="/markets">Browse the markets</Link>
+        </div>
         <div className="stats">
           <div><b>{assets.length || '\u2014'}</b><span>assets</span></div>
           <div><b>X Layer</b><span>chain 196</span></div>
+          <div><b>$0.10</b><span>flat fee per swap</span></div>
+          <div><b>Non-custodial</b><span>you hold the keys</span></div>
         </div>
       </section>
 
+      <div className="section-label">Live price</div>
       <Board symbol={featured} name={featuredAsset?.name?.replace(' xStock', '')} />
 
       <div className="section-label">Markets</div>
@@ -209,9 +232,22 @@ export default function Home() {
               className={`row${featured === a.symbol ? ' on' : ''}`}
               onClick={() => setFeatured(a.symbol)}
             >
+              {/* Same row anatomy as Markets and Portfolio: mark, then a
+                  stacked id. The three pages listed assets three different
+                  ways, and .row-left only laid this one out as a column by
+                  accident of stylesheet order. */}
               <span className="row-left">
-                <span className="sym">{a.symbol}</span>
-                <span className="name">{a.name.replace(' xStock', '')}</span>
+                <span className="tokenmark" style={{ background: markBg(a.symbol) }}>
+                  {a.logo_url
+                    ? <img src={a.logo_url} alt="" loading="lazy" referrerPolicy="no-referrer"
+                           onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                    : null}
+                  <i>{a.symbol.replace(/x$/, '').slice(0, 2).toUpperCase()}</i>
+                </span>
+                <span className="row-id">
+                  <span className="sym">{a.symbol}</span>
+                  <span className="name">{a.name.replace(' xStock', '')}</span>
+                </span>
               </span>
               <span className="row-right">
                 <span className="price">
@@ -224,18 +260,21 @@ export default function Home() {
         })}
       </div>
       <Link className="see-all" to="/markets">
-        View all {assets.length || 40} tokenized assets \u2192
+        View all {assets.length || 40} tokenized assets →
       </Link>
 
       <div className="section-label">How it works</div>
-      <div className="steps">
+      {/* Three short steps side by side rather than stacked: they are peers,
+          not a sequence you scroll through, and as a column they left most of
+          a desktop window empty. */}
+      <div className="steps grid g3">
         <div className="step">
           <div className="step-num">01</div>
           <div className="step-body">
             <h3>Read any address</h3>
             <p>
               Paste an X Layer address on the portfolio page. No connection, no
-              signup \u2014 it reads the same public state a block explorer shows.
+              signup — it reads the same public state a block explorer shows.
             </p>
           </div>
         </div>
@@ -262,14 +301,29 @@ export default function Home() {
         </div>
       </div>
 
-      <div className="card green">
-        <h3>Non-custodial by construction</h3>
-        <p>
-          Sarf can price and build a transaction; it cannot move your funds. Every
-          trade is signed by you, and the session-key path that runs small trades
-          in chat is capped in the contract itself \u2014 transfers can never be
-          delegated at all.
-        </p>
+      <div className="section-label">What you are trusting</div>
+      {/* The two claims a first-time visitor actually weighs, side by side.
+          The custody one used to sit alone above the CTA and the instrument
+          disclosure was in the footer, which put the two halves of the same
+          question at opposite ends of the page. */}
+      <div className="grid g2">
+        <div className="card green">
+          <h3>Non-custodial by construction</h3>
+          <p>
+            Sarf can price and build a transaction; it cannot move your funds. Every
+            trade is signed by you, and the session-key path that runs small trades
+            in chat is capped in the contract itself — transfers can never be
+            delegated at all.
+          </p>
+        </div>
+        <div className="card accent">
+          <h3>Synthetic exposure, stated plainly</h3>
+          <p>
+            xStocks track the underlying share price and nothing else: no ownership,
+            no dividends, no voting rights, and redemption depends on the issuer.
+            Sarf repeats this on every priced response rather than only here.
+          </p>
+        </div>
       </div>
 
       <div className="connect-cta">
@@ -279,23 +333,6 @@ export default function Home() {
         <p>Add the MCP server once, then trade and read your portfolio from any chat.</p>
         <Link className="cta-btn" to="/how">View setup instructions</Link>
       </div>
-
-      <footer>
-        <p className="fine">
-          Synthetic exposure. xStocks track the underlying share price only \u2014 no
-          ownership, dividends, or voting rights. Redemption depends on the issuer.
-          Sarf is not a broker.
-        </p>
-        <p className="fine">
-          A flat $0.10 platform fee is charged per swap in the stablecoin leg, inside
-          the same transaction you sign. Network gas is separate and paid in OKB.
-        </p>
-        <div className="footlinks">
-          <Link to="/security">Security</Link>
-          <Link to="/how">How it works</Link>
-          <Link to="/connect">Connect</Link>
-        </div>
-      </footer>
     </>
   );
 }

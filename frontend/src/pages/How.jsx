@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
 
 /**
  * How it works — which is, in practice, how you connect.
@@ -16,13 +15,54 @@ import { Link } from 'react-router-dom';
  */
 const MCP_URL = 'https://sarf-mcp.managerx.xyz/mcp';
 
+/**
+ * Where each client keeps its connector list.
+ *
+ * Neither Claude nor ChatGPT accepts a prefilled "add this MCP server" deep
+ * link — there is no documented URL that carries a name and endpoint into the
+ * dialog, and inventing one produces a link that silently lands on a settings
+ * page with an empty form. So the button does the two things that ARE
+ * possible, in the order that makes the paste work: put the endpoint on the
+ * clipboard first, then open the page where it has to go. The user arrives
+ * with the URL already copied and one field to fill.
+ */
+const CLIENTS = [
+  {
+    id: 'claude',
+    label: 'Add to Claude',
+    href: 'https://claude.ai/settings/connectors',
+    where: 'Settings → Connectors → Add custom connector',
+  },
+  {
+    id: 'chatgpt',
+    label: 'Add to ChatGPT',
+    href: 'https://chatgpt.com/#settings/Connectors',
+    where: 'Settings → Connectors → Add (developer mode, Plus/Pro)',
+  },
+];
+
 export default function How() {
   const [copied, setCopied] = useState(false);
+  const [sent, setSent] = useState(null);
 
   const copy = () => {
     navigator.clipboard?.writeText(MCP_URL);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const open = async (client) => {
+    // Copy BEFORE navigating away. A clipboard write is a user-gesture
+    // permission and window.open can steal the gesture's tail on some
+    // browsers, so the write is awaited first and the tab opens after —
+    // and if the clipboard is unavailable the tab still opens, because the
+    // endpoint is on screen to copy by hand two lines below.
+    try {
+      await navigator.clipboard?.writeText(MCP_URL);
+      setSent(client.id);
+      setTimeout(() => setSent((s) => (s === client.id ? null : s)), 6000);
+    } catch { /* no clipboard: the code block above is still copyable */ }
+    window.open(client.href, '_blank', 'noopener,noreferrer');
   };
 
   return (
@@ -33,12 +73,39 @@ export default function How() {
         Add Sarf to Claude or ChatGPT — about a minute, and you only do it once.
       </p>
 
+      {/* The shortcut, above the steps rather than after them: the steps are
+          for people who want to know what is happening, and everyone else
+          just wants to be taken to the right settings page with the endpoint
+          already copied. */}
+      <div className="client-buttons">
+        {CLIENTS.map((c) => (
+          <button key={c.id} className="primary" onClick={() => open(c)}>
+            {sent === c.id ? 'URL copied — paste it' : c.label}
+          </button>
+        ))}
+      </div>
+      <p className="muted small" style={{ marginTop: 10 }}>
+        Opens your client's connector settings in a new tab and copies the Sarf
+        endpoint to your clipboard — paste it into <b>Add custom connector</b>.
+        Neither client accepts a prefilled link, so this is one paste, not none.
+      </p>
+
       <div className="steps" style={{ marginTop: 30 }}>
         <div className="step">
           <div className="step-num">01</div>
           <div className="step-body">
             <h3>Open Settings → Connectors</h3>
-            <p>In Claude or ChatGPT, choose to add a custom connector.</p>
+            <p>
+              In Claude or ChatGPT, choose to add a custom connector. The
+              buttons above take you straight there.
+            </p>
+            <ul className="where">
+              {CLIENTS.map((c) => (
+                <li key={c.id}>
+                  <b>{c.label.replace('Add to ', '')}</b> — {c.where}
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
         <div className="step">
@@ -112,10 +179,14 @@ export default function How() {
         </p>
       </div>
 
-      <div className="connect-cta">
-        <p>No wallet needed to try the analysis first.</p>
-        <Link className="cta-btn" to="/portfolio">Read a portfolio</Link>
-      </div>
+      {/*
+        The "Read a portfolio" call to action is gone.
+
+        It offered an analysis of any pasted address, which stopped being true
+        when /portfolio became account-only — the button led to a sign-in
+        prompt, so the one thing it promised (no wallet needed) was the one
+        thing it could not do.
+      */}
     </section>
   );
 }

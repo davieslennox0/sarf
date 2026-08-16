@@ -18,6 +18,17 @@
   --red: #B4534A;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+
+  /* One measure for the whole site. Content used to run edge to edge at 3%
+     inset, which on a wide monitor put the nav, a price board and a paragraph
+     on three different left margins and stretched every row to 1900px. A
+     single centred column is what every app this one sits beside does. */
+  --content: 1160px;
+  --pad: clamp(16px, 4vw, 40px);
+  /* Two radii, used consistently: controls and panels. Mixed values (0, 4, 6,
+     8, 999) were being picked per component. */
+  --r: 6px;
+  --r-lg: 10px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,11 +43,15 @@ body {
 a { color: var(--amber); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* Fill the viewport, never closer than 3% to either edge. Prose blocks keep
-   their own max-width in ch below — a paragraph stretched across a wide
-   monitor is technically full-bleed and practically unreadable, so the page
-   fills the screen while the reading measure stays fixed. */
-.app { width: 100%; max-width: none; margin: 0 auto; padding: 0 3% 72px; }
+/* The shell is full-bleed so bars and rules span the window; everything that
+   is read or clicked sits inside one centred column of --content. The nav
+   uses the padding trick rather than a wrapper div so its bottom rule still
+   crosses the whole viewport while its contents line up with the page. */
+.app { width: 100%; margin: 0; padding: 0; }
+main {
+  width: 100%; max-width: var(--content); margin: 0 auto;
+  padding: 8px var(--pad) 72px;
+}
 
 /* ---- chrome ------------------------------------------------------------ */
 
@@ -47,8 +62,8 @@ a:hover { text-decoration: underline; }
 nav {
   position: sticky; top: 0; z-index: 50;
   display: flex; align-items: center; gap: 24px;
-  padding: 0 3%; height: 64px;
-  margin: 0 -3%;            /* cancel .app's inset so the rule spans full width */
+  height: 64px;
+  padding-inline: max(var(--pad), calc((100% - var(--content)) / 2));
   border-bottom: 1px solid var(--line);
   background: rgba(11, 12, 9, .82);
   backdrop-filter: blur(12px) saturate(1.2);
@@ -97,7 +112,7 @@ nav .links a.on::after {
 .account-chip .ttl { color: var(--paper-dim); font-size: 11px; }
 .account-menu {
   position: absolute; right: 0; top: calc(100% + 8px); z-index: 60;
-  min-width: 268px; padding: 14px;
+  min-width: 268px; padding: 14px; border-radius: var(--r-lg);
   background: var(--panel-2); border: 1px solid var(--line);
   box-shadow: 0 18px 44px rgba(0, 0, 0, .55);
 }
@@ -116,7 +131,7 @@ nav .links a.on::after {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   font-family: var(--mono); font-size: 12px; color: var(--paper-dim);
   padding: 11px 14px; margin-top: 16px;
-  background: var(--panel); border: 1px solid var(--line);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
 }
 .bar.live { border-color: var(--amber-dim); color: var(--paper); }
 .bar.warn { border-color: var(--red); color: var(--paper); }
@@ -129,9 +144,31 @@ nav .links a.on::after {
   .header-right { margin-left: auto; }
 }
 
-main { padding-top: 8px; }
-
 /* ---- new UI design system ---------------------------------------------- */
+
+/* Section heading: a small mono label with a rule running out to the right,
+   so a long page reads as a stack of named blocks rather than one scroll.
+   It was used on three pages and had no style at all — the labels rendered as
+   body text, which is why the sections ran together. */
+.section-label {
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--paper-dim);
+  margin: 48px 0 10px;
+}
+.section-label::after {
+  content: ''; flex: 1; height: 1px; background: var(--line);
+}
+
+/* Equal-width blocks. Used for the how-it-works steps and the pair of trust
+   cards, which were both vertical stacks that left two thirds of a desktop
+   window empty. */
+.grid { display: grid; gap: 14px; }
+.grid.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 860px) {
+  .grid.g2, .grid.g3 { grid-template-columns: 1fr; }
+}
 
 /* Eyebrow with the leading rule. */
 .eyebrow.tick { display: flex; align-items: center; gap: 8px; margin: 40px 0 14px; }
@@ -152,15 +189,33 @@ main { padding-top: 8px; }
 .input-row button.go:disabled { opacity: .45; cursor: default; }
 .hint { margin-top: 10px; font-size: 12px; color: var(--paper-dim); }
 
-/* Numbered steps. */
+/* Numbered steps. A stack of rules by default (the setup page reads as a
+   sequence), or a card grid when wrapped in .grid — see Home, where three
+   short steps sitting in one column left the rest of the window empty. */
 .steps { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
 .step { display: flex; gap: 16px; padding: 20px 4px; border-bottom: 1px solid var(--line); }
 .step-num { font-family: var(--mono); font-size: 20px; color: var(--amber-dim); font-weight: 700; min-width: 28px; }
 .step-body h3 { font-family: var(--mono); font-size: 14px; font-weight: 600; margin-bottom: 4px; }
 .step-body p { font-size: 13px; color: var(--paper-dim); line-height: 1.55; }
 
+/* Both `.steps` and `.grid` are single-class selectors, and `.steps` is
+   declared after `.grid` — so on `class="steps grid g3"` the stack would win
+   and the three-up layout would silently do nothing. Said explicitly. */
+.steps.grid { display: grid; border-top: 0; }
+.grid .step {
+  flex-direction: column; gap: 10px; padding: 20px;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--panel);
+}
+.grid .step-num { font-size: 12px; letter-spacing: .1em; }
+
 /* Cards. */
-.card { margin-top: 24px; background: var(--panel); border: 1px solid var(--line); padding: 18px 20px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 20px 22px; margin: 22px 0;
+}
+/* Inside a grid the card is a cell: its own margins would break the row. */
+.grid > .card { margin: 0; height: 100%; }
 .card.accent { border-left: 3px solid var(--amber); }
 .card.green { border-left: 3px solid var(--green); }
 .card h3 { font-family: var(--mono); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
@@ -199,13 +254,17 @@ main { padding-top: 8px; }
 }
 
 /* Call-to-action panel. */
-.connect-cta { margin-top: 40px; text-align: center; padding: 32px 20px; background: var(--panel); border: 1px solid var(--line); }
+.connect-cta {
+  margin-top: 48px; text-align: center; padding: 36px 24px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+}
 .connect-cta p { font-size: 13px; color: var(--paper-dim); margin-bottom: 20px; max-width: 380px; margin-left: auto; margin-right: auto; }
 
 .code-block {
   margin-top: 14px; background: var(--panel-2); border: 1px solid var(--line);
   padding: 14px 16px; font-family: var(--mono); font-size: 12px;
   color: var(--paper-dim); overflow-x: auto; white-space: pre; line-height: 1.7;
+  border-radius: var(--r);
 }
 .code-block .k { color: var(--amber); }
 
@@ -221,7 +280,7 @@ main { padding-top: 8px; }
   backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
 }
 .modal {
-  width: 100%; max-width: 440px; padding: 26px;
+  width: 100%; max-width: 440px; padding: 26px; border-radius: var(--r-lg);
   background: var(--panel-2); border: 1px solid var(--line);
   box-shadow: 0 24px 64px rgba(0, 0, 0, .6);
 }
@@ -263,7 +322,14 @@ h2 {
 .error { color: var(--red); font-size: 14px; line-height: 1.5; }
 code { font-family: var(--mono); font-size: 12px; color: var(--paper); }
 
-.hero { padding: 38px 0 6px; }
+.hero { padding: 48px 0 8px; }
+/* The landing page had no action above the fold at all — the first button was
+   a screen and a half down, past the price board and the market list. */
+.hero-cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+@media (max-width: 560px) {
+  .hero-cta { flex-direction: column; align-items: stretch; }
+  .hero-cta .cta-btn, .hero-cta .btn { width: 100%; }
+}
 
 /* Rotating role word. Same mechanic as the flaps: the new word rises into
    place from below. The ghost span reserves the widest word's width so the
@@ -290,22 +356,45 @@ code { font-family: var(--mono); font-size: 12px; color: var(--paper); }
 
 /* ---- buttons ----------------------------------------------------------- */
 
-button {
+/* One button, whether it is a <button> or a <Link>.
+
+   .cta-btn was used on four pages as the primary call to action and had NO
+   rule anywhere — those links rendered as underlined amber text next to real
+   buttons, which is the single thing that made the site look unfinished. It
+   is now the same object as a button and shares every state with it. */
+button, .btn, .cta-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   font-family: var(--mono); font-size: 12px; letter-spacing: .06em;
-  text-transform: uppercase; padding: 9px 16px; cursor: pointer;
+  text-transform: uppercase; padding: 11px 18px; cursor: pointer;
   background: transparent; color: var(--paper);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line); border-radius: var(--r);
+  text-decoration: none; white-space: nowrap;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
 }
-button:hover:not(:disabled) { border-color: var(--paper-dim); }
+button:hover:not(:disabled), .btn:hover, .cta-btn:hover {
+  border-color: var(--paper-dim); text-decoration: none; background: var(--panel);
+}
 button:disabled { opacity: .45; cursor: default; }
-button.primary { background: var(--amber); border-color: var(--amber); color: #14150E; font-weight: 600; }
-button.primary:hover:not(:disabled) { background: #F0B053; border-color: #F0B053; }
+button.primary, .btn.primary, .cta-btn {
+  background: var(--amber); border-color: var(--amber); color: #14150E; font-weight: 600;
+}
+button.primary:hover:not(:disabled), .btn.primary:hover, .cta-btn:hover {
+  background: #F0B053; border-color: #F0B053; color: #14150E;
+}
+/* Secondary link-button: same shape, no fill. */
+.btn.ghost, .cta-btn.ghost {
+  background: transparent; color: var(--paper); border-color: var(--line); font-weight: 400;
+}
+.btn.ghost:hover, .cta-btn.ghost:hover {
+  background: var(--panel); border-color: var(--paper-dim); color: var(--paper);
+}
 button.big { width: 100%; padding: 15px; font-size: 13px; }
 button.danger { color: var(--red); border-color: rgba(180, 83, 74, .45); }
 
 /* ---- split-flap board -------------------------------------------------- */
 
-.board { margin: 34px 0 8px; background: var(--panel); border: 1px solid var(--line); padding: 22px; }
+.board { margin: 18px 0 8px; background: var(--panel); border: 1px solid var(--line);
+         border-radius: var(--r-lg); padding: 22px; }
 .board-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
 .ticker-name { font-family: var(--mono); font-size: 13px; color: var(--paper-dim); letter-spacing: .06em; }
 .live-dot { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--green); }
@@ -350,9 +439,15 @@ button.danger { color: var(--red); border-color: rgba(180, 83, 74, .45); }
   font-family: var(--sans); font-size: inherit; color: inherit; cursor: pointer;
 }
 .row:hover:not(:disabled) { background: var(--panel); border-color: var(--line); }
+/* A row with nowhere to go — the native coin has no token page. It must not
+   invite a click it cannot honour. */
+.row.static { cursor: default; }
+.row.static:hover { background: none; }
 .row.on { background: var(--panel); }
 .row.on .sym { color: var(--amber); }
-.row-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* .row-left was declared twice — column here, row further down — so which
+   layout a market row got depended on rule order rather than on markup. One
+   definition now, at the bottom with the token mark it exists to hold. */
 .sym { font-family: var(--mono); font-weight: 600; font-size: 14px; color: var(--paper); }
 .name { font-size: 12px; color: var(--paper-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-right { display: flex; align-items: center; gap: 14px; }
@@ -368,24 +463,30 @@ button.danger { color: var(--red); border-color: rgba(180, 83, 74, .45); }
 .kv span { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--paper-dim); }
 .kv b { font-family: var(--mono); font-size: 13px; font-weight: 500; text-align: right; word-break: break-word; }
 
-.card { background: var(--panel); border: 1px solid var(--line); padding: 22px; margin: 22px 0; }
-.sign-card { background: var(--panel); border: 1px solid var(--line); padding: 26px; margin: 28px 0; }
+/* `.card` was declared a second time here, later in the file and without the
+   corner radius — so every card on the site was square regardless of what the
+   rule above said. One definition, up in the card section. */
+.sign-card { background: var(--panel); border: 1px solid var(--line);
+             border-radius: var(--r-lg); padding: 26px; margin: 28px 0; }
 .summary { font-family: var(--mono); font-size: 16px; color: var(--paper); line-height: 1.5; padding-bottom: 4px; }
 
 .disclosure {
   border: 1px solid var(--amber-dim); border-left-width: 3px;
   background: rgba(232, 163, 61, .05);
   padding: 14px 16px; margin: 24px 0; font-size: 13px; line-height: 1.6; color: var(--paper-dim);
+  border-radius: var(--r);
 }
 .disclosure b { color: var(--paper); }
 
-.risk { border: 1px solid var(--line); padding: 16px; margin: 20px 0; background: var(--panel-2); }
+.risk { border: 1px solid var(--line); border-radius: var(--r); padding: 16px;
+        margin: 20px 0; background: var(--panel-2); }
 .risk-title { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--amber); margin-bottom: 10px; }
 .risk ul { margin: 0; padding-left: 18px; }
 .risk li { font-size: 13px; line-height: 1.6; color: var(--paper-dim); margin-bottom: 7px; }
 .risk li:last-child { margin-bottom: 0; }
 
-.chip { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; padding: 3px 8px; border: 1px solid var(--line); color: var(--paper-dim); white-space: nowrap; }
+.chip { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; padding: 3px 8px;
+        border: 1px solid var(--line); border-radius: 999px; color: var(--paper-dim); white-space: nowrap; }
 .chip.green { color: var(--green); border-color: rgba(107, 158, 125, .4); }
 .chip.red { color: var(--red); border-color: rgba(180, 83, 74, .4); }
 .chip.amber { color: var(--amber); border-color: var(--amber-dim); }
@@ -400,13 +501,23 @@ button.danger { color: var(--red); border-color: rgba(180, 83, 74, .45); }
 .stats b { font-family: var(--mono); font-size: 20px; font-weight: 600; color: var(--paper); }
 .stats span { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--paper-dim); }
 
-/* ---- steps + copy row -------------------------------------------------- */
+/* ---- copy row ---------------------------------------------------------- */
+/* A second `.steps` rule used to live here from an <ol> version of the setup
+   page that no longer exists. It was still winning the cascade, so every step
+   card on Home and How was indented 18px and clamped to 60ch — the layout
+   looked arbitrarily narrow for a reason that had been deleted years of edits
+   ago. Removed rather than tuned. */
 
-.steps { padding-left: 18px; max-width: 60ch; }
-.steps li { margin-bottom: 14px; font-size: 14px; line-height: 1.65; color: var(--paper-dim); }
-.steps li b { color: var(--paper); }
 .copy-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .copy-row code { background: var(--panel-2); border: 1px solid var(--line); padding: 7px 10px; word-break: break-all; }
+
+/* Add-to-client shortcuts. Full width on a phone, side by side above it —
+   these are the primary action on the page, not a pair of chips. */
+.client-buttons { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+.client-buttons button { flex: 1 1 220px; padding: 14px 18px; font-size: 13px; }
+.where { list-style: none; padding: 0; margin: 10px 0 0; }
+.where li { font-size: 12px; color: var(--paper-dim); line-height: 1.7; }
+.where li b { color: var(--paper); }
 
 /* ---- tables ------------------------------------------------------------ */
 
@@ -417,6 +528,30 @@ th {
   padding: 9px 10px 9px 4px; border-bottom: 1px solid var(--line);
 }
 td { padding: 12px 10px 12px 4px; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px; }
+
+.orders th:last-child, .orders td:last-child { text-align: right; }
+.orders tbody tr:hover { background: var(--panel); }
+
+/* ---- site footer -------------------------------------------------------- */
+/* One footer for every page, in the shell rather than in Home.jsx. The legal
+   line — synthetic exposure, the fee, "not a broker" — used to appear only on
+   the landing page, so anyone who arrived on a sign link or a portfolio never
+   saw it. It also spans the window like the header, with its contents on the
+   same measure as the page. */
+.site-foot {
+  margin-top: 64px; border-top: 1px solid var(--line);
+  padding-block: 26px 34px;
+  padding-inline: max(var(--pad), calc((100% - var(--content)) / 2));
+  display: flex; flex-direction: column; gap: 14px;
+}
+.site-foot .footrow {
+  display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  align-items: center;
+}
+.site-foot .brandmark {
+  font-family: var(--mono); font-weight: 700; font-size: 14px; color: var(--paper);
+}
+.site-foot .brandmark span { color: var(--amber); }
 
 footer {
   margin-top: 46px; padding-top: 18px; border-top: 1px solid var(--line);

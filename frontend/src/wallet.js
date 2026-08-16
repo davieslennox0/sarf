@@ -16,7 +16,9 @@
  * an address, a signature, and a transaction hash.
  */
 
-import { onPrivyChange, privyContext, privyEnabled, waitForWallet } from './privy.jsx';
+import {
+  onPrivyChange, privyContext, privyEnabled, waitForAccount, waitForReady, waitForWallet,
+} from './privy.jsx';
 
 export const CHAIN_ID = 196;
 export const CHAIN_ID_HEX = '0xc4';
@@ -58,12 +60,32 @@ export function isEmbedded() {
 
 export async function connect() {
   if (privyEnabled()) {
-    const c = privyContext();
+    let c = privyContext();
     if (c.address && c.provider) return c.address;
-    if (!c.ready) throw new Error('Still loading — try again in a moment.');
+    // Wait for initialisation instead of refusing during it.
+    //
+    // This used to throw "Still loading — try again in a moment." the instant
+    // `ready` was false, which is its state for the first moments of every
+    // page load. Dashboard and Activity both call connect() from a mount
+    // effect that runs once and does not retry, so whether either page worked
+    // came down to a race with Privy's rehydration — and the message told the
+    // user to try again on a page that offered no way to.
+    if (!c.ready) {
+      const ready = await waitForReady();
+      c = privyContext();
+      if (c.address && c.provider) return c.address;
+      if (!ready) {
+        throw new Error(
+          'Sign-in did not finish loading. Check your connection and reload the page.'
+        );
+      }
+    }
+    // Already signed in, wallet still rehydrating: wait for it rather than
+    // opening a login modal at somebody who is logged in.
+    if (c.authenticated && !c.address) await waitForAccount();
     // Opens the Privy modal. It returns before the user has finished, so the
     // address is awaited from the bridge rather than from this call.
-    if (!c.authenticated && c.login) c.login();
+    if (!privyContext().authenticated && c.login) c.login();
     const address = await waitForWallet();
     await ensureXLayer();
     return address;
@@ -82,7 +104,10 @@ export async function connect() {
 }
 
 export async function currentAccount() {
-  if (privyEnabled()) return privyContext().address;
+  // Waits for Privy to be able to answer, rather than reporting "no account"
+  // because it was asked too early. Bounded, and it returns null the moment
+  // Privy says nobody is signed in — an anonymous visitor does not sit here.
+  if (privyEnabled()) return privyContext().address || (await waitForAccount());
   const p = injected();
   if (!p) return null;
   const accounts = await p.request({ method: 'eth_accounts' });

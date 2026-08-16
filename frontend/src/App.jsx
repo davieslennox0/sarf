@@ -15,6 +15,7 @@ import {
   CHAIN_ID, currentAccount, chainId as getChainId,
   ensureXLayer, hasWallet, onAccountsChanged, onChainChanged, short,
 } from './wallet.js';
+import { onPrivyChange, privyContext, privyEnabled } from './privy.jsx';
 
 /**
  * Session banner. Visible whenever a session is live, because a signing
@@ -216,8 +217,33 @@ export default function App() {
 
   const signedIn = Boolean(session);
   const refresh = () => setSession(getSession());
-  const gate = (what, element) =>
-    signedIn ? element : <SignInRequired what={what} onDone={refresh} />;
+
+  // Whether the wallet layer can answer questions yet.
+  //
+  // Privy rehydrates asynchronously, and account pages open by asking it who
+  // you are. Every page used to ask immediately and deal with "not yet" on its
+  // own — badly, in two cases, where the answer arrived as an error the page
+  // never retried. Holding the route for one render instead is both simpler
+  // and faster to read: the page mounts once, with an answer, rather than
+  // mounting into a race and recovering from it.
+  const [walletReady, setWalletReady] = useState(
+    !privyEnabled() || privyContext().ready);
+  useEffect(() => {
+    if (walletReady) return undefined;
+    return onPrivyChange((c) => { if (c.ready) setWalletReady(true); });
+  }, [walletReady]);
+
+  const gate = (what, element) => {
+    if (!signedIn) return <SignInRequired what={what} onDone={refresh} />;
+    if (!walletReady) {
+      return (
+        <section>
+          <p className="muted small" style={{ marginTop: 24 }}>Restoring your session…</p>
+        </section>
+      );
+    }
+    return element;
+  };
 
   // A session without a passkey cannot be reached, from any route.
   //
@@ -265,19 +291,22 @@ export default function App() {
           {navOpen ? '\u2715' : '\u2630'}
         </button>
         <div className={`links${navOpen ? ' open' : ''}`} onClick={() => setNavOpen(false)}>
-          {/* Public first: everything here works without an account, including
-              Portfolio, which reads any pasted address. The account-only pages
-              are appended once there is a session rather than shown and then
-              refused — each of them opens by asking the wallet who you are. */}
+          {/* Public first. The account-only pages are appended once there is a
+              session rather than shown and then refused — each of them opens by
+              asking the wallet who you are.
+
+              Security moved into that group: it is the account's own controls
+              (session key, caps, revoke), so with no wallet connected it has
+              nothing to show and the link only led to a sign-in prompt. */}
           <Link className={pathname === '/' ? 'on' : ''} to="/">Home</Link>
           <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
           <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
-          <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
           {signedIn && (
             <>
               <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
               <Link className={pathname === '/dashboard' ? 'on' : ''} to="/dashboard">Dashboard</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
+              <Link className={pathname === '/security' ? 'on' : ''} to="/security">Security</Link>
             </>
           )}
         </div>
@@ -322,11 +351,40 @@ export default function App() {
           <Route path="/approve" element={gate('This connection request', <Authorize />)} />
         </Routes>
       </main>
-      {/* Site-wide, so it appears on the signer and consent pages too — not
-          just the landing page. Year is derived, so it never goes stale. */}
-      <div className="copyright">
-        © {new Date().getFullYear()} Syketec Technologies. All rights reserved.
-      </div>
+      {/*
+        One footer for the whole site.
+
+        The disclosure and the fee line used to live inside Home.jsx, so they
+        appeared on the landing page and nowhere else — not on the signer, not
+        on a portfolio, not on the page Claude links people to. Those are the
+        pages where "this is synthetic exposure and there is a fee" is load
+        bearing rather than decorative, so the footer moved into the shell.
+        Year is derived, so it never goes stale.
+      */}
+      <footer className="site-foot">
+        <div className="footrow">
+          <span className="brandmark">Sarf <span>/</span> X Layer RWA</span>
+          <div className="footlinks">
+            <Link to="/markets">Markets</Link>
+            <Link to="/how">How it works</Link>
+            {/* Same rule as the nav: an account page is not a site page. */}
+            {signedIn && <Link to="/security">Security</Link>}
+            <a href="https://web3.okx.com/explorer/x-layer" target="_blank" rel="noreferrer">
+              Explorer
+            </a>
+          </div>
+        </div>
+        <p className="fine" style={{ margin: 0, textAlign: 'left' }}>
+          Synthetic exposure. xStocks track the underlying share price only — no
+          ownership, dividends, or voting rights, and redemption depends on the
+          issuer. Sarf is not a broker and is not a licensed adviser. A flat $0.10
+          platform fee is charged per swap in the stablecoin leg, inside the same
+          transaction you sign; network gas is separate and paid in OKB.
+        </p>
+        <div className="copyright" style={{ margin: 0, padding: 0, border: 0, textAlign: 'left' }}>
+          © {new Date().getFullYear()} Syketex Technologies. All rights reserved.
+        </div>
+      </footer>
     </div>
   );
 }

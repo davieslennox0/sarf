@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
-import { usePrices } from './Home.jsx';
+import { markBg, usePrices } from './Home.jsx';
 
 /**
  * The full tradable universe, read from the on-chain-verified registry.
@@ -11,14 +11,6 @@ import { usePrices } from './Home.jsx';
  * their price when expanded.
  */
 const PAGE = 12;
-
-/** Deterministic hue per ticker so an asset keeps one colour everywhere. */
-function markBg(symbol) {
-  const base = String(symbol || '?').replace(/x$/, '');
-  let h = 0;
-  for (const c of base) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return `linear-gradient(140deg, hsl(${h},62%,42%), hsl(${(h + 38) % 360},58%,30%))`;
-}
 
 export default function Markets() {
   const [assets, setAssets] = useState([]);

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ensureSession, getSession } from '../api.js';
 import { currentAccount, short } from '../wallet.js';
+import { markBg } from './Home.jsx';
 
 /**
  * Portfolio: what is held, and what it is worth.
@@ -17,14 +18,6 @@ import { currentAccount, short } from '../wallet.js';
  * last thing on it. The analysis still exists and is still served by the API;
  * it is simply not what this page is for.
  */
-
-/** Deterministic hue per ticker so an asset keeps one colour everywhere. */
-function markBg(symbol) {
-  const base = String(symbol || '?').replace(/x$/, '');
-  let h = 0;
-  for (const c of base) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return `linear-gradient(140deg, hsl(${h},62%,42%), hsl(${(h + 38) % 360},58%,30%))`;
-}
 
 const PAGE = 8;
 
@@ -67,7 +60,28 @@ export default function Portfolio() {
   // address that was not your own — the holdings were there the whole time.
   const positions = data?.positions || [];
   const unpriced = data?.unpriced_positions || [];
-  const sorted = [...positions].sort(
+
+  /**
+   * USDT and OKB are holdings, and this page used to leave them out of the
+   * only list it had — a wallet holding $900 of USDT and one share token read
+   * as a one-asset portfolio, with the stablecoin demoted to a figure in the
+   * stat strip. They are listed here with everything else and tagged for what
+   * they are, so the ledger adds up to the total above it.
+   *
+   * They stay out of `positions` server-side on purpose: that list is the
+   * equity sleeve the concentration analysis is computed against, and cash is
+   * not a single-name exposure. Being shown together is a display decision;
+   * being measured together would be a methodology error.
+   */
+  const cashAndGas = [];
+  if (data?.usdt && Number(data.usdt.quantity) > 0) {
+    cashAndGas.push({ ...data.usdt, tag: 'CASH' });
+  }
+  if (data?.okb && Number(data.okb.quantity) > 0) {
+    cashAndGas.push({ ...data.okb, tag: 'GAS' });
+  }
+
+  const sorted = [...positions, ...cashAndGas].sort(
     (a, b) => (b.value_usd || 0) - (a.value_usd || 0));
   const visible = showAll ? sorted : sorted.slice(0, PAGE);
 
@@ -89,7 +103,9 @@ export default function Portfolio() {
               <b>{data.total_value_usd != null ? `$${Number(data.total_value_usd).toLocaleString()}` : '—'}</b>
               <span>total value</span>
             </div>
-            <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>positions</span></div>
+            {/* "positions" read as the whole ledger; it is only the equity
+                sleeve, which is now one part of a list that also holds cash. */}
+            <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>tokenized stocks</span></div>
             <div><b>{data.usdt_balance}</b><span>USDT</span></div>
             <div><b>{Number(data.gas_balance_okb || 0).toFixed(5)}</b><span>OKB gas</span></div>
           </div>
@@ -107,42 +123,52 @@ export default function Portfolio() {
             <>
               <div className="section-label">Assets</div>
               <div className="ledger">
-                {visible.map((p) => (
-                  <a
-                    className="row"
-                    key={p.symbol}
-                    href={p.explorer_url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <span className="row-left">
-                      {/* Logo over a generated monogram, same as the chat cards:
-                          the mark is painted first so a blocked or 404 image
-                          leaves a filled square rather than a hole in the row. */}
-                      <span className="tokenmark" style={{ background: markBg(p.symbol) }}>
-                        {p.logo_url
-                          ? <img src={p.logo_url} alt="" loading="lazy" referrerPolicy="no-referrer"
-                                 onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-                          : null}
-                        <i>{String(p.symbol).replace(/x$/, '').slice(0, 2).toUpperCase()}</i>
+                {visible.map((p) => {
+                  const body = (
+                    <>
+                      <span className="row-left">
+                        {/* Logo over a generated monogram, same as the chat cards:
+                            the mark is painted first so a blocked or 404 image
+                            leaves a filled square rather than a hole in the row. */}
+                        <span className="tokenmark" style={{ background: markBg(p.symbol) }}>
+                          {p.logo_url
+                            ? <img src={p.logo_url} alt="" loading="lazy" referrerPolicy="no-referrer"
+                                   onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                            : null}
+                          <i>{String(p.symbol).replace(/x$/, '').slice(0, 2).toUpperCase()}</i>
+                        </span>
+                        <span className="row-id">
+                          <span className="sym">
+                            {p.symbol}
+                            {/* Cash and gas are labelled rather than left to be
+                                mistaken for equities sitting in the same list. */}
+                            {p.tag && <span className="chip" style={{ marginLeft: 8 }}>{p.tag}</span>}
+                          </span>
+                          <span className="name">{(p.name || '').replace(' xStock', '')}</span>
+                        </span>
                       </span>
-                      <span className="row-id">
-                        <span className="sym">{p.symbol}</span>
-                        <span className="name">{(p.name || '').replace(' xStock', '')}</span>
+                      <span className="row-right">
+                        <span className="price">
+                          {p.value_usd != null ? `$${Number(p.value_usd).toLocaleString()}` : '—'}
+                        </span>
+                        <span className="weight">{p.quantity}</span>
                       </span>
-                    </span>
-                    <span className="row-right">
-                      <span className="price">
-                        {p.value_usd != null ? `$${Number(p.value_usd).toLocaleString()}` : '—'}
-                      </span>
-                      <span className="weight">{p.quantity}</span>
-                    </span>
-                  </a>
-                ))}
+                    </>
+                  );
+                  // OKB is the native coin, so it has no token page to link to.
+                  // A row that looks clickable and goes nowhere is worse than a
+                  // row that plainly does not.
+                  return p.explorer_url ? (
+                    <a className="row" key={p.symbol} href={p.explorer_url}
+                       target="_blank" rel="noreferrer">{body}</a>
+                  ) : (
+                    <div className="row static" key={p.symbol}>{body}</div>
+                  );
+                })}
               </div>
               {sorted.length > PAGE && (
                 <button className="see-all" onClick={() => setShowAll((v) => !v)}>
-                  {showAll ? 'Show fewer' : `Show all ${sorted.length} positions →`}
+                  {showAll ? 'Show fewer' : `Show all ${sorted.length} holdings →`}
                 </button>
               )}
             </>
@@ -150,7 +176,7 @@ export default function Portfolio() {
 
           {sorted.length === 0 && (
             <p className="muted small" style={{ marginTop: 20 }}>
-              No tokenized stock positions at this address.
+              Nothing held at this address — no tokenized stocks, no USDT, no OKB.
             </p>
           )}
 

@@ -17,6 +17,7 @@ export default function Activity() {
   const [address, setAddress] = useState(null);
 
   const load = async () => {
+    setErr(null);
     try {
       const addr = (await currentAccount()) || (await connect());
       setAddress(addr);
@@ -30,7 +31,17 @@ export default function Activity() {
 
   useEffect(() => { load(); }, []);
 
-  if (err) return <section><h1>My activity</h1><p className="error">{err}</p></section>;
+  // A failed load must not be a dead page. This effect runs once, so without a
+  // way to re-run it the only escape from a transient error was a reload.
+  if (err) {
+    return (
+      <section>
+        <h1>My activity</h1>
+        <p className="error">{err}</p>
+        <div className="cta"><button onClick={load}>Try again</button></div>
+      </section>
+    );
+  }
   if (!orders) return <section><h1>My activity</h1><p className="muted">Loading…</p></section>;
 
   return (

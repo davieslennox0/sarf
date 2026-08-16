@@ -60,6 +60,56 @@ export function onPrivyChange(cb) {
 }
 
 /**
+ * Resolve once Privy has finished initialising. -> true, or false on timeout.
+ *
+ * The reason this exists: `ready` is false for the first few hundred
+ * milliseconds of every page load, and callers used to treat that as a
+ * refusal — connect() threw "Still loading — try again in a moment." at
+ * anything that ran during the window, including the mount-time load on
+ * Dashboard and Activity, which never retried. The state those pages showed
+ * was therefore decided by whether React got there before Privy did.
+ *
+ * Not initialising yet is a wait, not an error. Resolving false rather than
+ * rejecting keeps that decision with the caller: connect() can raise a real
+ * message, a read path can carry on as signed-out.
+ */
+export function waitForReady(timeoutMs = 12000) {
+  if (!privyEnabled()) return Promise.resolve(true);
+  if (privyContext().ready) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { off(); resolve(false); }, timeoutMs);
+    const off = onPrivyChange((next) => {
+      if (next.ready) { clearTimeout(timer); off(); resolve(true); }
+    });
+  });
+}
+
+/**
+ * The signed-in address once Privy can answer -> address, or null.
+ *
+ * Two waits, both bounded: for initialisation, and — only if Privy says this
+ * browser is authenticated — for the rehydrated wallet to publish its address.
+ * A signed-in user reloading the page briefly has a session token but no
+ * address, and reading that instant as "signed out" is what sent people to a
+ * sign-in prompt they had already been through.
+ */
+export async function waitForAccount(timeoutMs = 8000) {
+  if (!privyEnabled()) return null;
+  const started = Date.now();
+  if (!(await waitForReady(timeoutMs))) return privyContext().address || null;
+  const c = privyContext();
+  if (c.address || !c.authenticated) return c.address || null;
+  const remaining = Math.max(0, timeoutMs - (Date.now() - started));
+  if (!remaining) return null;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { off(); resolve(privyContext().address || null); }, remaining);
+    const off = onPrivyChange((next) => {
+      if (next.address) { clearTimeout(timer); off(); resolve(next.address); }
+    });
+  });
+}
+
+/**
  * Resolve once an authenticated wallet with a usable provider exists.
  * Used by connect(): login() opens a modal and returns before the user has
  * finished, so the caller needs somewhere to wait that isn't a poll loop.
@@ -138,7 +188,15 @@ function PrivyBridge() {
       // out. Hitting Connect after a refresh failed every time; a fresh sign-in
       // worked, which is what made it look like a wallet problem rather than a
       // rehydration race.
-      for (let attempt = 0; attempt < 6 && !cancelled; attempt += 1) {
+      // Backoff starts short and grows, rather than starting at 400ms.
+      //
+      // Rehydration usually succeeds on the second attempt, and the old
+      // schedule (400, 800, 1200…) meant the common case waited 400ms for a
+      // provider that was ready in ~50 — a delay every account page then sat
+      // behind. 120ms first, doubling to a similar total: fast when it is
+      // nearly ready, still patient when it is not.
+      const backoff = [120, 240, 480, 900, 1600, 2400];
+      for (let attempt = 0; attempt < backoff.length && !cancelled; attempt += 1) {
         try {
           const eip1193 = await w.getEthereumProvider();
           if (cancelled) return;
@@ -146,7 +204,7 @@ function PrivyBridge() {
         } catch {
           /* still rehydrating — fall through to the backoff below */
         }
-        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, backoff[attempt]));
       }
       if (!cancelled) publish({ provider: null });
     })();
