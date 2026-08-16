@@ -249,7 +249,7 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         second submission of the same message reverts on-chain rather than
         minting twice. Pending is a normal answer; the caller polls.
         """
-        _session_addr(authorization)
+        addr = _session_addr(authorization)
         try:
             tx_hash = validate_tx_hash(body.get("tx_hash"))
         except ValidationError as e:
@@ -262,6 +262,20 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             return {"settled": False, "state": att.get("state"),
                     "detail": att.get("detail"),
                     "note": "Circle has not attested the burn yet. Poll this again."}
+        # The hash is public; the relayer's gas is not. Only finish a burn that
+        # pays out to THIS session's address — otherwise a caller could feed us
+        # strangers' burns off a block explorer and spend our gas completing
+        # them. See deposit.mint_recipient.
+        try:
+            payee = deposit.mint_recipient(att["message"])
+        except deposit.DepositError as e:
+            raise HTTPException(400, str(e))
+        if payee.lower() != addr.lower():
+            raise HTTPException(
+                403,
+                "that deposit pays out to a different address, so it is not "
+                "this account's to complete",
+            )
         try:
             mint_hash = await delegation.relay(
                 to=deposit.MESSAGE_TRANSMITTER_V2,

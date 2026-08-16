@@ -781,3 +781,20 @@ def test_the_domain_and_the_chain_id_are_not_the_same_number():
     assert d.DESTINATION.chain_id == 196
     assert d.SOURCE.domain == 6
     assert d.SOURCE.chain_id == 8453
+
+
+def test_a_burn_that_pays_someone_else_is_not_ours_to_complete():
+    """/deposit/complete takes a public transaction hash, so the message has to
+    say who it pays before the relayer spends gas finishing it."""
+    from sarf.xlayer import deposit as d
+
+    def message_paying(addr: str) -> str:
+        raw = bytearray(d._MIN_MESSAGE_BYTES)
+        raw[d._MINT_RECIPIENT_OFFSET:d._MINT_RECIPIENT_OFFSET + 32] = (
+            bytes(12) + bytes.fromhex(addr[2:]))
+        return "0x" + raw.hex()
+
+    assert d.mint_recipient(message_paying(ADDR_A)) == ADDR_A
+    assert d.mint_recipient(message_paying(ADDR_B)) != ADDR_A
+    with pytest.raises(d.DepositError):
+        d.mint_recipient("0xdeadbeef")

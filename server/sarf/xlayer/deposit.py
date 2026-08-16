@@ -324,6 +324,39 @@ def allowance(owner: str) -> int:
     return int(res, 16) if res and res != "0x" else 0
 
 
+# CCTP V2 message layout, from Circle's spec. The header is fixed-width and
+# the burn body follows it, so the recipient sits at a known offset.
+#
+#   header  version u32 | sourceDomain u32 | destinationDomain u32 | nonce b32
+#           | sender b32 | recipient b32 | destinationCaller b32
+#           | minFinalityThreshold u32 | finalityThresholdExecuted u32   = 148
+#   body    version u32 | burnToken b32 | mintRecipient b32 | ...
+#
+_HEADER_BYTES = 148
+_MINT_RECIPIENT_OFFSET = _HEADER_BYTES + 4 + 32     # 184
+_MIN_MESSAGE_BYTES = _MINT_RECIPIENT_OFFSET + 32
+
+
+def mint_recipient(message: str) -> str:
+    """Who a burn pays out to, read from the message itself.
+
+    Needed because /deposit/complete accepts a transaction hash, and a hash is
+    public: without this, anyone with a session could hand us a stranger's
+    burn from a block explorer and have our relayer pay the gas to finish it.
+    Harmless to the stranger — the mint can only go where they said — but it
+    is our gas, in unbounded volume. Binding the message to the session's own
+    address closes it.
+    """
+    raw = bytes.fromhex(message[2:] if message.startswith("0x") else message)
+    if len(raw) < _MIN_MESSAGE_BYTES:
+        raise DepositError("this does not look like a CCTP burn message")
+    word = raw[_MINT_RECIPIENT_OFFSET:_MINT_RECIPIENT_OFFSET + 32]
+    if word[:12] != bytes(12):
+        # A bytes32 recipient with a non-zero prefix is not an EVM address.
+        raise DepositError("the burn pays out to a non-EVM recipient")
+    return "0x" + word[12:].hex()
+
+
 def receive_calldata(message: str, att: str) -> str:
     """receiveMessage(bytes,bytes) on X Layer — this is the mint."""
     selector = keccak(text="receiveMessage(bytes,bytes)")[:4]
