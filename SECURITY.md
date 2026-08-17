@@ -3,8 +3,8 @@
 ## Custody model — non-custodial, explicitly
 
 - **No key material exists anywhere in this system.** No tool accepts a
-  private key, mnemonic, or session key; the repo's pre-commit hook and CI
-  reject key-shaped content outright.
+  private key, mnemonic, or session key; the repo's pre-commit hook rejects
+  key-shaped content outright.
 - The server produces **unsigned** Sui PTB bytes. Signing happens in the
   user's own wallet (extension or zkLogin session). The only write path,
   `submit_signed_transaction`, relays bytes+signatures the wallet produced.
@@ -225,11 +225,25 @@ deposit in USDC, at a cost to them of more attention than it is worth.
 
 ## Secrets
 
-`.env` is gitignored from the first commit. `scripts/check-secrets.sh` runs
-as a pre-commit hook (staged files + content patterns: `suiprivkey1…`, PEM
-blocks, `PRIVATE_KEY=`-style assignments) and CI re-scans the tree on every
-push, so a hook-less commit still fails the build. RPC endpoints and any
-future OAuth/quote-server credentials live only in `.env`.
+`.env` is gitignored from the first commit. `scripts/check-secrets.sh` runs as
+a pre-commit hook (staged files + content patterns: `suiprivkey1…`, PEM blocks,
+`PRIVATE_KEY=`-style assignments). Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+That `git config` line is the whole of the enforcement now, and it is worth
+being blunt about the consequence: this used to be checked twice, with CI
+re-scanning the tree on every push so that a commit made without the hook — or
+by someone who never ran that line — still failed the build. There is no CI in
+this repo any more, so a hook-less clone has nothing standing behind it. Treat
+the hook as a convenience that catches mistakes, not as a control that stops
+them, and read what you are committing.
+
+Verified as of the last audit: no private key, session secret or API credential
+appears in any blob in this repository's history. RPC endpoints and every
+credential live only in `.env`.
 
 ## Reporting
 

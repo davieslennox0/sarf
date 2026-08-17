@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Fails (exit 1) if any staged file is a .env file, a key file, or contains a
-# private-key-shaped string. Wired in twice on purpose:
-#   - .githooks/pre-commit  (local; enable with: git config core.hooksPath .githooks)
-#   - CI (see README)       (remote; catches commits made without the hook)
+# private-key-shaped string.
+#
 # Rationale: a previous project leaked a key through a .gitignore miss, so we
 # do not rely on .gitignore alone — this checks what is actually staged.
+#
+# Enable it, once per clone:
+#   git config core.hooksPath .githooks
+#
+# This used to run in CI as well, which is what made it enforcement rather than
+# a courtesy: a commit made without the hook still failed the build. There is no
+# CI in this repo now, so an un-enabled clone has nothing behind it at all.
+# Running the line above is the only thing that arms this.
 set -euo pipefail
 
 fail=0
