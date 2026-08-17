@@ -18,16 +18,32 @@ import { currentAccount, sendTransaction, sendWithAuthorization } from './wallet
 import { formatLeft, useGrantClock } from './grant.js';
 
 /**
- * Lifetimes the user can pick, in days. The contract's own ceiling is 30 days,
- * but this deployment issues one hour: the key trades without asking, so it
- * expires with the passkey assertion that bought it instead of outliving it by
- * weeks. The server enforces the same ceiling — this list only has to agree
- * with it, and a longer entry here would just be rejected on submit.
+ * How long the trading key lives, chosen by the person it belongs to.
+ *
+ * The list comes from the server (`grant_choices_seconds`) so the ceiling lives
+ * in one place; this is the fallback for a stale or failed status call, and a
+ * value the server will not issue is simply rejected on submit.
+ *
+ * There is no contract change behind any of these. `expiry` has always been a
+ * parameter of the grant the user signs, and SarfSessionKey accepts up to 30
+ * days — what changed is only how much of that range Sarf offers. The limits
+ * that bound the damage are the per-trade and per-day caps, and those are
+ * enforced on chain regardless of which duration is picked.
  */
-const HOUR = 1 / 24;
-const LIFETIMES = [
-  { days: HOUR, label: '1 hour' },
-];
+const FALLBACK_CHOICES = [24 * 3600, 48 * 3600, 96 * 3600, 7 * 24 * 3600];
+const SHORTEST = FALLBACK_CHOICES[0];
+
+function lifetimeLabel(seconds) {
+  const h = Math.round(seconds / 3600);
+  // A week is a week. Everything shorter reads better in hours, because that
+  // is the unit people compare in — "48 hours" against "96 hours", not "2
+  // days" against "4 days" with a mental conversion in between.
+  if (h % (24 * 7) === 0) {
+    const w = h / (24 * 7);
+    return w === 1 ? '1 week' : `${w} weeks`;
+  }
+  return `${h} hour${h === 1 ? '' : 's'}`;
+}
 
 /**
  * Session-grant panel: the opt-in that lets trades run inside Claude or
@@ -43,7 +59,9 @@ const LIFETIMES = [
 export default function SessionGrant({ onMessage, onError, passkey }) {
   const [g, setG] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [days, setDays] = useState(HOUR);
+  // Defaults to the shortest offered lifetime. Whatever the list holds, the
+  // least-powerful entry is the one you should end up with by doing nothing.
+  const [days, setDays] = useState(SHORTEST / 86400);
   const [perTrade, setPerTrade] = useState(500);
   const [daily, setDaily] = useState(2000);
   // Mode is an explicit choice made here at setup, not a default buried in a
@@ -53,10 +71,28 @@ export default function SessionGrant({ onMessage, onError, passkey }) {
 
   const load = () => api.grant().then(setG).catch(() => {});
   useEffect(() => { load(); }, []);
-  // The grant this deployment issues lasts an hour, and this page is one
-  // people leave open. Without a clock it kept showing an expired key as
-  // active — including its address and caps — until someone reloaded. The
-  // refetch on expiry swaps that for the server's own account of it.
+
+  // What the server is willing to issue, filtered by its own ceiling. If the
+  // status call has not landed (or failed), fall back to the built-in list
+  // rather than rendering a picker with nothing in it.
+  const choices = (g?.grant_choices_seconds?.length
+    ? g.grant_choices_seconds
+    : FALLBACK_CHOICES
+  ).filter((s) => !g?.max_grant_seconds || s <= g.max_grant_seconds);
+
+  // If the server's list disagrees with the fallback, snap to its shortest
+  // entry rather than leaving no button lit and submitting a lifetime the
+  // server would refuse. Only when the current pick is not on offer, so it
+  // never overrides a deliberate choice.
+  const picked = choices.some((s) => Math.abs(days - s / 86400) < 1e-9);
+  useEffect(() => {
+    if (choices.length && !picked) setDays(choices[0] / 86400);
+  }, [picked, choices.join(',')]);
+
+  // A grant is something people leave a page open on. Without a clock it kept
+  // showing an expired key as active — including its address and caps — until
+  // someone reloaded. The refetch on expiry swaps that for the server's own
+  // account of it.
   const { live, left } = useGrantClock(g, load);
 
   const authorize = async () => {
@@ -184,8 +220,8 @@ export default function SessionGrant({ onMessage, onError, passkey }) {
       ) : (
         <>
           {/* Say what happened to the last one. Landing on an empty setup form
-              an hour after authorising reads as the grant having failed; the
-              truth is that it ran its course, which is the design. */}
+              after authorising reads as the grant having failed; the truth is
+              that it ran its course, which is the design. */}
           {g.previous_grant && (
             <p className="muted small">
               Your previous session key{' '}
@@ -228,16 +264,32 @@ export default function SessionGrant({ onMessage, onError, passkey }) {
             </>
           )}
 
+          {/* Buttons, not a dropdown. Four options that all fit on one line
+              should be visible without opening anything — and the length of a
+              key that trades on your behalf is a decision worth seeing, not
+              one to discover collapsed behind a caret. */}
+          <div className="section-label" style={{ marginTop: 22 }}>Lasts for</div>
+          <div className="cta">
+            {choices.map((s) => (
+              <button
+                key={s}
+                className={Math.abs(days - s / 86400) < 1e-9 ? 'primary' : ''}
+                onClick={() => setDays(s / 86400)}
+              >
+                {lifetimeLabel(s)}
+              </button>
+            ))}
+          </div>
+          <p className="muted small">
+            Your passkey starts the key; this is how long it runs before you
+            prove it is you again — so you can work from the assistant for days
+            without coming back here. A longer key does not mean a bigger one:
+            the caps below apply to every trade for the whole period, they are
+            enforced by the contract rather than by this page, and revoking is
+            one click and takes effect on chain.
+          </p>
+
           <div className="kv">
-            <div><span>Lasts for</span>
-              <b>
-                <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-                  {LIFETIMES.map((l) => (
-                    <option key={l.days} value={l.days}>{l.label}</option>
-                  ))}
-                </select>
-              </b>
-            </div>
             <div><span>Max per trade (USD)</span>
               <b><input type="number" min="1" value={perTrade}
                         onChange={(e) => setPerTrade(e.target.value)} /></b></div>

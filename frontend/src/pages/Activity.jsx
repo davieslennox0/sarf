@@ -3,8 +3,8 @@ import { api, ensureSession, getSession } from '../api.js';
 import { connect, currentAccount, short, txUrl } from '../wallet.js';
 
 const LABEL = {
-  proposed: ['awaiting signature', 'amber'],
-  awaiting_signature: ['awaiting signature', 'amber'],
+  proposed: ['awaiting signature', 'accent'],
+  awaiting_signature: ['awaiting signature', 'accent'],
   submitted: ['broadcast', 'green'],
   confirmed: ['confirmed ✓', 'green'],
   failed: ['reverted', 'red'],

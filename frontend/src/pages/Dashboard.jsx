@@ -1,9 +1,100 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, ensureSession, getSession } from '../api.js';
-import { connect, currentAccount, short, txUrl } from '../wallet.js';
+import { api, ensureSession, getSession, verifyPasskey } from '../api.js';
+import { connect, currentAccount, short } from '../wallet.js';
 import { formatLeft, useGrantClock } from '../grant.js';
 import SessionGrant from '../SessionGrant.jsx';
+import { onPrivyChange, privyContext, privyEnabled } from '../privy.jsx';
+
+/**
+ * Export the wallet's private key.
+ *
+ * This is the exit. Sarf is non-custodial in the sense that matters — it never
+ * holds the key — but a wallet you cannot take with you is still a wallet
+ * someone else chose the walls for. This is the control that makes leaving
+ * possible: import the key into MetaMask, OKX Wallet or anything else and the
+ * account is fully yours, with or without Sarf.
+ *
+ * Two things about how it is built are deliberate.
+ *
+ * The key never touches this app. Privy renders it inside an iframe served
+ * from its own origin, so the page you are reading cannot read it — which is
+ * also why this cannot offer a "copy to clipboard" of its own, and should not
+ * pretend to.
+ *
+ * The passkey is required first. Not because the server can enforce it — this
+ * whole exchange is between the browser and Privy, and the server is not in it
+ * — but because the product's promise is that your passkey stands in front of
+ * anything that can move your money, and a private key moves all of it at
+ * once. An export that asked for less than a trade does would make that
+ * promise false at exactly the point it matters most.
+ */
+function ExportKey() {
+  const [ctx, setCtx] = useState(privyContext());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [warned, setWarned] = useState(false);
+
+  useEffect(() => onPrivyChange(setCtx), []);
+
+  // Nothing to export on an injected wallet: the user already holds that key,
+  // and Privy would throw if asked for one it does not have.
+  if (!privyEnabled() || !ctx.embedded || !ctx.exportWallet) return null;
+
+  const run = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await verifyPasskey();
+      await ctx.exportWallet();
+    } catch (e) {
+      const m = e?.message || String(e);
+      // A cancelled passkey prompt or a closed modal is a decision, not a
+      // fault — saying "error" to someone who changed their mind is noise.
+      if (!/abort|cancel|denied|NotAllowed|timed out/i.test(m)) setErr(m);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="export-key">
+      <div className="label">Export private key</div>
+      <p className="muted small">
+        Your wallet is yours to take. Exporting shows the private key for{' '}
+        <b>{short(ctx.address)}</b>, which you can import into MetaMask, OKX
+        Wallet or any other client. Sarf keeps working either way — this copies
+        the key out, it does not close the account.
+      </p>
+      {!warned ? (
+        <div className="cta">
+          <button onClick={() => setWarned(true)}>Export private key</button>
+        </div>
+      ) : (
+        <>
+          <div className="bar warn" style={{ marginTop: 12 }}>
+            <span>
+              Anyone who sees this key owns this wallet — completely, and with
+              no way to undo it. Nobody legitimate will ever ask you for it: not
+              Sarf, not support, not the assistant in your chat. Do this alone,
+              off a shared screen, and store it somewhere only you can reach.
+            </span>
+          </div>
+          <p className="muted small" style={{ marginTop: 10 }}>
+            Your passkey is required first, then Privy shows the key in its own
+            secure window — Sarf never sees it and cannot recover it for you.
+          </p>
+          {err && <p className="error">{err}</p>}
+          <div className="cta">
+            <button className="danger" disabled={busy} onClick={run}>
+              {busy ? 'Waiting for your passkey…' : 'I understand — show the key'}
+            </button>
+            <button disabled={busy} onClick={() => { setWarned(false); setErr(null); }}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /**
  * The account, on one page.
@@ -21,11 +112,14 @@ import SessionGrant from '../SessionGrant.jsx';
  * URLs baked into server error messages, which redirect here.
  */
 
+// Activity is deliberately NOT here. It had its own page in the nav the whole
+// time, so the dashboard fold was a second door onto the same orders — and the
+// one that cost an extra fetch on every dashboard load. /dashboard/activity
+// still resolves; it redirects to the page.
 const SECTIONS = [
   { id: 'agents', title: 'Agents', blurb: 'What is connected, and what it may do' },
   { id: 'security', title: 'Trading in chat', blurb: 'Session key, limits, revoke' },
-  { id: 'credentials', title: 'Credentials', blurb: 'Wallet, passkey, session key' },
-  { id: 'activity', title: 'Activity', blurb: 'Recent orders and their status' },
+  { id: 'credentials', title: 'Credentials', blurb: 'Wallet, passkey, session key, export' },
 ];
 
 function useAccountData() {
@@ -45,13 +139,12 @@ function useAccountData() {
     try {
       const addr = (await currentAccount()) || (await connect());
       await ensureSession(addr);
-      const [grant, passkey, orders, connections] = await Promise.all([
+      const [grant, passkey, connections] = await Promise.all([
         api.grant().catch(() => null),
         api.passkeyStatus().catch(() => null),
-        api.myOrders().catch(() => null),
         api.connections().catch(() => null),
       ]);
-      setData({ session: getSession(), grant, passkey, orders, connections });
+      setData({ session: getSession(), grant, passkey, connections });
     } catch (e) {
       setErr(e.message || String(e));
     }
@@ -66,7 +159,7 @@ export default function Dashboard() {
   const { section } = useParams();
   const navigate = useNavigate();
   const {
-    session, grant, passkey, orders, connections, err, loadGrant, reload,
+    session, grant, passkey, connections, err, loadGrant, reload,
   } = useAccountData();
   const [msg, setMsg] = useState(null);
   const [grantErr, setGrantErr] = useState(null);
@@ -187,6 +280,7 @@ export default function Dashboard() {
     ),
 
     credentials: () => (
+      <>
       <div className="kv">
         <div><span>Wallet</span><b className="addr">{session?.address || '—'}</b></div>
         <div><span>Network</span><b>X Layer · 196</b></div>
@@ -227,27 +321,11 @@ export default function Dashboard() {
               : 'none'}</b></div>
         )}
       </div>
-    ),
-
-    activity: () => (
-      Array.isArray(orders?.orders) && orders.orders.length > 0 ? (
-        // One per line, never comma-joined — the same rule the assistant
-        // follows in chat. A run-together list is unreadable at exactly the
-        // moment someone is checking whether a trade went through.
-        <div className="kv">
-          {orders.orders.map((o) => (
-            <div key={o.order_id}>
-              <span>{o.side} {o.symbol}</span>
-              <b>
-                {o.tx_hash
-                  ? <a href={txUrl(o.tx_hash)} target="_blank" rel="noreferrer">{o.status} ↗</a>
-                  : o.status}
-                {o.est_usd != null ? ` · $${Number(o.est_usd).toFixed(2)}` : ''}
-              </b>
-            </div>
-          ))}
-        </div>
-      ) : <p className="muted small">No orders yet.</p>
+      {/* Last in the section, and after the facts rather than among them: it
+          is the only control here, and the only one that hands out something
+          irrevocable. */}
+      <ExportKey />
+      </>
     ),
   };
 
@@ -274,7 +352,7 @@ export default function Dashboard() {
               <button className="fold-head" onClick={() => toggle(s.id)} aria-expanded={isOpen}>
                 <span className="fold-main">
                   <b>{s.title}</b>
-                  <span className="muted small">{summary(s.id, { live, left, rows, passkey, orders }) || s.blurb}</span>
+                  <span className="muted small">{summary(s.id, { live, left, rows, passkey }) || s.blurb}</span>
                 </span>
                 <span className="fold-go" aria-hidden="true">{isOpen ? '−' : '+'}</span>
               </button>
@@ -293,7 +371,7 @@ export default function Dashboard() {
 }
 
 /** A closed row should still answer its own question. */
-function summary(id, { live, left, rows, passkey, orders }) {
+function summary(id, { live, left, rows, passkey }) {
   if (id === 'agents') {
     const names = (rows || []).filter((c) => c.kind === 'assistant').map((c) => c.name);
     if (names.length) return `${names.join(', ')} connected`;
@@ -301,20 +379,18 @@ function summary(id, { live, left, rows, passkey, orders }) {
   }
   if (id === 'security') return live ? `live · ${formatLeft(left)} left` : null;
   if (id === 'credentials') return passkey?.registered ? 'passkey registered' : null;
-  if (id === 'activity') {
-    const n = orders?.orders?.length || 0;
-    return n ? `${n} order${n === 1 ? '' : 's'}` : null;
-  }
   return null;
 }
 
 const initials = (name) =>
   String(name || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().slice(0, 2).toUpperCase() || '?';
 
-/** Same deterministic-hue trick the token marks use, so a client keeps a colour. */
+/** Same deterministic-shade trick the token marks use — see markBg in Home.jsx
+    for why this is a lightness rather than a hue. */
 function clientColour(c) {
   const base = String(c.name || '?');
   let h = 0;
   for (const ch of base) h = (h * 31 + ch.charCodeAt(0)) % 360;
-  return `linear-gradient(140deg, hsl(${h},52%,40%), hsl(${(h + 38) % 360},48%,28%))`;
+  const l = 21 + (h % 17);
+  return `linear-gradient(140deg, hsl(214,7%,${l + 9}%), hsl(214,8%,${l}%))`;
 }

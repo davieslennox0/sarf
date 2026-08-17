@@ -43,12 +43,22 @@ PROPOSAL_TTL_DEFAULT = 600
 #
 # Why 30: a session covers one propose→review→sign conversation plus some
 # slack; the token also rides in the MCP connector URL, so a leaked/pasted
-# URL must go stale on its own within the hour. Why not shorter: minting a
-# new token costs a wallet signature (deliberately — no silent renewal), and
-# sub-15-minute expiry would interrupt a single leverage discussion mid-flow.
+# URL must go stale on its own within the hour. Why not shorter: sub-15-minute
+# expiry would interrupt a single leverage discussion mid-flow.
+#
+# An OAuth connector no longer pays a wallet signature for each renewal — it
+# holds a rotating refresh token (auth.py) and swaps it silently. That is what
+# stopped Claude disconnecting several times a day. ?key= connectors still have
+# no renewal path and still go stale within the hour, which is the point of
+# them being pasteable.
 # ---------------------------------------------------------------------------
 SESSION_TTL_DEFAULT = 1800
 SESSION_TTL_ABSOLUTE_MAX = 3600
+
+# The outer bound on a connection that keeps being used. Not extended by
+# rotation, revoked wholesale by "End session", and useless for signing.
+REFRESH_TTL_DEFAULT = 30 * 24 * 3600
+REFRESH_TTL_ABSOLUTE_MAX = 90 * 24 * 3600
 
 
 # NOTE: every field uses default_factory so a fresh Settings() re-reads the
@@ -81,6 +91,17 @@ class Settings:
         default_factory=lambda: min(
             int(_env("SESSION_TTL_SECONDS", str(SESSION_TTL_DEFAULT))),
             SESSION_TTL_ABSOLUTE_MAX,
+        )
+    )
+    # How long a connector may keep renewing itself before the wallet has to
+    # sign again. Access tokens stay short; this is the outer bound on a
+    # connection that is being used, and it is not extended by renewal. 30 days
+    # matches what every OAuth connector the user already has does, and the
+    # thing it renews cannot sign or move anything (see auth.mint_refresh).
+    refresh_ttl_seconds: int = field(
+        default_factory=lambda: min(
+            int(_env("REFRESH_TTL_SECONDS", str(REFRESH_TTL_DEFAULT))),
+            REFRESH_TTL_ABSOLUTE_MAX,
         )
     )
 

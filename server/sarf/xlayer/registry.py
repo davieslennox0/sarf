@@ -51,6 +51,14 @@ class RwaAsset:
         return EXPLORER_TOKEN.format(self.address)
 
 
+# OKX's own currency icons. The xStocks logos come from the token CDN keyed by
+# contract address (see RwaAsset.logo_url); that CDN has no entry for USDT0,
+# USDC or OKB on X Layer — it 404s — so the cash and gas holdings fell back to
+# generated monograms and were the only rows on a portfolio wearing initials
+# instead of a mark. These are the per-currency icons, which do exist.
+_CURRENCY_ICON = "https://static.okx.com/cdn/oksupport/asset/currency/icon/{}.png"
+
+
 @dataclass(frozen=True)
 class QuoteAsset:
     symbol: str
@@ -58,6 +66,11 @@ class QuoteAsset:
     address: str
     decimals: int
     is_native: bool = False
+    # Same field name as RwaAsset.logo_url on purpose: every renderer already
+    # reads that key and falls back to a monogram when it is empty, so filling
+    # it in here gives the stablecoin and gas rows a real image everywhere at
+    # once — site, chat card and widget — with no new special case.
+    logo_url: str = ""
 
 
 # The aggregator's sentinel for a chain's native coin. It is not a contract:
@@ -77,6 +90,7 @@ NATIVE = QuoteAsset(
     address=NATIVE_SENTINEL,
     decimals=18,
     is_native=True,
+    logo_url=_CURRENCY_ICON.format("okb"),
 )
 
 # Circle's native USDC on X Layer — the asset a CCTP deposit mints, so the
@@ -93,6 +107,7 @@ USDC = QuoteAsset(
     onchain_symbol="USDC",
     address="0xb6ceceab302e2e4948951ee7843fc24e92933061",
     decimals=6,
+    logo_url=_CURRENCY_ICON.format("usdc"),
 )
 
 
@@ -111,6 +126,10 @@ class XStocksRegistry:
             onchain_symbol=q["onchain_symbol"],
             address=validate_evm_address(q["address"], what="quote asset"),
             decimals=int(q["decimals"]),
+            # USD₮0 is Tether's omnichain USDT and wears the USDT mark. The
+            # registry file may name its own; this is the fallback so a
+            # regenerated registry without the field still gets an image.
+            logo_url=q.get("logo_url") or _CURRENCY_ICON.format("usdt"),
         )
         # The address the aggregator's swap executes AGAINST. Distinct from the
         # approval spender below, and confusing the two is not cosmetic: the

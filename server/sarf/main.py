@@ -33,6 +33,7 @@ from . import auth, oauth
 from .config import settings
 from .db import Database
 from .providers.xlayer_rwa import XLayerRwaProvider
+from .xlayer import deposit
 from .xlayer.api import build_xlayer_api
 from .xlayer.okx_dex import dex
 from .xlayer.registry import registry as load_registry
@@ -177,12 +178,15 @@ async def lifespan(app: FastAPI):
     # longer authorise anything should not outlive the grant by however long it
     # takes for the next page load.
     retirer = asyncio.create_task(_retire_grants_forever())
+    # Finish deposits nobody is watching any more. See below.
+    settler = asyncio.create_task(_settle_deposits_forever())
     try:
         async with mcp.session_manager.run():
             yield
     finally:
         warmer.cancel()
         retirer.cancel()
+        settler.cancel()
 
 
 GRANT_SWEEP_SECONDS = 60
@@ -199,6 +203,57 @@ async def _retire_grants_forever() -> None:
         except Exception:  # pragma: no cover - a sweeper must never die
             logging.getLogger("sarf").debug("grant sweep failed", exc_info=True)
         await asyncio.sleep(GRANT_SWEEP_SECONDS)
+
+
+DEPOSIT_SWEEP_SECONDS = 30
+# Circle attests a fast transfer in seconds and a standard one in ~13-19
+# minutes, and an RPC that refused once will usually take the same transaction
+# a minute later. So a pending deposit is retried for hours before it is
+# written off, and even then "failed" only means Sarf stopped trying — the
+# burn is on chain and the attestation never expires, so it can still be
+# finished by hand.
+DEPOSIT_MAX_ATTEMPTS = 240
+
+
+async def _settle_deposits_forever() -> None:
+    """Mint deposits whose burn has been attested, watched or not.
+
+    The user signs one transaction, the burn on Base. Everything after it is
+    permissionless — anyone holding Circle's attestation can submit the mint —
+    so there is no reason it should depend on a browser tab staying open. This
+    is the half of the deposit flow that runs whether or not anyone is looking,
+    and it is the reason a closed laptop is not a lost deposit.
+
+    It cannot misdeliver: the recipient is written into the message the user
+    signed on Base, so the only thing this task decides is *when* the money
+    arrives, never where.
+    """
+    log = logging.getLogger("sarf")
+    while True:
+        try:
+            for row in db.pending_deposits():
+                burn = row["burn_tx"]
+                try:
+                    res = await deposit.settle(burn, expect_address=row["address"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    tries = db.note_deposit_attempt(burn, f"{type(e).__name__}: {e}")
+                    if tries >= DEPOSIT_MAX_ATTEMPTS:
+                        db.fail_deposit(burn, f"gave up after {tries} attempts: {e}")
+                        log.error("deposit %s abandoned after %d attempts", burn, tries)
+                    continue
+                if res.get("settled"):
+                    db.settle_deposit(burn, res["mint_tx"])
+                    log.info("deposit %s minted as %s", burn, res["mint_tx"])
+                else:
+                    # Not attested yet. Normal, and not worth an error line.
+                    db.note_deposit_attempt(burn, res.get("detail"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - a sweeper must never die
+            log.debug("deposit sweep failed", exc_info=True)
+        await asyncio.sleep(DEPOSIT_SWEEP_SECONDS)
 
 
 app = FastAPI(title="Sarf", lifespan=lifespan)
@@ -230,11 +285,29 @@ async def guard(request: Request, call_next):
     if request.url.path.startswith("/mcp"):
         ip = request.client.host if request.client else "?"
         now = time.time()
-        q = _hits[ip]
+
+        # Resolve the session BEFORE rate limiting, because who is asking
+        # decides which bucket they are counted in.
+        #
+        # Keying on IP alone was wrong for the one client that matters: every
+        # Claude user reaches this server through a small pool of shared egress
+        # addresses, so one heavy conversation could exhaust the minute for
+        # everybody behind the same address — and a 429 in the middle of a tool
+        # call is indistinguishable, from the user's side, from the connector
+        # dropping. An authenticated caller is therefore limited per account,
+        # which is the thing we actually want to bound. Unauthenticated traffic
+        # is still limited by IP, where the alternative is no limit at all.
+        token, via_header = _extract_token(request)
+        address, state = auth.resolve_session_state(db, token)
+        bucket = f"addr:{address}" if address else f"ip:{ip}"
+        q = _hits[bucket]
         while q and now - q[0] > 60:
             q.popleft()
         if len(q) >= settings.rate_limit_per_minute:
-            return Response("rate limited", status_code=429)
+            # Retry-After turns a wall into a wait: without it a client has no
+            # idea whether to back off for a second or give up on the server.
+            return Response("rate limited", status_code=429,
+                            headers={"Retry-After": str(max(1, int(60 - (now - q[0]))))})
         q.append(now)
 
         # Session gate: the token was minted only after a verified
@@ -248,16 +321,15 @@ async def guard(request: Request, call_next):
         # clients keep the in-band path for expired-but-authentic tokens
         # (a 401 is opaque to them). Nothing executes without a valid
         # session either way — tools have no address to act on.
-        token, via_header = _extract_token(request)
-        address, state = auth.resolve_session_state(db, token)
         if address is None and auth.transport_denies(
             state, via_header=via_header, env=settings.env
         ):
             return Response(
                 "unauthorized: connect this MCP client via OAuth (it will prompt you to "
                 f"sign in with your wallet at {settings.public_url or 'the Sarf dashboard'}), "
-                "or mint a ?key= token on the dashboard. Sessions expire after "
-                f"{settings.session_ttl_seconds // 60} minutes.",
+                "or mint a ?key= token on the dashboard. An OAuth connector renews "
+                "itself and stays connected; a ?key= token expires after "
+                f"{settings.session_ttl_seconds // 60} minutes and has to be re-pasted.",
                 status_code=401,
                 headers={"WWW-Authenticate": oauth.www_authenticate()},
             )

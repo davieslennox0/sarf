@@ -2,9 +2,10 @@
 #
 # Build the frontend ON THIS BOX, without taking the site down while it runs.
 #
-# The normal path is CI — see .github/workflows/ci.yml and deploy-frontend.sh.
-# This exists for when you cannot wait for a runner, and it works around the
-# thing that makes local builds dangerous here rather than pretending it away:
+# This is the deploy path. CI compiles the tree to prove it still builds from a
+# clean checkout, but publishes nothing — the bundle that gets served is the one
+# this script produces. It works around the thing that makes local builds
+# dangerous here rather than pretending it away:
 #
 #   `vite build` empties frontend/dist BEFORE it starts. On a box with ~50 MB
 #   of free RAM the build can take eight minutes or die of an out-of-memory

@@ -65,17 +65,68 @@ from ..xlayer.registry import (
 _PRICE_CACHE: dict[str, tuple[float, float | None]] = {}
 # symbol -> the single in-flight quote for it, so concurrent callers share one.
 _PRICE_INFLIGHT: dict[str, Any] = {}
-PRICE_CACHE_TTL = float(os.environ.get("RWA_PRICE_CACHE_TTL", "90"))
+#
+# The TTL has to comfortably exceed one full warm cycle, and it did not.
+# Forty assets at the old 1.5s spacing, plus the quote latency inside each
+# step, is a sweep of roughly eighty seconds against a ninety-second TTL — so
+# every entry was expiring at about the moment it was due to be refreshed, and
+# a list read found a cold cache more often than a warm one. It then filled the
+# gaps itself, through the same rate limiter the warmer was using, which made
+# the next sweep slower still. The list card spent six seconds on its budget
+# and rendered dashes for a cache that existed and was never usable.
+#
+# Faster sweep, longer TTL: worst-case display staleness is now about a minute
+# on a page that is showing a market list, and nothing that sizes an order or
+# checks a cap reads this at all.
+PRICE_CACHE_TTL = float(os.environ.get("RWA_PRICE_CACHE_TTL", "180"))
 
 # How long the token-list card may spend waiting on the aggregator before it
 # renders with whatever it has. Rows still carry logo, symbol and name; a
 # missing price shows as "tap to price".
 LIST_PRICE_BUDGET = float(os.environ.get("RWA_LIST_PRICE_BUDGET", "6"))
 
-# Gap between assets in the background warmer. 40 assets at 1.5s is a full
-# sweep every minute, which keeps a 90s cache permanently warm without ever
-# looking like a burst to the aggregator.
-PRICE_WARM_SPACING = float(os.environ.get("RWA_PRICE_WARM_SPACING", "1.5"))
+# Gap between assets in the background warmer, ON TOP of the aggregator client's
+# own process-wide pacer — so this is how much the warmer yields to real user
+# requests, not the rate limit itself. 40 assets at 0.5s plus quote latency is a
+# sweep of well under a minute, comfortably inside PRICE_CACHE_TTL.
+PRICE_WARM_SPACING = float(os.environ.get("RWA_PRICE_WARM_SPACING", "0.5"))
+
+# How long "this pair has no route" is remembered.
+#
+# Some listed assets have no pool on X Layer deep enough for the aggregator to
+# quote, and asking costs about eight seconds each — the client retries a
+# refused quote with backoff, correctly, because most refusals are transient
+# rate limiting. A negative answer was not cached at all, so every list read
+# re-litigated every dead pair from scratch, and did it through the same
+# process-wide pacer the live prices queue on. Four unpriceable assets were
+# therefore holding up the twelve that price fine, on every page load, forever.
+#
+# Remembering the "no" for a few minutes is what makes a list read cheap. It is
+# only ever consulted by callers that opted into a cache age; `fresh=true` and
+# every order-sizing path still ask the venue.
+PRICE_NEGATIVE_TTL = float(os.environ.get("RWA_PRICE_NEGATIVE_TTL", "300"))
+
+# ...but only for callers reading at list scale.
+#
+# The featured board polls ONE symbol every couple of seconds over SSE. That is
+# not the amplification above — it is one request — and if that symbol blips it
+# should come back in seconds, not sit on DELAYED for five minutes because a
+# single refusal was remembered. So a caller asking for a nearly-fresh price is
+# never handed a cached "no"; it goes and asks.
+NEGATIVE_CACHE_MIN_AGE = 30.0
+
+# Below this, a balance is rounding rather than a holding.
+#
+# Selling a position in full does not reliably leave a zero balance. The
+# aggregator fills against an amount computed from a balance read a moment
+# earlier, and rebasing, fee-on-transfer and plain integer truncation all leave
+# a few minimal units behind — worth a fraction of a cent, and enough for
+# `raw > 0` to keep the row. So a position the user closed stayed on the page
+# and in chat, valued at $0, looking like the sale had not gone through.
+#
+# Only applied to positions that COULD be priced. An asset the venue cannot
+# quote is unknown, not empty, and it keeps its row and suppresses the total.
+DUST_VALUE_USD = float(os.environ.get("RWA_DUST_VALUE_USD", "0.01"))
 
 SYNTHETIC_DISCLOSURE = (
     "xStocks are tokenized SYNTHETIC exposure to the underlying share price. "
@@ -117,6 +168,20 @@ def _fmt_units(amount: int, decimals: int) -> str:
 
 def _usd(x: float | None) -> str:
     return f"${x:,.2f}" if x is not None else "n/a"
+
+
+def _wallet_fallback_note(stepup: "passkey.StepUpDecision") -> str:
+    """Why this card offers a signature and not an in-chat Approve.
+
+    Said in one place because place_order and swap both need it and it is easy
+    to write the reassuring half wrong: a stale passkey does not stand between
+    the user and this trade, it stands between them and settling it here.
+    """
+    return (
+        f"Sign this in your wallet: {stepup.reason}. Verifying your passkey at "
+        f"{settings.public_url}/security is what re-enables approving trades here "
+        "in chat — it is not needed to sign this one."
+    )
 
 
 def _label(asset: Any) -> str:
@@ -190,24 +255,51 @@ class XLayerRwaProvider:
             hit = _PRICE_CACHE.get(asset.symbol)
             if hit and hit[1] is not None and now - hit[0] <= max_age:
                 return hit[1]
+            # A remembered "no route" is an answer too, and re-asking costs
+            # about eight seconds of backoff — see PRICE_NEGATIVE_TTL.
+            if (max_age >= NEGATIVE_CACHE_MIN_AGE and hit and hit[1] is None
+                    and now - hit[0] <= PRICE_NEGATIVE_TTL):
+                return None
         try:
             q = await self.dex.quote(asset.address, self.reg.quote.address, 10 ** asset.decimals)
         except DexError:
+            _PRICE_CACHE[asset.symbol] = (now, None)
             return None
         if q.to_amount <= 0:
+            _PRICE_CACHE[asset.symbol] = (now, None)
             return None
         price = float(Decimal(q.to_amount) / (Decimal(10) ** self.reg.quote.decimals))
         _PRICE_CACHE[asset.symbol] = (now, price)
         return price
 
+    @staticmethod
+    def unpriceable(symbol: str) -> bool:
+        """Whether the venue said no to this asset recently.
+
+        Lets a caller tell "still fetching" apart from "there is no route", which
+        look identical in a price map — both are None — and are the difference
+        between a row worth asking about again and one that never will be.
+        """
+        hit = _PRICE_CACHE.get(symbol)
+        return bool(hit and hit[1] is None
+                    and time.monotonic() - hit[0] <= PRICE_NEGATIVE_TTL)
+
     async def _prices_within_budget(
-        self, assets: list[RwaAsset]
+        self, assets: list[RwaAsset], *, budget: float | None = None
     ) -> dict[str, float | None]:
-        """Best prices obtainable in LIST_PRICE_BUDGET seconds, cache included.
+        """Best prices obtainable in `budget` seconds, cache included.
 
         Never raises and never blocks past the budget: a display surface that
         waits on forty upstream calls is a display surface that times out.
+
+        The budget is per caller because they are not the same wait. A chat card
+        is rendered once and has to arrive complete, so it spends the full
+        LIST_PRICE_BUDGET. A web page has somewhere to put a pending row and can
+        ask again, so it takes what is ready and comes back — a page that blocks
+        for six seconds before painting is worse than one that paints in one and
+        fills in.
         """
+        budget = LIST_PRICE_BUDGET if budget is None else budget
         out: dict[str, float | None] = {}
         pending: list[RwaAsset] = []
         now = time.monotonic()
@@ -215,6 +307,11 @@ class XLayerRwaProvider:
             hit = _PRICE_CACHE.get(a.symbol)
             if hit and hit[1] is not None and now - hit[0] <= PRICE_CACHE_TTL:
                 out[a.symbol] = hit[1]
+            elif hit and hit[1] is None and now - hit[0] <= PRICE_NEGATIVE_TTL:
+                # Answered, and the answer is no. Queueing it would spend the
+                # whole budget re-confirming a pair that has no route while the
+                # assets that do price wait behind it.
+                out[a.symbol] = None
             else:
                 out[a.symbol] = None
                 pending.append(a)
@@ -237,7 +334,7 @@ class XLayerRwaProvider:
             tasks[t] = a
 
         done, unfinished = await asyncio.wait(
-            tasks.keys(), timeout=LIST_PRICE_BUDGET,
+            tasks.keys(), timeout=budget,
             return_when=asyncio.ALL_COMPLETED,
         )
         for t in done:
@@ -275,6 +372,19 @@ class XLayerRwaProvider:
                     m[a.symbol.upper()] = uri
             self._logo_json = json.dumps(m)
         return self._logo_json
+
+    # The two display-only reads of the warm cache, named so the REST layer
+    # does not have to reach for an underscore to get them. Both are explicitly
+    # "good enough to render": nothing that sizes an order or checks a cap may
+    # use them — those quote fresh, every time, on purpose.
+
+    async def display_price(self, asset: RwaAsset,
+                            max_age: float = PRICE_CACHE_TTL) -> float | None:
+        return await self._unit_price_usd(asset, max_age=max_age)
+
+    async def display_prices(self, assets: list[RwaAsset], *,
+                             budget: float | None = None) -> dict[str, float | None]:
+        return await self._prices_within_budget(assets, budget=budget)
 
     async def warm_prices_forever(self) -> None:
         """Refresh every listed asset's price on a slow, never-ending loop.
@@ -532,6 +642,10 @@ class XLayerRwaProvider:
             price = await self._unit_price_usd(a)
             qty = float(Decimal(raw) / (Decimal(10) ** a.decimals))
             value = qty * price if price is not None else None
+            # A sold-out position leaves dust behind. It is not a holding and
+            # it does not belong in a list of them — see DUST_VALUE_USD.
+            if value is not None and value < DUST_VALUE_USD:
+                continue
             if value is None:
                 unpriced.append(a.symbol)
             else:
@@ -581,6 +695,7 @@ class XLayerRwaProvider:
                 "symbol": reg.quote.symbol,
                 "onchain_symbol": reg.quote.onchain_symbol,
                 "name": f"{reg.quote.onchain_symbol} · stablecoin",
+                "logo_url": reg.quote.logo_url,
                 "address": reg.quote.address,
                 "explorer_url": EXPLORER_TOKEN.format(reg.quote.address),
                 "quantity": _fmt_units(usdt_raw, reg.quote.decimals),
@@ -597,6 +712,7 @@ class XLayerRwaProvider:
                 "symbol": USDC.symbol,
                 "onchain_symbol": USDC.onchain_symbol,
                 "name": "USDC · Circle, native on X Layer",
+                "logo_url": USDC.logo_url,
                 "address": USDC.address,
                 "explorer_url": EXPLORER_TOKEN.format(USDC.address),
                 "quantity": _fmt_units(usdc_raw, USDC.decimals),
@@ -609,6 +725,7 @@ class XLayerRwaProvider:
             "okb": {
                 "symbol": NATIVE.symbol,
                 "name": "OKB · gas on X Layer",
+                "logo_url": NATIVE.logo_url,
                 "quantity": _fmt_units(okb_raw, 18),
                 "price_usdt": round(okb_price, 6) if okb_price is not None else None,
                 "value_usd": round(okb_value, 2) if okb_value is not None else None,
@@ -672,13 +789,49 @@ class XLayerRwaProvider:
                 "Equity markets close; this token trades 24/7. Outside market hours the "
                 "on-chain price can drift from the last official close."
             )
-        if stepup.required:
+        if stepup.required and stepup.satisfied:
             notes.append(f"Passkey step-up: {stepup.reason}.")
         notes.append(
             f"Settlement is on X Layer (chain {CHAIN_ID}). You pay gas in OKB and the "
             "trade is final once mined."
         )
+        if stepup.required and not stepup.satisfied:
+            # An unsatisfied step-up costs the in-chat Approve, not the order.
+            # Second, not last: the rendered card shows the first four notes, and
+            # what the user has to DO next outranks the slippage tolerance.
+            notes.insert(1, _wallet_fallback_note(stepup))
         return notes
+
+    def _can_execute_now(self, address: str, est_usd: float | None, *,
+                         stepup: passkey.StepUpDecision,
+                         native_leg: bool = False) -> bool:
+        """Would execute_order settle this order in chat, right now?
+
+        Presentation only — execute_order re-checks every clause, since a grant
+        can be revoked between building an order and running it. What it must
+        not do is over-promise: `can_execute` picks the card's next step, so a
+        True here that execute_order then refuses puts an Approve in front of
+        the user that cannot work.
+
+        That is why the passkey belongs in this expression and not in front of
+        the build. Building is free — the wallet is the gate on anything built
+        here. Settling is the path with no wallet prompt at all, so a stale
+        assertion takes the Approve away and leaves the signature.
+        """
+        if native_leg:
+            # SarfSessionKey calls the router with value: 0 and reads balances
+            # with balanceOf(), so a session key can never reach the gas coin.
+            # Worth keeping, so these go to the wallet.
+            return False
+        if est_usd is None or est_usd > settings.delegated_auto_usd:
+            return False
+        if not stepup.satisfied:
+            return False
+        g = self.db.get_grant(address)
+        return bool(
+            g and not g.get("revoked_at") and g["expiry"] > time.time()
+            and est_usd * 10 ** self.reg.quote.decimals <= g["per_trade_cap"]
+        )
 
     # ----------------------------------------------------------------- tools
 
@@ -888,12 +1041,9 @@ class XLayerRwaProvider:
                     f"{_usd(est_usd)} order, which is not a fair rate."
                 )
 
+            # The passkey does NOT gate building an order — see the note on the
+            # same call in swap(). It withdraws in-chat execution instead.
             stepup = passkey.check_stepup(db, address, est_usd)
-            if stepup.blocked:
-                raise ValueError(
-                    f"passkey verification required before this order: {stepup.reason}. "
-                    f"Open {settings.public_url}/security to verify, then ask again."
-                )
 
             # Fee always rides on the stablecoin leg so the user is never
             # charged in a volatile equity: on a buy that is the USDT they
@@ -932,15 +1082,8 @@ class XLayerRwaProvider:
                 asset=asset, side=side, est_usd=est_usd,
                 quote=quote, slippage=slippage, stepup=stepup, fee=fee_view,
             )
-            # Can this be executed in chat, or must it go to the wallet? Purely
-            # for presentation — execute_order re-checks all of it, since a
-            # grant can be revoked between building an order and running it.
-            _g = db.get_grant(address)
-            can_execute = bool(
-                _g and not _g.get("revoked_at") and _g["expiry"] > time.time()
-                and est_usd is not None and est_usd <= settings.delegated_auto_usd
-                and est_usd * 10 ** reg.quote.decimals <= _g["per_trade_cap"]
-            )
+            # Can this be executed in chat, or must it go to the wallet?
+            can_execute = self._can_execute_now(address, est_usd, stepup=stepup)
             if can_execute:
                 risk_notes.insert(1, (
                     f"This order is within your session grant (under "
@@ -1160,12 +1303,21 @@ class XLayerRwaProvider:
                         f"keep at least that much back (you hold {_fmt_units(held, 18)})."
                     )
 
+            # The passkey gates SETTLEMENT, not quoting.
+            #
+            # This used to raise, so a stale assertion refused to build the swap
+            # at all: an hour after verifying, asking for a swap in chat got an
+            # error instead of a card, and the only route back was to leave the
+            # conversation, load the site and come back. That gated the wrong
+            # thing. Nothing built here can move a coin — it is an unsigned
+            # transaction, and the user's own wallet still has to sign it, which
+            # is a strictly stronger check than the passkey.
+            #
+            # The path the passkey genuinely protects is the one with no wallet
+            # prompt anywhere: in-chat execution under a session grant. So a
+            # stale assertion now withdraws `can_execute` rather than the whole
+            # card, and execute_order enforces it for real and unconditionally.
             stepup = passkey.check_stepup(db, address, est_usd)
-            if stepup.blocked:
-                raise ValueError(
-                    f"passkey verification required before this swap: {stepup.reason}. "
-                    f"Open {settings.public_url}/security to verify, then ask again."
-                )
             try:
                 unsigned, quote, fee_applied = await dex.build_swap(
                     from_address=sell_asset.address, to_address=buy_asset.address,
@@ -1215,18 +1367,14 @@ class XLayerRwaProvider:
 
             summary = (f"SWAP {spending} -> {receiving} on X Layer"
                        + (f" (~{_usd(est_usd)})" if est_usd is not None else ""))
-            # A native leg can never be delegated: SarfSessionKey reads
-            # balances with balanceOf() and calls the router with value: 0, so
-            # that a session key can never reach the gas coin. That is a
-            # property worth keeping, so these swaps go to the wallet instead.
+            # A native leg can never be delegated — see _can_execute_now.
             native_leg = (getattr(sell_asset, "is_native", False)
                           or getattr(buy_asset, "is_native", False))
-            _g = db.get_grant(address)
-            can_execute = bool(
-                not native_leg
-                and _g and not _g.get("revoked_at") and _g["expiry"] > time.time()
-                and est_usd is not None and est_usd <= settings.delegated_auto_usd
-                and est_usd * 10 ** reg.quote.decimals <= _g["per_trade_cap"])
+            can_execute = self._can_execute_now(
+                address, est_usd, stepup=stepup, native_leg=native_leg)
+            if stepup.required and not stepup.satisfied:
+                # Second, so it survives the card's four-note cap — see _risk_notes.
+                risk_notes.insert(1, _wallet_fallback_note(stepup))
             if native_leg:
                 risk_notes.append(
                     "This swap involves OKB, the gas coin, so it is signed in your own "
@@ -1326,12 +1474,12 @@ class XLayerRwaProvider:
                 default=None,
                 description="Optional deposit size in US dollars, for a quote")] = None,
         ) -> dict[str, Any]:
-            """How to fund this wallet with dollars from a bank account.
+            """How to fund this wallet with dollars from a card.
 
             Read-only. Explains the route and quotes the cost; it moves
-            nothing. The bank transfer itself is done by a licensed provider
-            on the website — Sarf never touches fiat, and there is no tool
-            here that could.
+            nothing. The card payment itself is taken by MoonPay on the
+            website — Sarf never touches fiat, and there is no tool here that
+            could.
             """
             address = require_address()
             out: dict[str, Any] = {
@@ -1339,9 +1487,9 @@ class XLayerRwaProvider:
                 "deposit_url": (
                     f"{settings.public_url}/deposit" if settings.public_url else None),
                 "route": [
-                    "Bank (ACH) or card -> USDC on Base, through a licensed provider "
-                    "with its own KYC. It pays out to the user's own address; Sarf is "
-                    "not a party to the transfer and never sees bank details.",
+                    "Card -> USDC on Base, through MoonPay, which runs its own KYC. "
+                    "It pays out to the user's own address; Sarf is not a party to "
+                    "the payment and never sees card details.",
                     "USDC on Base -> USDC on X Layer, through Circle's CCTP: the USDC "
                     "is BURNED on Base and MINTED on X Layer 1:1 against Circle's "
                     "attestation. No bridge, no wrapped token, no pooled collateral.",
@@ -1360,8 +1508,8 @@ class XLayerRwaProvider:
                 ),
                 "next_step": (
                     "Give the user deposit_url and describe the route in plain words. "
-                    "Do NOT imply Sarf takes the bank transfer — a licensed provider "
-                    "does, on that page. Nothing is deposited by calling this tool."
+                    "Do NOT imply Sarf takes the card payment — MoonPay does, on that "
+                    "page. Nothing is deposited by calling this tool."
                 ),
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }

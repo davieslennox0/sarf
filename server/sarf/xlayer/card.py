@@ -35,16 +35,18 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
-# Website tokens (styles.css)
-BG = (11, 12, 9)
-PANEL = (21, 22, 15)
-PANEL_2 = (28, 29, 20)
-LINE = (44, 45, 34)
-AMBER = (232, 163, 61)
-PAPER = (237, 230, 214)
-PAPER_DIM = (166, 161, 144)
+# Website tokens (styles.css). Stainless on black — there is no gold in this
+# product, and that has to hold in the rendered card too: this is the one
+# surface a user sees as a flat image, with no stylesheet to fix it afterwards.
+BG = (10, 10, 11)
+PANEL = (19, 19, 21)
+PANEL_2 = (26, 27, 29)
+LINE = (42, 43, 46)
+ACCENT = (244, 246, 249)
+PAPER = (211, 216, 222)
+PAPER_DIM = (139, 146, 154)
 GREEN = (107, 158, 125)
-RED = (180, 83, 74)
+RED = (194, 99, 90)
 
 _MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 _MONO_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
@@ -283,14 +285,19 @@ def logo_data_uri(url: str, size: int = 72) -> str:
 
 
 def _monogram(d: "ImageDraw.ImageDraw", box, symbol: str, size: int) -> None:
-    """The fallback mark: two letters on a hue derived from the ticker, so an
-    asset keeps the same colour here as in the HTML card."""
+    """The fallback mark: two letters on a shade derived from the ticker, so an
+    asset keeps the same tile here as in the HTML card.
+
+    A lightness, not a hue — see markBg in the site's Home.jsx. Rotating a
+    saturated hue off the hash meant a card could open with a gold tile on it,
+    which is the one colour this product no longer has.
+    """
     import colorsys
     base = (symbol or "?").rstrip("x").split(" ")[0]
     h = 0
     for ch in base:
         h = (h * 31 + ord(ch)) % 360
-    r, g, b = colorsys.hls_to_rgb(h / 360.0, 0.36, 0.52)
+    r, g, b = colorsys.hls_to_rgb(214 / 360.0, 0.21 + (h % 17) / 100.0, 0.075)
     fill = (int(r * 255), int(g * 255), int(b * 255))
     d.rounded_rectangle(box, radius=max(4, size // 5), fill=fill)
     d.text(
@@ -376,7 +383,7 @@ def _render(o: dict[str, Any]) -> str:
 
     # ---- header -----------------------------------------------------------
     _text(d, (PAD, 30), "SARF", _f(22, True), PAPER)
-    _text(d, (PAD + 72, 36), "/  X LAYER RWA", _f(13), AMBER)
+    _text(d, (PAD + 72, 36), "/  X LAYER RWA", _f(13), ACCENT)
     tag = "SETTLED" if settled else ("REVIEW & SEND" if is_transfer else "REVIEW & SIGN")
     _text(d, (W - PAD, 36), tag, _f(12), GREEN if settled else PAPER_DIM, anchor="ra")
     d.line([(PAD, _HEAD_RULE), (W - PAD, _HEAD_RULE)], fill=LINE, width=1)
@@ -392,7 +399,7 @@ def _render(o: dict[str, Any]) -> str:
         _monogram(d, mark_box, symbol, MARK)
 
     tx = PAD + MARK + 18
-    _text(d, (tx, _IDENT_TOP - 2), f"{side} {symbol}"[:34], _f(30, True), AMBER)
+    _text(d, (tx, _IDENT_TOP - 2), f"{side} {symbol}"[:34], _f(30, True), ACCENT)
     if name:
         _text(d, (tx, _IDENT_TOP + 38), name[:46], _f(14), PAPER_DIM)
 
@@ -415,7 +422,7 @@ def _render(o: dict[str, Any]) -> str:
     right_value = (str(o.get("recipient") or "—") if is_transfer
                    else str(o.get("receiving_estimated") or "—"))
     _cell(d, PAD + 26, _PANEL_TOP + 26, left_label, str(o.get("spending") or "—"))
-    _text(d, (W // 2, _PANEL_TOP + _PANEL_H // 2), "→", _f(22), AMBER, anchor="mm")
+    _text(d, (W // 2, _PANEL_TOP + _PANEL_H // 2), "→", _f(22), ACCENT, anchor="mm")
     _cell(d, W - PAD - 26, _PANEL_TOP + 26, right_label, right_value, anchor_right=True)
 
     # ---- facts ------------------------------------------------------------
@@ -440,7 +447,7 @@ def _render(o: dict[str, Any]) -> str:
     # ---- tail -------------------------------------------------------------
     y = _TAIL_TOP
     if warn:
-        _text(d, (PAD, y), warn, _f(12), AMBER)
+        _text(d, (PAD, y), warn, _f(12), ACCENT)
         y += 30
     # One standing line, and it is the one that fits the operation. A transfer
     # of USDT is not synthetic equity exposure, so printing that disclosure

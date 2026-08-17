@@ -44,8 +44,11 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger("sarf.auth")
 
 _TOKEN_RE = re.compile(r"^sarf_sess_([0-9a-f]{32})\.([0-9a-f]{64})$")
+_REFRESH_RE = re.compile(r"^sarf_refr_([0-9a-f]{32})\.([0-9a-f]{64})$")
 # Unanchored variant for scrubbing tokens out of larger strings (log lines).
-_TOKEN_ANYWHERE_RE = re.compile(r"sarf_sess_[0-9a-f]{32}\.[0-9a-f]{64}")
+# Both prefixes: a refresh token is the longer-lived of the two and is the last
+# thing that should be sitting in a log file.
+_TOKEN_ANYWHERE_RE = re.compile(r"sarf_(?:sess|refr)_[0-9a-f]{32}\.[0-9a-f]{64}")
 
 
 class RedactSessionTokens(logging.Filter):
@@ -133,6 +136,64 @@ def resolve_session_state(db: "Database", token: str | None) -> tuple[str | None
         return None, "invalid"
     address = db.session_address(token_id)
     return (address, "valid") if address else (None, "expired")
+
+
+# --- refresh tokens ----------------------------------------------------------
+# Why they exist: without renewal, "session expires in 30 minutes" and "the
+# connector disconnects every 30 minutes" were the same sentence, and the only
+# cure was another wallet signature. Renewal does not widen what a session can
+# do — signing still needs the wallet or the passkey, in-chat execution still
+# needs a session-key grant that expires on its own, and transfers can never be
+# delegated. What it renews is the right to read and to build.
+
+
+class RefreshReuse(Exception):
+    """A spent refresh token came back. Treated as theft, not as a retry."""
+
+
+def mint_refresh(db: "Database", address: str, *, client_id: str,
+                 client_name: str | None, family_id: str | None = None,
+                 expires_at: float | None = None) -> tuple[str, float]:
+    """Issue a refresh token. -> (token, family absolute expiry).
+
+    `family_id`/`expires_at` are carried over on rotation: a renewed token
+    belongs to the same chain as the one it replaces and inherits its deadline,
+    so rotating cannot extend a grant indefinitely.
+    """
+    import time as _time
+
+    token_id = secrets.token_hex(16)
+    fam = family_id or secrets.token_hex(16)
+    exp = expires_at if expires_at is not None else _time.time() + settings.refresh_ttl_seconds
+    db.put_refresh(token_id=token_id, family_id=fam, address=address,
+                   client_id=client_id, client_name=client_name, expires_at=exp)
+    return f"sarf_refr_{token_id}.{_sign(token_id)}", exp
+
+
+def rotate_refresh(db: "Database", token: str | None) -> dict[str, object] | None:
+    """Spend a refresh token and hand back what it stood for.
+
+    -> the consumed row, or None if the token is unknown, forged, revoked or
+    lapsed. Raises RefreshReuse if it was already spent, which means a copy is
+    in circulation: the caller kills the entire family, because the honest
+    client and the thief are now indistinguishable and only one of them should
+    be able to carry on.
+    """
+    m = _REFRESH_RE.match((token or "").strip())
+    if not m:
+        return None
+    token_id = m.group(1)
+    if not hmac.compare_digest(m.group(2), _sign(token_id)):
+        return None
+    row = db.consume_refresh(token_id)
+    if row is not None:
+        return row
+    known = db.refresh_record(token_id)
+    if known and known.get("used_at") and not known.get("revoked_at"):
+        db.revoke_refresh_family(str(known["family_id"]), "refresh_token_reuse")
+        log.warning("refresh token reuse for %s; family revoked", known["address"])
+        raise RefreshReuse
+    return None
 
 
 def transport_denies(state: str, *, via_header: bool, env: str) -> bool:

@@ -52,8 +52,8 @@ from __future__ import annotations
 # cannot reach a stylesheet.
 _CSS = """
 :root{
-  --bg:#0b0c09; --panel:#15160f; --panel2:#1c1d14; --line:#2c2d22;
-  --amber:#e8a33d; --paper:#ede6d6; --dim:#a6a190; --green:#6b9e7d; --red:#b4534a;
+  --bg:#0a0a0b; --panel:#131315; --panel2:#1a1b1d; --line:#2a2b2e;
+  --accent:#f4f6f9; --paper:#d3d8de; --dim:#8b929a; --green:#6b9e7d; --red:#c2635a;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 /* The page itself must never scroll: the host frame is resized to fit. */
@@ -67,36 +67,36 @@ body{
 .head{display:flex;justify-content:space-between;align-items:center;
   padding:9px 14px;border-bottom:1px solid var(--line);background:var(--panel2)}
 .brand{font-weight:600;letter-spacing:.06em;font-size:11px}
-.brand span{color:var(--amber)}
+.brand span{color:var(--accent)}
 .tag{font-size:10px;color:var(--dim);letter-spacing:.1em}
 /* The CASH / GAS label on a holding row. Small, outlined, and never the
    same weight as the ticker it sits beside. */
 .sym .tag{font-size:9px;padding:1px 6px;border:1px solid var(--line);
   border-radius:999px;vertical-align:1px}
 .tag.ok{color:var(--green)}
-.title{padding:13px 14px 2px;font-size:19px;font-weight:600;color:var(--amber)}
+.title{padding:13px 14px 2px;font-size:19px;font-weight:600;color:var(--accent)}
 .sub{padding:0 14px 11px;color:var(--dim);font-size:11px}
 .rows{padding:0 14px}
 .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--line)}
 .row:first-child{border-top:0}
 .k{color:var(--dim);white-space:nowrap}
 .v{font-variant-numeric:tabular-nums;text-align:right;word-break:break-word}
-.v.em{color:var(--amber);font-weight:600}
+.v.em{color:var(--accent);font-weight:600}
 .notes{padding:11px 14px;border-top:1px solid var(--line);background:var(--panel2)}
-.notes h4{font-size:10px;letter-spacing:.1em;color:var(--amber);margin-bottom:5px;font-weight:600}
+.notes h4{font-size:10px;letter-spacing:.1em;color:var(--accent);margin-bottom:5px;font-weight:600}
 .notes li{color:var(--dim);font-size:11px;margin:4px 0 4px 15px}
 .tips{padding:10px 14px;border-top:1px solid var(--line)}
 .tip{display:flex;gap:8px;font-size:11px;color:var(--dim);margin:4px 0}
-.tip b{color:var(--amber);font-weight:600;flex:none}
+.tip b{color:var(--accent);font-weight:600;flex:none}
 .chips{padding:10px 14px 12px;border-top:1px solid var(--line);
   display:flex;flex-wrap:wrap;gap:6px;background:var(--panel2)}
 button.chip{
   font:inherit;font-size:11px;cursor:pointer;border:1px solid var(--line);
   background:var(--panel);color:var(--paper);padding:5px 10px;border-radius:999px;
 }
-button.chip:hover{border-color:var(--amber);color:var(--amber)}
-button.chip.go{background:var(--amber);color:#141409;border-color:var(--amber);font-weight:600}
-a.btn{background:var(--amber);color:#141409;text-decoration:none;font-weight:600;
+button.chip:hover{border-color:var(--accent);color:var(--accent)}
+button.chip.go{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+a.btn{background:var(--accent);color:var(--bg);text-decoration:none;font-weight:600;
   padding:6px 13px;border-radius:4px;font-size:11px}
 .foot{padding:12px 14px 14px;border-top:1px solid var(--line);display:flex;
   flex-direction:column;gap:7px;align-items:stretch;
@@ -121,10 +121,10 @@ a.btn.wide.primary{box-shadow:0 1px 0 rgba(0,0,0,.35)}
 .amtTop{font-size:18px;font-weight:600;color:var(--paper)}
 .amtSub{font-size:11px;color:var(--dim);margin-top:2px}
 .warn{margin:0 14px 11px;padding:8px 10px;border-radius:5px;font-size:11px;
-  background:rgba(232,163,61,.10);border:1px solid rgba(232,163,61,.35);
-  color:var(--amber)}
+  background:rgba(244,246,249,.08);border:1px solid rgba(244,246,249,.28);
+  color:var(--accent)}
 .bar{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:3px}
-.bar i{display:block;height:100%;background:var(--amber)}
+.bar i{display:block;height:100%;background:var(--accent)}
 .pos{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line)}
 .pos:first-child{border-top:0}
 .sym{font-weight:600}
@@ -156,8 +156,11 @@ function mark(symbol, logo){
   const m=$('div','mark sm');
   const base=String(symbol||'?').replace(/x$/,'').split(' ')[0];
   txt(m, base.slice(0,2).toUpperCase());
+  // Lightness off the ticker hash, not hue — see markBg in the site's
+  // Home.jsx. A rainbow of tiles would put gold back in every list.
   let h=0; for(const c of base) h=(h*31+c.charCodeAt(0))%360;
-  m.style.background='linear-gradient(140deg,hsl('+h+',62%,42%),hsl('+((h+38)%360)+',58%,30%))';
+  const l=21+(h%17);
+  m.style.background='linear-gradient(140deg,hsl(214,7%,'+(l+9)+'%),hsl(214,8%,'+l+'%))';
   logo=logoFor(symbol,logo);
   if(logo){
     const im=new Image();
@@ -265,9 +268,11 @@ function render(d){
   const mark=$('div','mark');
   const sym0=String(d.symbol||'?').replace(/x$/,'').split(' ')[0];
   txt(mark, sym0.slice(0,2).toUpperCase());
-  // Deterministic hue per ticker so an asset keeps the same colour everywhere.
+  // Deterministic SHADE per ticker so an asset keeps the same mark everywhere,
+  // on one near-neutral steel hue — see markBg in the site's Home.jsx.
   let hsum=0; for(const ch of sym0) hsum=(hsum*31+ch.charCodeAt(0))%360;
-  mark.style.background='linear-gradient(140deg,hsl('+hsum+',62%,42%),hsl('+((hsum+38)%360)+',58%,30%))';
+  const lsum=21+(hsum%17);
+  mark.style.background='linear-gradient(140deg,hsl(214,7%,'+(lsum+9)+'%),hsl(214,8%,'+lsum+'%))';
   // Real logo on top of the monogram rather than instead of it: the monogram
   // is already painted and correct, so a blocked or 404 image leaves a filled
   // mark instead of a hole. Only swapped in once the bytes actually decode.
@@ -392,9 +397,17 @@ function render(d){
   // equity sleeve the concentration analysis is computed against, and cash is
   // not a single-name exposure. Listing them together is presentation;
   // measuring them together would be wrong.
+  //
+  // Under a cent is rounding, not a balance: spending a stablecoin down leaves
+  // a few minimal units behind, and a row valued at $0 reads as a holding the
+  // user thought they had cleared. The server applies the same rule to the
+  // equity positions.
+  const held=p=>p&&parseFloat(p.quantity||'0')>0
+    &&(p.value_usd==null||Number(p.value_usd)>=0.01);
   const extra=[];
-  if(d.usdt&&parseFloat(d.usdt.quantity||'0')>0) extra.push(Object.assign({tag:'CASH'},d.usdt));
-  if(d.okb&&parseFloat(d.okb.quantity||'0')>0) extra.push(Object.assign({tag:'GAS'},d.okb));
+  if(held(d.usdt)) extra.push(Object.assign({tag:'CASH'},d.usdt));
+  if(held(d.usdc)) extra.push(Object.assign({tag:'CASH'},d.usdc));
+  if(held(d.okb)) extra.push(Object.assign({tag:'GAS'},d.okb));
   const ps=(d.positions||[]).concat(extra)
     .sort((a,b)=>(b.value_usd||0)-(a.value_usd||0));
   const total=d.total_value_usd!=null?d.total_value_usd:d.positions_value_usd;
@@ -587,44 +600,51 @@ function render(d){
 # body is not enough — a session that already fetched a card keeps rendering the
 # old one. v2 carries the inlined token logos; without a new URI the icons stay
 # missing for everyone already connected, which is exactly what happened.
-WIDGET_VERSION = 3
+#
+# v4 is the stainless rebrand. It happened again: the palette was rewritten and
+# shipped, the server restarted on the new HTML, and every already-connected
+# chat kept drawing the gold card from its cache. Rewriting these styles without
+# turning this number is the one change that looks deployed and is not.
+WIDGET_VERSION = 4
 
 
 def _uri(name: str) -> str:
     return f"ui://sarf/{name}-v{WIDGET_VERSION}"
 
 
+# One entry per card, keyed by the name that goes in the URI. Everything below
+# is derived from this, so adding a card or turning the version needs one edit.
+_CARDS: dict[str, tuple[str, str, str]] = {
+    "order-card": ("sarf_order_card", ORDER_CARD,
+                   "Order card — amounts, platform fee, risks, tips, sign or execute"),
+    "portfolio-card": ("sarf_portfolio_card", PORTFOLIO_CARD,
+                       "Holdings card — positions, weights, cash and gas, next steps"),
+    "list-card": ("sarf_list_card", LIST_CARD,
+                  "Token list — logo, symbol and name per line, price per unit"),
+    "analysis-card": ("sarf_analysis_card", ANALYSIS_CARD,
+                      "Analysis card — concentration, sectors, observations, how to read it"),
+}
+
 ORDER_CARD_URI = _uri("order-card")
 PORTFOLIO_CARD_URI = _uri("portfolio-card")
 LIST_CARD_URI = _uri("list-card")
 ANALYSIS_CARD_URI = _uri("analysis-card")
 
-WIDGETS = {
-    ORDER_CARD_URI: ("sarf_order_card", ORDER_CARD,
-                     "Order card — amounts, platform fee, risks, tips, sign or execute"),
-    PORTFOLIO_CARD_URI: ("sarf_portfolio_card", PORTFOLIO_CARD,
-                         "Holdings card — positions, weights, cash and gas, next steps"),
-    LIST_CARD_URI: ("sarf_list_card", LIST_CARD,
-                    "Token list — logo, symbol and name per line, price per unit"),
-    ANALYSIS_CARD_URI: ("sarf_analysis_card", ANALYSIS_CARD,
-                        "Analysis card — concentration, sectors, observations, how to read it"),
-}
+WIDGETS = {_uri(name): entry for name, entry in _CARDS.items()}
 
-# Still served, so a session holding the previous tool definitions reads a card
-# rather than a 404. They get the current HTML: an unversioned URI is stale by
-# cache, not by content.
+# Every URI this server has ever handed out, still served, so a session holding
+# older tool definitions reads a card rather than a 404. They all serve the
+# CURRENT html: an old URI is stale by cache, not by content.
+#
+# Generated rather than listed. Turning WIDGET_VERSION used to mean also
+# remembering to copy the outgoing URIs down here by hand, and a forgotten copy
+# 404s a card for everyone who has not reconnected — a worse failure than the
+# stale one the bump was for. v1 is the unversioned form; suffixes start at v2.
 LEGACY_WIDGETS = {
-    "ui://sarf/order-card": ("sarf_order_card_v1", ORDER_CARD),
-    "ui://sarf/portfolio-card": ("sarf_portfolio_card_v1", PORTFOLIO_CARD),
-    "ui://sarf/list-card": ("sarf_list_card_v1", LIST_CARD),
-    "ui://sarf/analysis-card": ("sarf_analysis_card_v1", ANALYSIS_CARD),
-    # v2 URIs, still readable by a session that fetched the tool definitions
-    # before the version bump. They serve the CURRENT html: an old URI is
-    # stale by cache, not by content.
-    "ui://sarf/order-card-v2": ("sarf_order_card_v2", ORDER_CARD),
-    "ui://sarf/portfolio-card-v2": ("sarf_portfolio_card_v2", PORTFOLIO_CARD),
-    "ui://sarf/list-card-v2": ("sarf_list_card_v2", LIST_CARD),
-    "ui://sarf/analysis-card-v2": ("sarf_analysis_card_v2", ANALYSIS_CARD),
+    uri: (f"{wname}_v{v}", html)
+    for name, (wname, html, _desc) in _CARDS.items()
+    for v, uri in [(1, f"ui://sarf/{name}")]
+    + [(v, f"ui://sarf/{name}-v{v}") for v in range(2, WIDGET_VERSION)]
 }
 
 UI_MIME = "text/html;profile=mcp-app"

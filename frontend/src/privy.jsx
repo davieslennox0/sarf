@@ -19,10 +19,27 @@
 
 import React, { useEffect } from 'react';
 import {
-  PrivyProvider, usePrivy, useWallets, useSign7702Authorization, useAddFunds,
+  PrivyProvider, usePrivy, useWallets, useSign7702Authorization,
+  useAddFunds, useExportWallet,
 } from '@privy-io/react-auth';
 
 export const PRIVY_APP_ID = import.meta.env.VITE_PRIVY_APP_ID || '';
+
+/**
+ * The on-ramp, named for the copy that describes it.
+ *
+ * MoonPay is the only provider enabled on the Privy app, so it is the only one
+ * the funding flow will offer and the only one the deposit page should promise.
+ * The bank-transfer route is gone with it: `useFundWalletWithBankDeposit` is a
+ * Bridge-specific call, Bridge is not enabled, and a button that opens a picker
+ * with nothing in it is worse than no button.
+ *
+ * This is a display name, not a switch — `addFunds` picks the provider from the
+ * Privy dashboard either way. If a second one is ever enabled there, the flow
+ * starts offering it on its own and this constant is what needs updating so the
+ * page stops claiming otherwise.
+ */
+export const ONRAMP_NAME = 'MoonPay';
 
 /** No app ID = Privy is off and wallet.js falls back to the injected provider. */
 export function privyEnabled() {
@@ -39,10 +56,23 @@ let _ctx = {
   login: null,
   logout: null,
   signAuthorization: null,
-  // Privy's unified funding flow — card, bank transfer (ACH) and exchange,
-  // whichever the dashboard has enabled. Published here for the same reason
-  // the signer is: the deposit page calls it from a plain handler.
+  // Fiat -> USDC, through Privy's unified funding flow. It names no provider
+  // itself: it offers whatever is enabled on the Privy app, which today is
+  // MoonPay alone. See ONRAMP_NAME.
   addFunds: null,
+  // Opens Privy's key-export modal for the embedded wallet.
+  //
+  // The private key is rendered inside an iframe on a Privy-owned origin, so
+  // this app never sees it — which is the whole point, and why this is a
+  // function to call rather than a value to read.
+  exportWallet: null,
+  // Whether the wallet in use is the one Privy provisioned.
+  //
+  // Export only means something for that wallet. Someone who signed in with
+  // their own OKX or MetaMask wallet already holds the key, and Privy would
+  // throw if asked to export a wallet it does not hold — so the control is
+  // hidden rather than shown and then refused.
+  embedded: false,
 };
 
 const _subs = new Set();
@@ -147,6 +177,7 @@ function PrivyBridge() {
   const { wallets } = useWallets();
   const { signAuthorization } = useSign7702Authorization();
   const { addFunds } = useAddFunds();
+  const { exportWallet } = useExportWallet();
 
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +209,8 @@ function PrivyBridge() {
       logout,
       signAuthorization,
       addFunds,
+      exportWallet,
+      embedded: w?.walletClientType === 'privy',
       address: w?.address ? w.address.toLowerCase() : null,
     });
 
@@ -216,7 +249,8 @@ function PrivyBridge() {
     })();
 
     return () => { cancelled = true; };
-  }, [ready, authenticated, wallets, login, logout, signAuthorization, addFunds]);
+  }, [ready, authenticated, wallets, login, logout, signAuthorization,
+      addFunds, exportWallet]);
 
   return null;
 }
@@ -263,7 +297,11 @@ export function WalletProvider({ children }) {
         loginMethods: ['google', 'wallet'],
         appearance: {
           theme: 'dark',
-          accentColor: '#e8a33d',
+          // Matches --accent in styles.css. Privy's modal is the one surface
+          // the user meets that this app does not render itself, so a stale
+          // value here is a gold button appearing in the middle of a site that
+          // has none.
+          accentColor: '#f4f6f9',
           logo: '/favicon.ico',
           // OKX first: X Layer is OKX's chain, so it is the wallet most likely
           // to already hold OKB for gas and to know the network.

@@ -21,7 +21,7 @@ function Countdown({ until }) {
   if (ms <= 0) return <span className="chip red">expired</span>;
   const m = Math.floor(ms / 60000);
   const s = String(Math.floor((ms % 60000) / 1000)).padStart(2, '0');
-  return <span className="chip amber">expires in {m}m {s}s</span>;
+  return <span className="chip accent">expires in {m}m {s}s</span>;
 }
 
 export default function Sign() {

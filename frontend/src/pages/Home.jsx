@@ -22,15 +22,23 @@ const ROLES = [
 ];
 
 /**
- * Deterministic hue per ticker, so an asset keeps one colour on every surface
+ * Deterministic shade per ticker, so an asset keeps one mark on every surface
  * — market row, holding, chat card. Exported because Markets and Portfolio
  * each carried their own byte-identical copy of it.
+ *
+ * It used to rotate a full-saturation HUE off the ticker hash, which meant
+ * every list carried a row of coloured tiles — and for a good fraction of the
+ * alphabet that colour was gold. Stripping the accent while leaving forty
+ * rainbow squares behind would have missed the point, so the same hash now
+ * picks a LIGHTNESS on one near-neutral steel hue: an asset still keeps its
+ * own tile, and no tile is a colour.
  */
 export function markBg(symbol) {
   const base = String(symbol || '?').replace(/x$/, '');
   let h = 0;
   for (const c of base) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return `linear-gradient(140deg, hsl(${h},62%,42%), hsl(${(h + 38) % 360},58%,30%))`;
+  const l = 21 + (h % 17);
+  return `linear-gradient(140deg, hsl(214,7%,${l + 9}%), hsl(214,8%,${l}%))`;
 }
 
 /** Cycles a word every `every` ms, sliding the next one up into place. */
@@ -138,27 +146,57 @@ export function Board({ symbol, name }) {
   );
 }
 
-/** Fetch prices a few at a time so 40 aggregator calls don't stampede. */
+/**
+ * Prices for the rows on screen, in one request.
+ *
+ * This used to fan out: one fetch per symbol, four at a time, each landing on
+ * an endpoint that went to the aggregator live. Every one of those calls then
+ * queued behind the same process-wide rate limiter on the server, so a list of
+ * twelve took seconds to fill in and the page spent that time showing dashes —
+ * for numbers the server was already keeping warm in memory the whole time.
+ *
+ * One call, answered from that cache. Symbols the server cannot price come
+ * back absent and are rendered as "—", same as before.
+ */
 export function usePrices(symbols) {
   const [prices, setPrices] = useState({});
+  const key = symbols.join(',');
   useEffect(() => {
-    if (!symbols.length) return;
+    if (!symbols.length) return undefined;
     let cancelled = false;
-    const queue = [...symbols];
-    const worker = async () => {
-      while (!cancelled && queue.length) {
-        const s = queue.shift();
-        try {
-          const d = await api.price(s);
-          if (!cancelled) setPrices((p) => ({ ...p, [s]: d.price_usdt }));
-        } catch {
-          if (!cancelled) setPrices((p) => ({ ...p, [s]: null }));
+    let timer = null;
+
+    // The server answers with whatever is warm and keeps fetching the rest in
+    // the background, so a cold entry comes back as pending rather than
+    // holding the whole response. Ask again for just those, a couple of times.
+    // Without this, the first cold load would leave those rows on "—" forever,
+    // which is the one thing the old row-at-a-time version got right.
+    const run = async (wanted, attempt) => {
+      try {
+        const d = await api.prices(wanted);
+        if (cancelled) return;
+        // Merge rather than replace: expanding the list must not blank the
+        // rows that are already priced and on screen.
+        setPrices((p) => ({
+          ...p,
+          ...Object.fromEntries(wanted.map((s) => [s, d.prices?.[s] ?? null])),
+        }));
+        const pending = d.pending || wanted.filter((s) => d.prices?.[s] == null);
+        if (pending.length && attempt < 4) {
+          timer = setTimeout(() => run(pending, attempt + 1), 2500);
+        }
+      } catch {
+        if (!cancelled) {
+          setPrices((p) => ({
+            ...p, ...Object.fromEntries(wanted.map((s) => [s, null])),
+          }));
         }
       }
     };
-    const workers = Array.from({ length: 4 }, worker);
-    return () => { cancelled = true; void workers; };
-  }, [symbols.join(',')]);
+
+    run(symbols, 0);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [key]);
   return prices;
 }
 
@@ -263,49 +301,24 @@ export default function Home() {
         View all {assets.length || 40} tokenized assets →
       </Link>
 
-      <div className="section-label">How it works</div>
-      {/* Three short steps side by side rather than stacked: they are peers,
-          not a sequence you scroll through, and as a column they left most of
-          a desktop window empty. */}
-      <div className="steps grid g3">
-        <div className="step">
-          <div className="step-num">01</div>
-          <div className="step-body">
-            <h3>Read any address</h3>
-            <p>
-              Paste an X Layer address on the portfolio page. No connection, no
-              signup — it reads the same public state a block explorer shows.
-            </p>
-          </div>
-        </div>
-        <div className="step">
-          <div className="step-num">02</div>
-          <div className="step-body">
-            <h3>See what the numbers show</h3>
-            <p>
-              Concentration, sector mix and cash buffer, each stated next to the
-              reference point it is measured against. Sarf is not a licensed
-              adviser and does not tell you what to do.
-            </p>
-          </div>
-        </div>
-        <div className="step">
-          <div className="step-num">03</div>
-          <div className="step-body">
-            <h3>Act from Claude or ChatGPT</h3>
-            <p>
-              Sarf builds the transaction and you sign it in your own wallet.
-              The server never holds your keys.
-            </p>
-          </div>
-        </div>
-      </div>
+      {/*
+        No walkthrough here.
 
+        This slot held an animated phone mock playing six screens of the setup
+        flow. It was a lot of chrome for a landing page whose other sections are
+        a live price board and a ledger, and it read as a marketing device
+        rather than as part of the product. "How it works" has its own page, it
+        is the first call to action in the hero, and it is the last thing on
+        this page — three routes to it is enough.
+      */}
       <div className="section-label">What you are trusting</div>
       {/* The two claims a first-time visitor actually weighs, side by side.
-          The custody one used to sit alone above the CTA and the instrument
-          disclosure was in the footer, which put the two halves of the same
-          question at opposite ends of the page. */}
+          Both are about THIS service and both are checkable — custody in the
+          contract, pricing against the venue that fills the order. The
+          instrument disclosure that used to be the second card was removed at
+          the owner's instruction, along with every other copy of it on the
+          site; a card whose only job was to repeat it went with it rather than
+          being left half-said. */}
       <div className="grid g2">
         <div className="card green">
           <h3>Non-custodial by construction</h3>
@@ -317,11 +330,12 @@ export default function Home() {
           </p>
         </div>
         <div className="card accent">
-          <h3>Synthetic exposure, stated plainly</h3>
+          <h3>Priced where it fills</h3>
           <p>
-            xStocks track the underlying share price and nothing else: no ownership,
-            no dividends, no voting rights, and redemption depends on the issuer.
-            Sarf repeats this on every priced response rather than only here.
+            Every quote is a live route from the same aggregator the order executes
+            against, so the number you are shown and the number you get are the same
+            question asked once. An asset that cannot be routed is shown as
+            unpriced — never as zero, and never as a guess.
           </p>
         </div>
       </div>

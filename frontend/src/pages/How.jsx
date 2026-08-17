@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { CLIENTS, MCP_URL, STEPS, openClient } from '../guide.jsx';
 
 /**
  * How it works — which is, in practice, how you connect.
@@ -8,39 +9,9 @@ import React, { useState } from 'react';
  * and its content lives here, because "how does this work" and "how do I set it
  * up" were never two questions.
  *
- * The endpoint below is the ONLY correct one: the MCP transport is served on
- * the sarf-mcp host, and nothing but /mcp and health is reachable there. The
- * main site host does not serve /mcp at all, so a connector pointed at it fails
- * with a 404 that looks like the server being down.
+ * The steps themselves now come from ../guide.jsx, because the header renders
+ * the same list once you are signed in and two copies would drift.
  */
-const MCP_URL = 'https://sarf-mcp.managerx.xyz/mcp';
-
-/**
- * Where each client keeps its connector list.
- *
- * Neither Claude nor ChatGPT accepts a prefilled "add this MCP server" deep
- * link — there is no documented URL that carries a name and endpoint into the
- * dialog, and inventing one produces a link that silently lands on a settings
- * page with an empty form. So the button does the two things that ARE
- * possible, in the order that makes the paste work: put the endpoint on the
- * clipboard first, then open the page where it has to go. The user arrives
- * with the URL already copied and one field to fill.
- */
-const CLIENTS = [
-  {
-    id: 'claude',
-    label: 'Add to Claude',
-    href: 'https://claude.ai/settings/connectors',
-    where: 'Settings → Connectors → Add custom connector',
-  },
-  {
-    id: 'chatgpt',
-    label: 'Add to ChatGPT',
-    href: 'https://chatgpt.com/#settings/Connectors',
-    where: 'Settings → Connectors → Add (developer mode, Plus/Pro)',
-  },
-];
-
 export default function How() {
   const [copied, setCopied] = useState(false);
   const [sent, setSent] = useState(null);
@@ -52,17 +23,10 @@ export default function How() {
   };
 
   const open = async (client) => {
-    // Copy BEFORE navigating away. A clipboard write is a user-gesture
-    // permission and window.open can steal the gesture's tail on some
-    // browsers, so the write is awaited first and the tab opens after —
-    // and if the clipboard is unavailable the tab still opens, because the
-    // endpoint is on screen to copy by hand two lines below.
-    try {
-      await navigator.clipboard?.writeText(MCP_URL);
+    if (await openClient(client)) {
       setSent(client.id);
       setTimeout(() => setSent((s) => (s === client.id ? null : s)), 6000);
-    } catch { /* no clipboard: the code block above is still copyable */ }
-    window.open(client.href, '_blank', 'noopener,noreferrer');
+    }
   };
 
   return (
@@ -91,73 +55,25 @@ export default function How() {
       </p>
 
       <div className="steps" style={{ marginTop: 30 }}>
-        <div className="step">
-          <div className="step-num">01</div>
-          <div className="step-body">
-            <h3>Open Settings → Connectors</h3>
-            <p>
-              In Claude or ChatGPT, choose to add a custom connector. The
-              buttons above take you straight there.
-            </p>
-            <ul className="where">
-              {CLIENTS.map((c) => (
-                <li key={c.id}>
-                  <b>{c.label.replace('Add to ', '')}</b> — {c.where}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-        <div className="step">
-          <div className="step-num">02</div>
-          <div className="step-body">
-            <h3>Paste the Sarf MCP URL</h3>
-            <div className="copy-row">
-              <code>{MCP_URL}</code>
-              <button onClick={copy}>{copied ? 'copied' : 'copy'}</button>
+        {STEPS.map((s) => (
+          // The id is what the header menu links to. Scroll margin keeps the
+          // sticky header off the heading when you arrive from one.
+          <div className="step" key={s.id} id={s.id}>
+            <div className="step-num">{s.num}</div>
+            <div className="step-body">
+              <h3>{s.title}</h3>
+              {/* Step 02 is the only one that needs a control rather than
+                  prose, and it belongs above its explanation. */}
+              {s.id === 'step-endpoint' && (
+                <div className="copy-row">
+                  <code>{MCP_URL}</code>
+                  <button onClick={copy}>{copied ? 'copied' : 'copy'}</button>
+                </div>
+              )}
+              {s.body}
             </div>
-            <p style={{ marginTop: 8 }}>
-              Your client will send you here to approve the connection. That
-              approval is one signature proving you control the address — it
-              authorizes no transaction and moves no funds.
-            </p>
           </div>
-        </div>
-        <div className="step">
-          <div className="step-num">03</div>
-          <div className="step-body">
-            <h3>Add a passkey</h3>
-            <p>
-              One touch of Face ID, Touch ID, or your device PIN. It is what
-              approves every transaction from then on — nothing gets signed
-              without it, and it never leaves your device.
-            </p>
-          </div>
-        </div>
-        <div className="step">
-          <div className="step-num">04</div>
-          <div className="step-body">
-            <h3>Choose how it asks</h3>
-            <p>
-              <b>Always Ask</b> — every trade needs your passkey, whatever the
-              size.
-              <br />
-              <b>Autonomous</b> — trades up to a limit you set go through without
-              a prompt; anything above it still asks. Changing that limit needs
-              your passkey again, so the agent can never raise it on its own.
-            </p>
-          </div>
-        </div>
-        <div className="step">
-          <div className="step-num">05</div>
-          <div className="step-body">
-            <h3>Start asking</h3>
-            <p>
-              Try "what can I buy?", "price of NVDAx", or "how is my portfolio
-              balanced?" right in the chat.
-            </p>
-          </div>
-        </div>
+        ))}
       </div>
 
       <div className="code-block">

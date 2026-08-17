@@ -55,6 +55,12 @@ export const api = {
   stats: () => req('/api/stats'),
   list: () => req('/api/rwa/list'),
   price: (symbol) => req(`/api/rwa/price/${encodeURIComponent(symbol)}`),
+  // Every visible row in one request, answered from the server's warm price
+  // cache. The list pages used to fetch a row at a time — one connection per
+  // asset, all of them queued behind the aggregator's rate limiter — which is
+  // why a market list sat on dashes for seconds before it filled in.
+  prices: (symbols) =>
+    req(`/api/rwa/prices?symbols=${encodeURIComponent(symbols.join(','))}`),
 
   challenge: (address) => req(`/api/auth/challenge?address=${encodeURIComponent(address)}`),
   verify: (address, signature) =>
@@ -87,8 +93,29 @@ export const api = {
     req(`/api/deposit/allowance?amount=${encodeURIComponent(amount)}`),
   depositPrepare: (amount, fast = true) =>
     req('/api/deposit/prepare', { method: 'POST', body: JSON.stringify({ amount, fast }) }),
-  depositComplete: (txHash) =>
-    req('/api/deposit/complete', { method: 'POST', body: JSON.stringify({ tx_hash: txHash }) }),
+  // Make sure the wallet can afford to send its own burn. An on-ramp delivers
+  // USDC and no ETH, so a freshly funded wallet cannot pay Base gas; the
+  // relayer covers the shortfall into the user's own account. Never fatal —
+  // see the call site in Deposit.jsx.
+  depositGas: (needsApproval = true) =>
+    req('/api/deposit/gas', {
+      method: 'POST',
+      body: JSON.stringify({ needs_approval: needsApproval }),
+    }),
+  // Told to the server the moment the burn is broadcast, so that finishing the
+  // deposit never depends on this tab still being open. The server's sweeper
+  // mints anything left pending.
+  depositRecord: (txHash, amountUsd) =>
+    req('/api/deposit/record', {
+      method: 'POST',
+      body: JSON.stringify({ tx_hash: txHash, amount_usd: amountUsd }),
+    }),
+  depositList: () => req('/api/deposit/list'),
+  depositComplete: (txHash, amountUsd) =>
+    req('/api/deposit/complete', {
+      method: 'POST',
+      body: JSON.stringify({ tx_hash: txHash, amount_usd: amountUsd }),
+    }),
 
   grant: () => req('/api/grant'),
   grantPrepare: (body) =>

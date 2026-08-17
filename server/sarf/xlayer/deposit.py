@@ -1,12 +1,16 @@
-"""Fiat deposits: dollars in a bank account to USDC on X Layer, by burn and mint.
+"""Fiat deposits: dollars from a card to USDC on X Layer, by burn and mint.
 
 THE ROUTE
-    1. Fiat -> USDC on Base. A licensed provider does this (Stripe, Coinbase
-       Onramp or MoonPay, surfaced by Privy's funding flow), with its own KYC,
-       paying out to the user's OWN address. Sarf never touches the money,
-       never sees a bank detail, and is not a party to the transfer. It cannot
-       be: taking a bank deposit is money transmission, and the entire design
-       of this product is that Sarf holds nothing.
+    1. Fiat -> USDC on Base, by MoonPay through Privy's funding flow. It runs
+       its own KYC and pays out to the user's OWN address. Sarf never touches
+       the money, never sees a card detail, and is not a party to the payment.
+       It cannot be: taking one is money transmission, and the entire design of
+       this product is that Sarf holds nothing.
+
+       Card only. An ACH/wire route through Bridge was built and withdrawn —
+       Bridge is not enabled on the Privy app, so it produced a payment flow
+       with no way to pay. If it is ever enabled, the frontend's ONRAMP_NAME is
+       what the user-facing copy reads from.
     2. USDC on Base -> USDC on X Layer, through Circle's CCTP. This module.
     3. USDC -> xStocks, on the trading path that already exists.
 
@@ -43,10 +47,17 @@ WHO PAYS AND WHO SIGNS
     second prompt. That delegation is safe by construction rather than by
     trust: the recipient is written into the burn message the user signed, so
     the relayer can deliver the funds and can do nothing else with them.
+
+    The burn's own gas is the exception, and it is why send_gas() exists below:
+    depositForBurn must be sent by the token holder, so the user is the sender
+    and pays Base gas in ETH — which an on-ramp does not deliver. The relayer
+    tops that up in the user's own account first. See the block above send_gas
+    for the reasoning and the bounds.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -189,8 +200,16 @@ def quote(amount_usd: object, *, fast: bool = True) -> dict[str, Any]:
         "speed": "fast" if fast else "standard",
         "estimated_seconds": 20 if fast else 19 * 60,
         "mechanism": "Circle CCTP — burned on Base, minted on X Layer, 1:1",
-        "from": {"chain": SOURCE.chain_name, "chain_id": SOURCE.chain_id, "token": "USDC"},
-        "to": {"chain": DESTINATION.chain_name, "chain_id": DESTINATION.chain_id, "token": "USDC"},
+        # Address and CAIP-2 as well as the names, because the on-ramp needs
+        # them: Privy's unified funding flow is told the destination by token
+        # ADDRESS, and the deposit page had been carrying its own copy of both.
+        # Two copies of a token address is one of them being wrong eventually,
+        # and the wrong one here sends real dollars to the wrong contract.
+        "from": {"chain": SOURCE.chain_name, "chain_id": SOURCE.chain_id, "token": "USDC",
+                 "token_address": SOURCE.usdc, "caip2": SOURCE.caip2},
+        "to": {"chain": DESTINATION.chain_name, "chain_id": DESTINATION.chain_id,
+               "token": "USDC", "token_address": DESTINATION.usdc,
+               "caip2": DESTINATION.caip2},
         "gas_note": (
             "You pay gas on Base to send it. The mint on X Layer is submitted "
             "and paid for by Sarf's relayer, so there is no second prompt."
@@ -300,6 +319,29 @@ def attestation(burn_tx_hash: str) -> dict[str, Any]:
 BASE_RPC = os.environ.get("BASE_RPC_URL", "https://mainnet.base.org")
 
 
+def _base_call(method: str, params: list[Any], *, what: str) -> Any:
+    """One JSON-RPC call to Base. Blocking; call it off the event loop."""
+    body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    req = urllib.request.Request(
+        BASE_RPC, json.dumps(body).encode(),
+        {"content-type": "application/json", "User-Agent": "sarf/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            payload = json.load(r)
+    except Exception as e:
+        raise DepositError(f"could not {what}: {type(e).__name__}")
+    if isinstance(payload, dict) and payload.get("error"):
+        raise DepositError(
+            f"could not {what}: {payload['error'].get('message', 'RPC error')}")
+    return (payload or {}).get("result")
+
+
+def _base_uint(method: str, params: list[Any], *, what: str) -> int:
+    res = _base_call(method, params, what=what)
+    return int(res, 16) if res and res != "0x" else 0
+
+
 def allowance(owner: str) -> int:
     """USDC allowance granted to the TokenMessenger on Base, in minimal units.
 
@@ -310,18 +352,163 @@ def allowance(owner: str) -> int:
     data = ("0xdd62ed3e"
             + validate_evm_address(owner)[2:].rjust(64, "0")
             + validate_evm_address(TOKEN_MESSENGER_V2)[2:].rjust(64, "0"))
-    body = {"jsonrpc": "2.0", "id": 1, "method": "eth_call",
-            "params": [{"to": SOURCE.usdc, "data": data}, "latest"]}
-    req = urllib.request.Request(
-        BASE_RPC, json.dumps(body).encode(),
-        {"content-type": "application/json", "User-Agent": "sarf/1.0"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            res = json.load(r).get("result")
-    except Exception as e:
-        raise DepositError(f"could not read the Base allowance: {type(e).__name__}")
-    return int(res, 16) if res and res != "0x" else 0
+    return _base_uint(
+        "eth_call", [{"to": SOURCE.usdc, "data": data}, "latest"],
+        what="read the Base allowance")
+
+
+def usdc_balance(owner: str) -> int:
+    """USDC held on Base, in minimal units."""
+    data = "0x70a08231" + validate_evm_address(owner)[2:].rjust(64, "0")
+    return _base_uint(
+        "eth_call", [{"to": SOURCE.usdc, "data": data}, "latest"],
+        what="read the Base USDC balance")
+
+
+def eth_balance(owner: str) -> int:
+    """Native ETH on Base, in wei. This is what pays for the burn."""
+    return _base_uint(
+        "eth_getBalance", [validate_evm_address(owner), "latest"],
+        what="read the Base gas balance")
+
+
+# ---------------------------------------------------------------- gas on Base
+#
+# THE PROBLEM THIS SOLVES
+#     Everything about the deposit route is designed so the user never has to
+#     hold a second asset — and then the burn on Base needs ETH to pay for
+#     itself. An on-ramp delivers USDC and nothing else, so a wallet that has
+#     just been funded through the bank flow holds exactly the thing it is
+#     trying to move and none of the thing that moves it. The wallet answers
+#     "insufficient funds for gas", which reads as the deposit being broken;
+#     the deposit is fine, the account is simply a cent short of sending it.
+#
+#     There is no way around it on this leg. depositForBurn has to be sent by
+#     the token holder, so the user is the sender, so the user pays Base gas.
+#
+# THE FIX
+#     Sarf's relayer — the same gas-only wallet that already pays for the mint
+#     on X Layer — sends the shortfall to the user's own address on Base before
+#     the burn. A cent of ETH, unconditionally theirs, spent by them on their
+#     own transaction. It changes no custody: the relayer gives value away and
+#     gains nothing, which is the opposite direction from every risk in this
+#     product.
+#
+# THE BOUNDS
+#     Free money attracts scripts, so it is fenced: only to the session's own
+#     verified address, only when that address is already holding enough USDC
+#     on Base to be making a real deposit, only up to the shortfall, never more
+#     than DRIP_MAX_WEI at once, and no more than DRIP_DAILY_MAX_WEI per
+#     address per day. The worst case is somebody farming fractions of a cent
+#     while holding the minimum deposit in USDC, which costs them more in their
+#     own attention than it costs us.
+
+# Measured shapes, with room: ERC-20 approve lands around 55k and V2's
+# depositForBurn around 160k. Deliberately generous — under-funding is the one
+# failure this exists to prevent, and the difference is a fraction of a cent.
+GAS_APPROVE = 70_000
+GAS_BURN = 220_000
+# Multiplier on the current gas price, so a top-up sent now still covers a
+# transaction the user sends a minute later into a busier block.
+GAS_PRICE_HEADROOM = 3.0
+
+DRIP_MAX_WEI = int(os.environ.get("BASE_GAS_DRIP_MAX_WEI", str(10 ** 14)))        # 0.0001 ETH
+DRIP_DAILY_MAX_WEI = int(os.environ.get("BASE_GAS_DRIP_DAILY_WEI", str(3 * 10 ** 14)))
+
+
+def gas_price() -> int:
+    return _base_uint("eth_gasPrice", [], what="read the Base gas price")
+
+
+def gas_required(*, needs_approval: bool) -> int:
+    """Wei the user needs on Base to send this deposit themselves."""
+    units_ = GAS_BURN + (GAS_APPROVE if needs_approval else 0)
+    return int(gas_price() * GAS_PRICE_HEADROOM * units_)
+
+
+def gas_shortfall(owner: str, *, needs_approval: bool) -> dict[str, int]:
+    """-> {balance, required, short}. All wei, all read live."""
+    have = eth_balance(owner)
+    need = gas_required(needs_approval=needs_approval)
+    return {"balance": have, "required": need, "short": max(0, need - have)}
+
+
+def send_gas(to: str, wei: int) -> str:
+    """Relayer -> user, plain ETH on Base. Returns the tx hash.
+
+    Kept here rather than in delegation.py because that module is pinned to
+    X Layer at every layer — its RPC, its chain id, its gas assumptions. A
+    Base transfer that borrowed those would be signed for the wrong chain.
+    """
+    from eth_account import Account  # local: only this path signs on Base
+
+    from ..config import settings
+
+    key = settings.relayer_private_key
+    if not key:
+        raise DepositError(
+            "no relayer configured, so Sarf cannot cover the gas for this burn"
+        )
+    if wei <= 0:
+        raise DepositError("nothing to send")
+    if wei > DRIP_MAX_WEI:
+        raise DepositError("gas top-up above the per-transfer ceiling")
+
+    acct = Account.from_key(key)
+    have = eth_balance(acct.address)
+    gp = gas_price()
+    # 21000 for the transfer itself, on top of what is being given away.
+    if have < wei + 21_000 * gp * 2:
+        raise DepositError(
+            "Sarf's relayer has no ETH on Base to cover this burn's gas. Send a "
+            "little ETH to your own address on Base and press Move again — the "
+            "deposit itself is unaffected."
+        )
+    nonce = _base_uint(
+        "eth_getTransactionCount", [acct.address, "pending"],
+        what="read the relayer's Base nonce")
+    tx = {
+        "to": to_checksum_address(validate_evm_address(to)),
+        "value": int(wei),
+        "gas": 21_000,
+        "maxFeePerGas": gp * 3,
+        "maxPriorityFeePerGas": max(1, gp // 2),
+        "nonce": nonce,
+        "chainId": BASE_CHAIN_ID,
+        "type": 2,
+    }
+    raw = acct.sign_transaction(tx).raw_transaction
+    res = _base_call("eth_sendRawTransaction", ["0x" + raw.hex()],
+                     what="submit the gas top-up on Base")
+    if not isinstance(res, str) or not res.startswith("0x"):
+        raise DepositError("Base did not return a transaction hash for the gas top-up")
+    return res
+
+
+def await_mined(tx_hash: str, *, timeout: float = 25.0) -> bool:
+    """Block until a Base transaction is in a block. -> whether it landed.
+
+    The top-up is only useful once it has actually arrived: a broadcast hash
+    does not spend, and the wallet estimates gas for the burn against the
+    balance it can see. Returning the instant the transfer was submitted would
+    hand the user the same "insufficient funds" error this exists to remove,
+    one second later. Base blocks are two seconds, so this is a short wait.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        try:
+            r = _base_call("eth_getTransactionReceipt", [tx_hash],
+                           what="check the gas top-up")
+        except DepositError:
+            r = None
+        if isinstance(r, dict) and r.get("blockNumber"):
+            # status 0x1 is success; a reverted plain transfer would be odd,
+            # but reporting it as landed would be a lie.
+            return str(r.get("status", "0x1")).lower() in ("0x1", "1")
+        _time.sleep(1.5)
+    return False
 
 
 # CCTP V2 message layout, from Circle's spec. The header is fixed-width and
@@ -366,3 +553,45 @@ def receive_calldata(message: str, att: str) -> str:
          bytes.fromhex(att[2:] if att.startswith("0x") else att)],
     )
     return "0x" + (selector + args).hex()
+
+
+class NotYours(DepositError):
+    """The burn pays out to someone else, so it is not this account's to finish."""
+
+
+async def settle(burn_tx: str, *, expect_address: str | None = None) -> dict[str, Any]:
+    """Attest and mint, or say why not yet. -> {"settled": bool, ...}
+
+    One implementation for two callers: the browser, which polls this while
+    someone watches, and the server's own sweeper, which finishes deposits for
+    tabs that were closed. They must not be able to disagree about what
+    completing a deposit means, so they run the same code.
+
+    Idempotent where it counts — CCTP records spent nonces, so re-submitting a
+    message that already minted reverts on chain instead of minting twice.
+    """
+    if expect_address is not None:
+        expect_address = validate_evm_address(expect_address)
+    # urllib and the relay are blocking; this runs on the event loop.
+    att = await asyncio.to_thread(attestation, burn_tx)
+    if not att.get("ready"):
+        return {"settled": False, "state": att.get("state"),
+                "detail": att.get("detail")}
+    # A transaction hash is public. Only finish a burn that pays out to the
+    # address we expect — otherwise a caller could feed us strangers' burns off
+    # a block explorer and spend our relayer's gas completing them.
+    payee = mint_recipient(att["message"])
+    if expect_address and payee.lower() != expect_address.lower():
+        raise NotYours(
+            "that deposit pays out to a different address, so it is not this "
+            "account's to complete"
+        )
+    from . import delegation  # local: delegation imports the registry this feeds
+
+    mint_tx = await delegation.relay(
+        to=MESSAGE_TRANSMITTER_V2,
+        data=receive_calldata(att["message"], att["attestation"]),
+        gas_limit=400_000,
+    )
+    return {"settled": True, "burn_tx": burn_tx, "mint_tx": mint_tx,
+            "recipient": payee}

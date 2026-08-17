@@ -22,9 +22,20 @@ __pycache__/
 node_modules/
 txbuilder/dist/
 frontend/dist/
+# The bundle the previous deploy served, kept by build-frontend-local.sh so a
+# bad build can be rolled back. A build artifact like dist/ — it was tracked by
+# accident for a while, which put 247 files of vendored wallet SDK in the repo.
+frontend/dist.previous/
+frontend/dist-next/
 # Frozen pre-Privy fallback served at /legacy. A build artifact like dist/,
 # rebuildable from the tag `pre-privy` — see the comment in server/sarf/main.py.
 frontend/dist-legacy/
+
+# Local agent settings. Machine-specific, and the .tmp.* files these leave
+# behind are a verbatim log of every shell command run on this box — absolute
+# home paths, addresses, the operator's git identity. Nothing secret, nothing
+# anyone else can use, and nothing that belongs in a public repository.
+.claude/
 
 # Local state (audit db lives outside git regardless of nesting)
 **/data/

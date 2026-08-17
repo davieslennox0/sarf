@@ -72,19 +72,28 @@ export default function Portfolio() {
    * equity sleeve the concentration analysis is computed against, and cash is
    * not a single-name exposure. Being shown together is a display decision;
    * being measured together would be a methodology error.
+   *
+   * A balance worth less than a cent is rounding, not a holding.
+   *
+   * Spending a stablecoin down or selling a position in full rarely lands on
+   * an exact zero — the fill is computed against a balance read a moment
+   * earlier — so a few minimal units survive, and `quantity > 0` kept the row.
+   * The result was a ledger still listing what the user had just sold, priced
+   * at $0. The server drops equity dust for the same reason; this is the same
+   * rule applied to the cash and gas rows it deliberately keeps separate.
+   *
+   * Value, never quantity: 0.4 OKB and 0.4 SPYx are not comparable amounts,
+   * and an unpriced holding is unknown rather than empty, so it stays.
    */
+  const held = (p) => Boolean(p) && Number(p.quantity) > 0
+    && (p.value_usd == null || Number(p.value_usd) >= 0.01);
+
   const cashAndGas = [];
-  if (data?.usdt && Number(data.usdt.quantity) > 0) {
-    cashAndGas.push({ ...data.usdt, tag: 'CASH' });
-  }
+  if (held(data?.usdt)) cashAndGas.push({ ...data.usdt, tag: 'CASH' });
   // USDC is what a fiat deposit mints, so a wallet that has just been funded
   // holds it and nothing else — leaving it out would show that wallet empty.
-  if (data?.usdc && Number(data.usdc.quantity) > 0) {
-    cashAndGas.push({ ...data.usdc, tag: 'CASH' });
-  }
-  if (data?.okb && Number(data.okb.quantity) > 0) {
-    cashAndGas.push({ ...data.okb, tag: 'GAS' });
-  }
+  if (held(data?.usdc)) cashAndGas.push({ ...data.usdc, tag: 'CASH' });
+  if (held(data?.okb)) cashAndGas.push({ ...data.okb, tag: 'GAS' });
 
   const sorted = [...positions, ...cashAndGas].sort(
     (a, b) => (b.value_usd || 0) - (a.value_usd || 0));
@@ -188,14 +197,11 @@ export default function Portfolio() {
             </p>
           )}
 
-          {/* Stays regardless of what else is stripped: these are synthetic
-              instruments, and someone reading a dollar total is exactly who
-              needs to know that. */}
-          <p className="fine" style={{ marginTop: 24 }}>
-            <strong style={{ color: 'var(--paper)' }}>Informational only.</strong>{' '}
-            xStocks track a share price and convey no ownership, dividends or
-            voting rights.
-          </p>
+          {/* The "Informational only — xStocks track a share price…" note that
+              used to close this page is gone, at the owner's instruction, along
+              with every other copy of it on the site. It still rides on every
+              priced tool response to the assistant — see SYNTHETIC_DISCLOSURE
+              in providers/xlayer_rwa.py, which is a separate surface. */}
         </>
       )}
 

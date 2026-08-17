@@ -16,6 +16,113 @@ import {
   ensureXLayer, hasWallet, onAccountsChanged, onChainChanged, short,
 } from './wallet.js';
 import { onPrivyChange, privyContext, privyEnabled } from './privy.jsx';
+import { CLIENTS, MCP_URL, STEPS, openClient } from './guide.jsx';
+
+/**
+ * "How it works", as a menu, for people who are already signed in.
+ *
+ * Signed out it stays a plain link and this component is not used: setting up
+ * is the whole job, and putting a dropdown in front of the page that explains
+ * how to set up is friction in the one place there should be none.
+ *
+ * Signed in, the page has mostly done its work — but the thing people come back
+ * to it for is a single line, the MCP endpoint, and they were loading a
+ * five-step guide to reach it. So the menu leads with the endpoint and a copy
+ * button, offers the two client shortcuts, and then lists the steps as jump
+ * links. The full page is still one click away and unchanged; this is a faster
+ * door onto it, not a replacement.
+ *
+ * It also buys back a slot in the header. Signed in, the bar was Home, Markets,
+ * How it works, Deposit, Portfolio, Dashboard, Activity — seven flat links with
+ * the reference material sitting at equal weight to the pages you use daily.
+ */
+function GuideMenu({ pathname }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [sent, setSent] = useState(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => { if (!e.target.closest('.navmenu')) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('click', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('click', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+
+  // Close when the route changes, so a jump link does not leave the panel
+  // hanging over the section it just scrolled to.
+  useEffect(() => { setOpen(false); }, [pathname]);
+
+  const copy = () => {
+    navigator.clipboard?.writeText(MCP_URL);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  const go = async (c) => {
+    if (await openClient(c)) {
+      setSent(c.id);
+      setTimeout(() => setSent((s) => (s === c.id ? null : s)), 6000);
+    }
+  };
+
+  return (
+    // stopPropagation because the link row closes the mobile nav on any click
+    // inside it — without this, opening the menu collapses the nav it lives in.
+    <div className="navmenu" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className={`navmenu-trigger${pathname === '/how' ? ' on' : ''}${open ? ' open' : ''}`}
+        aria-expanded={open}
+        aria-haspopup="true"
+        onClick={() => setOpen((v) => !v)}
+      >
+        How it works
+        <span className="caret" aria-hidden="true">▾</span>
+      </button>
+
+      {open && (
+        <div className="navmenu-panel" role="menu">
+          <div className="navmenu-head">
+            <div className="label">Your MCP endpoint</div>
+            <div className="navmenu-endpoint">
+              <code>{MCP_URL}</code>
+              <button type="button" onClick={copy}>{copied ? 'copied' : 'copy'}</button>
+            </div>
+            <div className="navmenu-clients">
+              {CLIENTS.map((c) => (
+                <button type="button" key={c.id} onClick={() => go(c)}>
+                  {sent === c.id ? 'copied — paste it' : c.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="navmenu-list">
+            {STEPS.map((s) => (
+              <Link key={s.id} to={`/how#${s.id}`} role="menuitem" onClick={() => setOpen(false)}>
+                <span className="n">{s.num}</span>
+                <span className="t">
+                  {s.title}
+                  <em>{s.hint}</em>
+                </span>
+              </Link>
+            ))}
+          </div>
+
+          <div className="navmenu-foot">
+            <Link to="/how" onClick={() => setOpen(false)}>Full guide</Link>
+            <Link to="/dashboard/security" onClick={() => setOpen(false)}>Security &amp; limits</Link>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Session banner. Visible whenever a session is live, because a signing
@@ -63,7 +170,17 @@ function AccountControl({ session, setSession }) {
       <button className="account-chip" onClick={() => setOpen((v) => !v)}>
         <span className={`dot${mm < 5 ? ' soon' : ''}`} />
         {short(session.address)}
-        <span className="ttl">{mm}m {String(left % 60).padStart(2, '0')}s</span>
+        {/*
+          Two different clocks used to run on this site with nothing to tell
+          them apart: this one, the browser sign-in, counting down from 30
+          minutes, and the trading key's, counting down from an hour — so the
+          obvious reading was that one of the two screens was lying. This one
+          says what it is. It is only how long you stay signed in HERE; it
+          grants nothing and expiring costs you a reload, not a key.
+        */}
+        <span className="ttl" title="Time left on this browser sign-in">
+          signed in {mm}m {String(left % 60).padStart(2, '0')}s
+        </span>
       </button>
       {open && (
         <div className="account-menu">
@@ -204,7 +321,27 @@ function RequirePasskey({ onDone }) {
 }
 
 export default function App() {
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
+
+  // Scroll to #anchor on navigation.
+  //
+  // React Router does not do this — it changes the URL without a document load,
+  // so the browser's own fragment handling never runs. The guide menu links to
+  // /how#step-passkey and friends, and without this they would land at the top
+  // of the page with the fragment sitting in the address bar doing nothing,
+  // which reads as a broken link rather than a missing feature.
+  //
+  // Deferred a frame because the target may not be mounted yet when the route
+  // has only just changed.
+  useEffect(() => {
+    if (!hash) return undefined;
+    const id = hash.slice(1);
+    const raf = requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pathname, hash]);
+
   // Session state lives here so the nav, the bar and the route guards all read
   // the same thing. sessionStorage is the source of truth; this is a mirror of
   // it that re-renders, and it also expires on its own (getSession drops a
@@ -300,14 +437,19 @@ export default function App() {
               dashboard beside the agent it applies to. */}
           <Link className={pathname === '/' ? 'on' : ''} to="/">Home</Link>
           <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
-          <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
-          {signedIn && (
+          {signedIn ? (
             <>
               <Link className={pathname === '/deposit' ? 'on' : ''} to="/deposit">Deposit</Link>
               <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
               <Link className={pathname === '/dashboard' ? 'on' : ''} to="/dashboard">Dashboard</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
+              {/* Last, and a menu rather than a link — see GuideMenu. Once you
+                  are connected the guide is reference material, and the one
+                  line in it you actually come back for is the endpoint. */}
+              <GuideMenu pathname={pathname} />
             </>
+          ) : (
+            <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
           )}
         </div>
         <div className="header-right">
@@ -341,6 +483,11 @@ export default function App() {
               half with the controls was not the half users were sent to. */}
           <Route path="/settings" element={<Navigate to="/dashboard/security" replace />} />
           <Route path="/dashboard" element={gate('Your dashboard', <Dashboard />)} />
+          {/* The dashboard's Activity fold is gone — orders already had their
+              own page, and the fold was a second door onto the same list. The
+              URL is kept as a redirect because it was linked from the fold's
+              own deep links and from anything that bookmarked it. */}
+          <Route path="/dashboard/activity" element={<Navigate to="/activity" replace />} />
           {/* Same component: no :section renders the index, a section renders
               its own page. One data fetch, two layouts. */}
           <Route path="/dashboard/:section" element={gate('Your dashboard', <Dashboard />)} />
@@ -358,11 +505,14 @@ export default function App() {
       {/*
         One footer for the whole site.
 
-        The disclosure and the fee line used to live inside Home.jsx, so they
-        appeared on the landing page and nowhere else — not on the signer, not
-        on a portfolio, not on the page Claude links people to. Those are the
-        pages where "this is synthetic exposure and there is a fee" is load
-        bearing rather than decorative, so the footer moved into the shell.
+        The synthetic-exposure sentence that used to open this line is gone, at
+        the owner's instruction, and with it every other copy of it on the site.
+        What is left is the fee and the two things Sarf is not — the facts about
+        THIS service rather than about the instrument. The disclosure still
+        rides on every priced tool response to the assistant (see
+        SYNTHETIC_DISCLOSURE in providers/xlayer_rwa.py), which is a separate
+        surface and a separate decision.
+
         Year is derived, so it never goes stale.
       */}
       <footer className="site-foot">
@@ -377,9 +527,7 @@ export default function App() {
           </div>
         </div>
         <p className="fine" style={{ margin: 0, textAlign: 'left' }}>
-          Synthetic exposure. xStocks track the underlying share price only — no
-          ownership, dividends, or voting rights, and redemption depends on the
-          issuer. Sarf is not a broker and is not a licensed adviser. A flat $0.01
+          Sarf is not a broker and is not a licensed adviser. A flat $0.01
           platform fee is charged per swap in the stablecoin leg, inside the same
           transaction you sign; network gas is separate and paid in OKB.
         </p>

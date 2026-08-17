@@ -15,7 +15,7 @@ The pieces (all standard, nothing hand-rolled conceptually):
 - RFC 9728 protected-resource metadata → points clients at this AS
 - RFC 8414 authorization-server metadata → advertises the endpoints below
 - RFC 7591 dynamic client registration → public clients, no secrets
-- Authorization-code grant with PKCE S256 (the only grant)
+- Authorization-code grant with PKCE S256, plus rotating refresh tokens
 
 The user-facing step of /authorize is the SAME wallet challenge–response
 used everywhere else (api.issue_challenge / api.verify_wallet_challenge,
@@ -23,8 +23,18 @@ sidecar zkLogin-aware verification) — OAuth changes how a session token is
 DELIVERED, not how ownership is proven or what the token is. Access tokens
 are ordinary 30-minute session rows.
 
+Refresh tokens ARE implemented, and the reason is worth stating because an
+earlier version of this file argued the opposite. Access tokens last 30
+minutes; without renewal that was also how often Claude dropped the connector
+and asked for another wallet signature, which is not security, it is friction
+wearing security's coat. What a refresh token renews is the right to read and
+to build unsigned transactions — it cannot sign, cannot move funds, cannot
+raise a cap and cannot grant itself a session key. So the token is rotating and
+single-use with reuse detection (see auth.rotate_refresh), the family has an
+absolute deadline that rotation does not extend, and "End session" revokes
+every family for the address so a disconnect is still a disconnect.
+
 Deliberately NOT implemented:
-- refresh tokens: renewal means a fresh wallet signature, by design.
 - client secrets: public clients + PKCE only.
 - scopes: one audience, one privilege level (read + propose-unsigned).
 """
@@ -75,7 +85,7 @@ def _as_metadata() -> dict[str, Any]:
         "token_endpoint": f"{base}/api/oauth/token",
         "registration_endpoint": f"{base}/api/oauth/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": [],
@@ -148,7 +158,7 @@ def build_oauth(db: Database) -> APIRouter:
                 "redirect_uris": uris,
                 "client_name": name,
                 "token_endpoint_auth_method": "none",
-                "grant_types": ["authorization_code"],
+                "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
             },
             status_code=201,
@@ -213,10 +223,12 @@ def build_oauth(db: Database) -> APIRouter:
         else:
             form = {k: v[0] for k, v in parse_qs(raw).items()}
 
-        if form.get("grant_type") != "authorization_code":
+        grant = form.get("grant_type")
+        if grant == "refresh_token":
+            return _refresh(form)
+        if grant != "authorization_code":
             return _token_error("unsupported_grant_type",
-                                "authorization_code only (no refresh tokens, by design: "
-                                "session renewal requires a fresh wallet signature)")
+                                "authorization_code or refresh_token")
         rec = db.consume_oauth_code(form.get("code", ""))
         if rec is None:
             return _token_error("invalid_grant", "unknown, expired, or already-used code")
@@ -230,14 +242,57 @@ def build_oauth(db: Database) -> APIRouter:
         # Carry the client's registered name onto the session, so the account
         # page can say what is connected — "Claude", not "a session".
         client = db.get_oauth_client(rec["client_id"])
+        return _issue(rec["address"], rec["client_id"],
+                      (client or {}).get("client_name"))
+
+    def _issue(address: str, client_id: str, client_name: str | None,
+               *, family_id: str | None = None,
+               family_expiry: float | None = None) -> JSONResponse:
+        """One access token plus the refresh token that replaces it later.
+
+        Both grants land here, so an authorization-code exchange and a renewal
+        produce exactly the same shape of credential — a renewed connector is
+        not a second-class one.
+        """
         token_str, ttl = auth.mint_session(
-            db, rec["address"],
-            client_name=(client or {}).get("client_name"),
-            client_id=rec["client_id"],
-        )
+            db, address, client_name=client_name, client_id=client_id)
+        refresh, _exp = auth.mint_refresh(
+            db, address, client_id=client_id, client_name=client_name,
+            family_id=family_id, expires_at=family_expiry)
         return JSONResponse(
-            {"access_token": token_str, "token_type": "Bearer", "expires_in": ttl},
+            {"access_token": token_str, "token_type": "Bearer", "expires_in": ttl,
+             "refresh_token": refresh},
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
+
+    def _refresh(form: dict[str, str]) -> JSONResponse:
+        """Renew without a wallet signature — the change that made connectors
+        stay connected.
+
+        Rotating and single-use: the old token is spent here and a new one
+        comes back. A token presented twice means a copy is loose, so the whole
+        chain is revoked and the user signs in again; that is the price of the
+        renewal being silent, and it is paid only when something is wrong.
+        """
+        try:
+            row = auth.rotate_refresh(db, form.get("refresh_token"))
+        except auth.RefreshReuse:
+            return _token_error(
+                "invalid_grant",
+                "this refresh token was already used, so the connection has been "
+                "signed out everywhere as a precaution. Reconnect to continue.")
+        if row is None:
+            return _token_error("invalid_grant", "unknown, expired or revoked refresh token")
+        # A refresh token belongs to the client it was issued to. A public
+        # client cannot prove who it is, but it can at least not be handed
+        # another client's token by accident or on purpose.
+        sent = form.get("client_id")
+        if sent and sent != row["client_id"]:
+            db.revoke_refresh_family(str(row["family_id"]), "client_id_mismatch")
+            return _token_error("invalid_grant", "refresh token was issued to a different client")
+        return _issue(str(row["address"]), str(row["client_id"]),
+                      row["client_name"],  # type: ignore[arg-type]
+                      family_id=str(row["family_id"]),
+                      family_expiry=float(row["expires_at"]))
 
     return r

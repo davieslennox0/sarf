@@ -82,13 +82,25 @@ That gap is closed; this section replaces the old one entirely.
 **How the token reaches an MCP client — OAuth, added once.** The server is
 its own OAuth 2.1 authorization server (`oauth.py`): RFC 9728/8414
 discovery, RFC 7591 dynamic registration (public clients, PKCE S256, no
-client secrets), authorization-code grant only. The /authorize consent page
+client secrets), authorization-code grant plus rotating refresh. The /authorize consent page
 is the SAME wallet challenge–response as dashboard sign-in — OAuth changes
 how a session token is *delivered* (Authorization header, stable connector
 URL with no key in it), not how ownership is proven or what the token is.
-There are deliberately **no refresh tokens**: renewal always costs a fresh
-wallet signature via the client's Reconnect flow. Legacy key-in-URL
-connectors (`?key=`) remain for clients without OAuth support.
+**Refresh tokens (rotating, single-use).** An earlier build had none, on the
+argument that renewal should always cost a wallet signature. In practice that
+argument bought no security and a great deal of friction: the access token
+lasted 30 minutes, so Claude dropped the connector several times a day and the
+user re-signed to restore a connection they had already approved. What a
+refresh token renews is the right to **read and to build unsigned
+transactions** — it cannot sign, cannot move funds, cannot raise a cap, and
+cannot mint a session key (that still needs a fresh passkey assertion). The
+controls on it are: rotation on every use, single-use with **reuse detection**
+(a token presented twice revokes its entire family), an absolute family
+deadline that rotation does **not** extend (`REFRESH_TTL_SECONDS`, default 30
+days, capped at 90), client_id binding, and revocation of every family for the
+wallet on logout — so "End session" still disconnects Claude for good rather
+than for thirty seconds. Legacy key-in-URL connectors (`?key=`) have no
+renewal path at all and still go stale within the hour.
 
 Explicit revocation (logout, or an operator killing a compromised token)
 **marks** the row (`revoked_at`, `revocation_reason`) rather than deleting
@@ -100,13 +112,15 @@ session for that wallet** — dashboard bearer and all MCP connector tokens
 together — so "End session" in Sarf disconnects Claude too. Session tokens
 never reach log files: Caddy does not access-log the sarf hosts, and
 uvicorn's access log (which records full request lines, `?key=` included)
-runs behind a redaction filter that scrubs `sarf_sess_…` tokens before
-writing.
+runs behind a redaction filter that scrubs `sarf_sess_…` and `sarf_refr_…`
+tokens before writing.
 
 **Session lifetime: 30 minutes** (`SESSION_TTL_SECONDS`, hard-capped at 60 in
 code). Long enough for one propose→review→sign conversation; short enough
-that a leaked connector URL dies the same hour. Expiry requires signing in
-again with the wallet — there is deliberately no refresh or silent renewal.
+that a leaked connector URL dies the same hour. A `?key=` connector or a
+browser session that lapses is signed in again with the wallet; an OAuth
+connector renews silently against its refresh token, under the constraints
+above.
 
 **Every tool call is bound to the verified session.** The MCP middleware
 resolves the token (Bearer header or `?key=`) and binds the proven address to
@@ -172,6 +186,42 @@ Also present: per-IP rate limiting, loopback-only sidecar (must never be
 reverse-proxied), Caddy allowlist routing only `/mcp`, `/healthz`, `/api`,
 and the dashboard, request body size limits, and an append-style SQLite audit
 log of every proposal and its outcome.
+
+## The relayer, and the only place value leaves it
+
+The relayer is a gas-only wallet. It holds no user funds and its signature
+authorises nothing: on X Layer it submits transactions whose authority is a
+signature the *user* already made (a session-key swap, an EIP-7702
+authorization, a CCTP mint whose recipient is fixed inside the attested
+message). A compromised relayer can replay work the user already approved and
+nothing else.
+
+There is exactly one path on which it gives value away rather than spending
+it, and it is deliberate. `POST /api/deposit/gas` sends a fraction of a cent
+of ETH on **Base** to the session's own address, so that a wallet funded by an
+on-ramp — which delivers USDC and no ETH — can pay for its own CCTP burn.
+`depositForBurn` must be sent by the token holder, so this is the one leg of
+the deposit route the user cannot avoid paying for themselves.
+
+It is fenced on five axes, in `xlayer/deposit.py` and the endpoint above it:
+
+- **Destination**: the session's verified address only, never one supplied by
+  the caller. The ETH lands in the user's own account.
+- **Eligibility**: only if that address already holds at least the minimum
+  deposit in USDC on Base. Gas is given to move money that is there, never as
+  a faucet.
+- **Amount**: the measured shortfall, never more — capped at
+  `BASE_GAS_DRIP_MAX_WEI` (0.0001 ETH) per transfer, enforced inside
+  `send_gas` rather than only by its caller.
+- **Rate**: `BASE_GAS_DRIP_DAILY_WEI` per address per day, computed from the
+  `gas_drips` table, which is an audit log of every payout as much as it is a
+  throttle.
+- **Failure**: refusal is normal and non-fatal. If the relayer has no ETH on
+  Base, or the cap is spent, the browser still lets the wallet try — the user
+  may have gas already, and the wallet's own error is the honest one.
+
+Worst case is somebody farming fractions of a cent while holding the minimum
+deposit in USDC, at a cost to them of more attention than it is worth.
 
 ## Secrets
 

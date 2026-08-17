@@ -77,6 +77,40 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
   created_at    REAL NOT NULL
 );
 
+-- Refresh tokens, so a connector stays connected.
+--
+-- Access tokens are 30 minutes, which is right for a credential that travels
+-- in headers and sometimes in URLs. Without a way to renew one, though, that
+-- number was also how long an MCP connector worked before Claude showed
+-- "Reconnect" and the user had to sign with their wallet again — several times
+-- a day, for a connection they had already approved. Steady is a feature.
+--
+-- The security model is unchanged, because the access token was never what
+-- moved money: signing needs the user's wallet or their passkey, in-chat
+-- execution needs a session-key grant that expires on its own an hour after it
+-- is granted, and transfers can never be delegated at all. A refresh token
+-- renews the right to READ and to BUILD unsigned transactions.
+--
+-- Rotating, single-use, with reuse detection: every refresh returns a new
+-- token in the same family and burns the old one. A token presented twice
+-- means a copy is in circulation, so the whole family dies immediately and the
+-- user signs in again. `expires_at` is the family's absolute end and is NOT
+-- extended by rotation — an unattended connector still lapses.
+CREATE TABLE IF NOT EXISTS oauth_refresh (
+  token_id          TEXT PRIMARY KEY,
+  family_id         TEXT NOT NULL,
+  address           TEXT NOT NULL,
+  client_id         TEXT NOT NULL,
+  client_name       TEXT,
+  created_at        REAL NOT NULL,
+  expires_at        REAL NOT NULL,
+  used_at           REAL,
+  revoked_at        REAL,
+  revocation_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_family ON oauth_refresh(family_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_addr ON oauth_refresh(address, revoked_at);
+
 CREATE TABLE IF NOT EXISTS oauth_codes (
   code           TEXT PRIMARY KEY,
   client_id      TEXT NOT NULL,
@@ -134,6 +168,44 @@ CREATE TABLE IF NOT EXISTS grants (
   rotated_at      REAL NOT NULL,
   revoked_at      REAL
 );
+
+-- Deposits in flight: a CCTP burn on Base waiting to be minted on X Layer.
+--
+-- This table is the difference between a deposit and a lost afternoon. The
+-- burn is signed in the browser and the mint happens a few seconds later, so
+-- the first version held the transaction hash in React state — close the tab
+-- in between and nothing in the product knew a deposit existed. The money was
+-- never at risk (Circle holds the attestation, and the mint can only ever pay
+-- the recipient inside the signed message) but only the user could rescue it,
+-- and only if they had kept the hash.
+--
+-- Recorded here the moment it is broadcast, a sweeper finishes it whether or
+-- not anyone is watching.
+CREATE TABLE IF NOT EXISTS deposits (
+  burn_tx     TEXT PRIMARY KEY,
+  address     TEXT NOT NULL,
+  amount_usd  REAL,
+  created_at  REAL NOT NULL,
+  updated_at  REAL NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending',   -- pending|minted|failed
+  mint_tx     TEXT,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deposits_addr ON deposits(address, created_at);
+
+-- Gas Sarf has given away on Base so a user could sign their own burn.
+--
+-- One row per top-up, not one per address, because the question this has to
+-- answer is "how much in the last day" and a running total cannot be aged out.
+-- It is an audit log of value leaving the relayer as much as it is a throttle.
+CREATE TABLE IF NOT EXISTS gas_drips (
+  tx_hash    TEXT PRIMARY KEY,
+  address    TEXT NOT NULL,
+  wei        TEXT NOT NULL,        -- decimal string: wei overflows SQLite ints
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gas_drips_addr ON gas_drips(address, created_at);
 
 -- X Layer order audit log. Records what was proposed and, once the user's
 -- wallet broadcasts it, the resulting tx hash. Never holds keys or signatures.
@@ -523,6 +595,81 @@ class Database:
             "expires_at": r[3], "revoked_at": r[4], "revocation_reason": r[5],
         }
 
+    # -- OAuth refresh tokens --------------------------------------------------
+    # See the oauth_refresh schema comment for why these exist and what they
+    # can and cannot renew.
+
+    def put_refresh(self, *, token_id: str, family_id: str, address: str,
+                    client_id: str, client_name: str | None,
+                    expires_at: float) -> None:
+        now = time.time()
+        with self._lock, self._conn:
+            # Prune spent and long-dead rows. A used token is kept until its
+            # family expires, because "this was presented twice" is exactly the
+            # thing the row is there to be able to notice.
+            self._conn.execute("DELETE FROM oauth_refresh WHERE expires_at < ?",
+                               (now - REVOKED_SESSION_RETENTION_SECONDS,))
+            self._conn.execute(
+                "INSERT INTO oauth_refresh (token_id,family_id,address,client_id,"
+                "client_name,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
+                (token_id, family_id, address.lower(), client_id, client_name,
+                 now, expires_at),
+            )
+
+    def refresh_record(self, token_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT token_id,family_id,address,client_id,client_name,created_at,"
+            "expires_at,used_at,revoked_at FROM oauth_refresh WHERE token_id=?",
+            (token_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return dict(zip(("token_id", "family_id", "address", "client_id", "client_name",
+                         "created_at", "expires_at", "used_at", "revoked_at"),
+                        r, strict=True))
+
+    def consume_refresh(self, token_id: str) -> dict[str, Any] | None:
+        """Spend a refresh token exactly once. -> the row, or None.
+
+        The UPDATE is the check: only an unused, unrevoked, unexpired row is
+        claimed, and SQLite serialises it, so two clients racing the same token
+        cannot both win. None means "not spendable" — the caller distinguishes
+        never-existed from already-spent by reading the row afterwards, because
+        already-spent is a theft signal and never-existed is a typo.
+        """
+        now = time.time()
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE oauth_refresh SET used_at=? WHERE token_id=? AND used_at IS NULL"
+                " AND revoked_at IS NULL AND expires_at > ?",
+                (now, token_id, now),
+            )
+            if cur.rowcount != 1:
+                return None
+        return self.refresh_record(token_id)
+
+    def revoke_refresh_family(self, family_id: str, reason: str) -> int:
+        """Kill a whole rotation chain. Returns how many rows were live."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE oauth_refresh SET revoked_at=?, revocation_reason=?"
+                " WHERE family_id=? AND revoked_at IS NULL",
+                (time.time(), reason, family_id),
+            )
+            return cur.rowcount
+
+    def revoke_refresh_for_address(self, address: str, reason: str) -> int:
+        """What makes "End session" actually end it: without this, a connector
+        holding a refresh token would simply mint itself a new access token and
+        the disconnect would last thirty seconds."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE oauth_refresh SET revoked_at=?, revocation_reason=?"
+                " WHERE address=? AND revoked_at IS NULL",
+                (time.time(), reason, address.lower()),
+            )
+            return cur.rowcount
+
     # -- OAuth clients / authorization codes -----------------------------------
 
     def create_oauth_client(self, client_id: str, client_name: str | None,
@@ -781,6 +928,91 @@ class Database:
             self._conn.execute(
                 "UPDATE grants SET session_address=?, sealed_key=?, rotated_at=? WHERE address=?",
                 (session_address, sealed_key, time.time(), address.lower()),
+            )
+
+    # ------------------------------------------------------------- deposits
+
+    def record_deposit(self, *, burn_tx: str, address: str,
+                       amount_usd: float | None) -> None:
+        """Remember a burn the moment it is broadcast.
+
+        INSERT OR IGNORE: the browser records it and may record it again on a
+        retry, and a deposit is identified by its burn hash. Re-recording must
+        never reset the status of one that has already been minted.
+        """
+        now = time.time()
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO deposits "
+                "(burn_tx,address,amount_usd,created_at,updated_at,status) "
+                "VALUES (?,?,?,?,?,'pending')",
+                (burn_tx.lower(), address.lower(), amount_usd, now, now),
+            )
+
+    def pending_deposits(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT burn_tx,address,amount_usd,created_at,attempts FROM deposits "
+            "WHERE status='pending' ORDER BY created_at LIMIT ?", (int(limit),)
+        ).fetchall()
+        return [dict(zip(("burn_tx", "address", "amount_usd", "created_at", "attempts"),
+                         r, strict=True)) for r in rows]
+
+    def settle_deposit(self, burn_tx: str, mint_tx: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE deposits SET status='minted', mint_tx=?, updated_at=?, "
+                "last_error=NULL WHERE burn_tx=?",
+                (mint_tx, time.time(), burn_tx.lower()),
+            )
+
+    def note_deposit_attempt(self, burn_tx: str, error: str | None) -> int:
+        """Count a try and record why it did not land. -> attempts so far.
+
+        Failure is not final here: Circle attests when it attests, and an RPC
+        that refused a minute ago will take the same transaction later. The
+        count exists so a deposit that can never settle stops being retried
+        forever, not so one bad minute buries it.
+        """
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE deposits SET attempts=attempts+1, updated_at=?, last_error=? "
+                "WHERE burn_tx=?", (time.time(), (error or "")[:300], burn_tx.lower()),
+            )
+            r = self._conn.execute(
+                "SELECT attempts FROM deposits WHERE burn_tx=?", (burn_tx.lower(),)
+            ).fetchone()
+        return int(r[0]) if r else 0
+
+    def fail_deposit(self, burn_tx: str, error: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE deposits SET status='failed', updated_at=?, last_error=? "
+                "WHERE burn_tx=?", (time.time(), error[:300], burn_tx.lower()),
+            )
+
+    def deposits_for_address(self, address: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT burn_tx,amount_usd,created_at,status,mint_tx,last_error "
+            "FROM deposits WHERE address=? ORDER BY created_at DESC LIMIT ?",
+            (address.lower(), int(limit)),
+        ).fetchall()
+        return [dict(zip(("burn_tx", "amount_usd", "created_at", "status",
+                          "mint_tx", "last_error"), r, strict=True)) for r in rows]
+
+    def gas_given_since(self, address: str, since: float) -> int:
+        """Wei sent to this address as gas since `since`. -> 0 when none."""
+        rows = self._conn.execute(
+            "SELECT wei FROM gas_drips WHERE address=? AND created_at>=?",
+            (address.lower(), float(since)),
+        ).fetchall()
+        return sum(int(r[0]) for r in rows)
+
+    def record_gas_drip(self, *, tx_hash: str, address: str, wei: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO gas_drips (tx_hash,address,wei,created_at) "
+                "VALUES (?,?,?,?)",
+                (tx_hash.lower(), address.lower(), str(int(wei)), time.time()),
             )
 
     # --------------------------------------------------------------- orders

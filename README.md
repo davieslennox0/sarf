@@ -239,39 +239,35 @@ invent a number.
 There is no Node sidecar — X Layer is reached over plain JSON-RPC and the
 aggregator over HTTP. (The Sui/Current Finance build needed one; it is retired.)
 
-### The frontend is built in CI, not on the server
+### Building the frontend never takes the site down
 
-The deploy box has 961 MB of RAM, most of it already spoken for. `vite build`
-on this dependency tree (Privy pulls in WalletConnect, viem and a large wallet
-graph) exceeded it twice with a V8 out-of-memory abort, and the runs that did
-finish took over six minutes of swapping. The failure is destructive rather
-than inconvenient: vite empties `frontend/dist` before it starts, so a build
-that dies half-way leaves the server with nothing to serve and the site
-returning 500 until one finally completes.
+The deploy box has 961 MB of RAM, most of it already spoken for, and this
+dependency tree is large (Privy pulls in WalletConnect, viem and a wallet
+graph). A build takes eight to thirteen minutes and has died of a V8
+out-of-memory abort more than once.
 
-So the bundle is built by GitHub Actions on every push, published to the
-`frontend-dist` branch from `master`, and installed here:
+That failure is destructive rather than inconvenient, because `vite build`
+empties its output directory *before* it starts: a build that dies half-way
+would leave the server with nothing to serve and the site returning 500 until
+one finally completed.
+
+So the build never writes to the live bundle. It builds into `dist-next` and
+swaps only once a complete tree with an `index.html` exists:
 
 ```bash
-scripts/deploy-frontend.sh          # fetch, install, restart
-scripts/deploy-frontend.sh --no-restart
+scripts/build-frontend-local.sh                # build, swap, restart
+scripts/build-frontend-local.sh --no-restart   # asset-only change
 ```
 
-It stages into a temp directory and swaps only once a complete tree with an
-`index.html` is on disk, so a bad fetch cannot take the site down; the previous
-bundle is kept at `frontend/dist.previous`.
+A failed or interrupted build therefore changes nothing at all, and the bundle
+it replaced is kept at `frontend/dist.previous` to roll back to.
 
-**One repository variable is required.** `VITE_PRIVY_APP_ID` is compiled into
-the bundle, and building without it produces a *different application* — Privy
-disabled, no Google sign-in, no embedded wallet — with no runtime error to say
-so. Set it under Settings → Secrets and variables → Actions → **Variables**
-(a variable, not a secret: it is a public client identifier that ships in the
-bundle regardless). CI fails the build rather than publish a bundle without it.
-
-CI pulls rather than the runner pushing over SSH, deliberately: a deploy key
-for this box in GitHub secrets would put an inbound path from a third party
-onto the machine that holds the relayer wallet, to buy nothing a pull does not
-already give.
+**One build-time variable matters.** `VITE_PRIVY_APP_ID` (in `frontend/.env`)
+is compiled into the bundle, and building without it produces a *different
+application* — Privy disabled, no Google sign-in, no embedded wallet — with no
+runtime error to say so. It is a public client identifier that ships in the
+bundle regardless, so it is not a secret; it is still the one value worth
+checking before a deploy.
 
 ## Development
 
@@ -279,6 +275,6 @@ already give.
 cd server && .venv/bin/python -m pytest tests/ -q   # offline: no network, no credentials
 ```
 
-97 tests cover the EVM/EIP-55 layer (against official vectors), registry
+183 tests cover the EVM/EIP-55 layer (against official vectors), registry
 resolution including the CEX-ticker trap, passkey step-up policy, and the
 order audit trail.

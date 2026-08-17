@@ -49,6 +49,21 @@ _public_hits: defaultdict[str, deque[float]] = defaultdict(deque)
 # browser hitting OKX directly.
 PRICE_POLL_SECONDS = float(__import__("os").environ.get("PRICE_POLL_SECONDS", "2"))
 
+# How stale a price may be on a surface that only displays it. The background
+# warmer re-prices every listed asset roughly once a minute, so this is really
+# "use the warm cache", and the alternative is not a fresher number — it is a
+# live aggregator call per row, serialised behind a process-wide rate limiter,
+# while the list sits on dashes. Order sizing and cap checks never come here.
+DISPLAY_PRICE_MAX_AGE = float(
+    __import__("os").environ.get("RWA_DISPLAY_PRICE_MAX_AGE", "120"))
+# A list request is a list request; nobody needs four hundred symbols priced.
+MAX_PRICE_BATCH = 60
+# How long the batch endpoint waits on a cold entry before answering with what
+# it has. Much shorter than the chat card's budget, because a web page has
+# somewhere to show a pending row and can ask again — blocking the paint for
+# six seconds to avoid one refetch is the wrong trade on a page.
+WEB_PRICE_BUDGET = 2.0
+
 
 def challenge_message(addr: str, nonce: str) -> str:
     return (
@@ -137,6 +152,11 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         addr, _ = auth.resolve_session_state(db, token)
         if addr:
             db.revoke_sessions_for_address(addr, reason="user_logout")
+            # And the renewal path with it. A connector holding a live refresh
+            # token would otherwise mint itself a new access token within the
+            # minute, and "End session" would mean nothing to the one client it
+            # is most often pressed about.
+            db.revoke_refresh_for_address(addr, "user_logout")
         else:
             auth.revoke_token(db, token, reason="user_logout")
         return {"ok": True}
@@ -194,6 +214,14 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             raise HTTPException(400, str(e))
 
     # -------------------------------------------------------------- deposits
+    def _maybe_float(v: Any) -> float | None:
+        """A deposit's dollar figure is a label, not an authority — the amount
+        that moves is the one inside the burn. Bad input drops the label."""
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
     # Dollars in, by burn and mint. See xlayer/deposit.py for the route and
     # why it is CCTP rather than a bridge. Sarf builds; the user signs the
     # burn; the relayer submits the mint, which it can only ever deliver to
@@ -240,6 +268,120 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             raise HTTPException(502, str(e))
         return {"enough": have >= need, "allowance": str(have), "needed": str(need)}
 
+    @r.post("/deposit/gas")
+    async def deposit_gas(body: dict[str, Any],
+                          authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Make sure the session's wallet can afford to send its own burn.
+
+        The one leg of this route the user has to pay for is the burn on Base,
+        and an on-ramp hands them USDC and no ETH — so the wallet holds exactly
+        what it is trying to move and nothing that moves it. Sarf's relayer
+        covers the shortfall in the user's own account. See deposit.py for why
+        that is safe and how it is bounded.
+
+        Reports honestly rather than silently: `funded: false` with a reason is
+        a normal answer, and the browser goes ahead and lets the wallet try —
+        an account that already has gas needs nothing from this.
+        """
+        addr = _session_addr(authorization)
+        needs_approval = bool(body.get("needs_approval", True))
+        try:
+            state = await asyncio.to_thread(
+                deposit.gas_shortfall, addr, needs_approval=needs_approval)
+        except deposit.DepositError as e:
+            # Not fatal: if we cannot read Base, the wallet still can, and it
+            # is the one that decides whether the burn is affordable.
+            return {"funded": False, "reason": str(e)}
+
+        out: dict[str, Any] = {
+            "funded": False,
+            "balance_wei": str(state["balance"]),
+            "required_wei": str(state["required"]),
+            "short_wei": str(state["short"]),
+        }
+        if state["short"] <= 0:
+            out["reason"] = "this wallet already has enough ETH on Base"
+            return out
+
+        # Only for somebody actually depositing. The gate is their own USDC:
+        # gas is given to move money that is already there, never as a faucet.
+        try:
+            held = await asyncio.to_thread(deposit.usdc_balance, addr)
+        except deposit.DepositError as e:
+            return {**out, "reason": str(e)}
+        if held < deposit.units(deposit.MIN_DEPOSIT_USD):
+            out["reason"] = (
+                f"send at least ${deposit.MIN_DEPOSIT_USD:,.2f} of USDC to this "
+                "address on Base first — Sarf covers the gas to move a deposit, "
+                "not to fill an empty wallet"
+            )
+            return out
+
+        # Cap the day as well as the transfer, so a loop cannot drain the
+        # relayer one ceiling at a time.
+        given = db.gas_given_since(addr, time.time() - 86400)
+        room = min(deposit.DRIP_MAX_WEI, deposit.DRIP_DAILY_MAX_WEI - given)
+        if room <= 0:
+            out["reason"] = ("this address has had its gas top-up for today; "
+                             "send a little ETH to it on Base to continue")
+            return out
+        send = min(state["short"], room)
+
+        try:
+            tx = await asyncio.to_thread(deposit.send_gas, addr, send)
+        except deposit.DepositError as e:
+            return {**out, "reason": str(e)}
+        # Recorded against the cap the moment it is broadcast, whether or not
+        # the wait below sees it land: the ETH has left the relayer either way.
+        db.record_gas_drip(tx_hash=tx, address=addr, wei=send)
+        # Wait for it. A broadcast hash does not spend, and the wallet prices
+        # the burn against the balance it can see — returning early would hand
+        # the user the same "insufficient funds" this exists to remove.
+        mined = await asyncio.to_thread(deposit.await_mined, tx)
+        return {
+            **out,
+            "funded": True,
+            "mined": mined,
+            "sent_wei": str(send),
+            "tx_hash": tx,
+            "note": ("Sarf sent the gas for this burn to your own address on "
+                     "Base. It is yours, it is spent by you, and it can pay "
+                     "for nothing but a transaction you sign."),
+        }
+
+    @r.post("/deposit/record")
+    async def deposit_record(body: dict[str, Any],
+                             authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Remember a burn the instant the wallet broadcasts it.
+
+        This is what makes a deposit survive the tab that started it. The burn
+        is already on Base by the time this is called — the money has moved
+        whether or not anyone is still watching — so the server writes it down
+        and its sweeper finishes it. Without this row, closing the tab between
+        the burn and the mint left funds burned on Base with nothing anywhere
+        that knew to mint them.
+        """
+        addr = _session_addr(authorization)
+        try:
+            tx_hash = validate_tx_hash(body.get("tx_hash"))
+        except ValidationError as e:
+            raise HTTPException(400, str(e))
+        db.record_deposit(burn_tx=tx_hash, address=addr,
+                          amount_usd=_maybe_float(body.get("amount_usd")))
+        return {"recorded": True, "burn_tx": tx_hash,
+                "note": ("Sarf will finish this deposit even if you close this "
+                         "page. The mint can only pay out to your own address.")}
+
+    @r.get("/deposit/list")
+    async def deposit_list(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """This account's recent deposits and where each one got to."""
+        addr = _session_addr(authorization)
+        rows = db.deposits_for_address(addr)
+        for d in rows:
+            if d.get("mint_tx"):
+                d["explorer_url"] = EXPLORER_TX.format(d["mint_tx"])
+        return {"address": addr, "deposits": rows}
+
     @r.post("/deposit/complete")
     async def deposit_complete(body: dict[str, Any],
                                authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -248,49 +390,43 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         Idempotent in the way that matters — CCTP records spent nonces, so a
         second submission of the same message reverts on-chain rather than
         minting twice. Pending is a normal answer; the caller polls.
+
+        The sweeper does this too, on a timer, for everyone. This endpoint
+        exists so that someone who *is* still watching sees it land in seconds
+        rather than on the next sweep.
         """
         addr = _session_addr(authorization)
         try:
             tx_hash = validate_tx_hash(body.get("tx_hash"))
         except ValidationError as e:
             raise HTTPException(400, str(e))
+        # Record first: if the mint below fails, or the browser goes away while
+        # it runs, the sweeper still knows this deposit is owed.
+        db.record_deposit(burn_tx=tx_hash, address=addr,
+                          amount_usd=_maybe_float(body.get("amount_usd")))
         try:
-            att = deposit.attestation(tx_hash)
+            res = await deposit.settle(tx_hash, expect_address=addr)
+        except deposit.NotYours as e:
+            raise HTTPException(403, str(e))
         except deposit.DepositError as e:
+            db.note_deposit_attempt(tx_hash, str(e))
             raise HTTPException(502, str(e))
-        if not att.get("ready"):
-            return {"settled": False, "state": att.get("state"),
-                    "detail": att.get("detail"),
-                    "note": "Circle has not attested the burn yet. Poll this again."}
-        # The hash is public; the relayer's gas is not. Only finish a burn that
-        # pays out to THIS session's address — otherwise a caller could feed us
-        # strangers' burns off a block explorer and spend our gas completing
-        # them. See deposit.mint_recipient.
-        try:
-            payee = deposit.mint_recipient(att["message"])
-        except deposit.DepositError as e:
-            raise HTTPException(400, str(e))
-        if payee.lower() != addr.lower():
-            raise HTTPException(
-                403,
-                "that deposit pays out to a different address, so it is not "
-                "this account's to complete",
-            )
-        try:
-            mint_hash = await delegation.relay(
-                to=deposit.MESSAGE_TRANSMITTER_V2,
-                data=deposit.receive_calldata(att["message"], att["attestation"]),
-                gas_limit=400_000,
-            )
         except delegation.DelegationError as e:
+            db.note_deposit_attempt(tx_hash, str(e))
             raise HTTPException(503, str(e))
         except Exception as e:  # pragma: no cover - RPC/upstream failure
+            db.note_deposit_attempt(tx_hash, f"{type(e).__name__}: {e}")
             raise HTTPException(502, f"the mint could not be submitted: {e}")
+        if not res.get("settled"):
+            return {"settled": False, "state": res.get("state"),
+                    "detail": res.get("detail"),
+                    "note": "Circle has not attested the burn yet. Poll this again."}
+        db.settle_deposit(tx_hash, res["mint_tx"])
         return {
             "settled": True,
             "burn_tx": tx_hash,
-            "mint_tx": mint_hash,
-            "explorer_url": EXPLORER_TX.format(mint_hash),
+            "mint_tx": res["mint_tx"],
+            "explorer_url": EXPLORER_TX.format(res["mint_tx"]),
             "note": (
                 "Minted on X Layer to your own address. Sarf's relayer paid the "
                 "gas and could not have sent it anywhere else — the recipient is "
@@ -368,6 +504,10 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             "auto_execute_under_usd": settings.delegated_auto_usd,
             "max_grant_days": delegation.MAX_GRANT_SECONDS / 86400,
             "max_grant_seconds": delegation.MAX_GRANT_SECONDS,
+            # The lifetimes to offer. Served rather than hardcoded in the SPA so
+            # that lowering the ceiling takes a deployment, not a deployment
+            # plus a frontend build that agrees with it.
+            "grant_choices_seconds": list(delegation.GRANT_CHOICES_SECONDS),
             "passkey_registered": bool(db.passkeys_for_address(addr)),
         }
         if not row:
@@ -432,10 +572,15 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
                 "minutes.",
             )
         try:
-            # Default to the ceiling rather than to a week. A session key that
-            # trades unattended should die with the passkey that bought it.
+            # Default to the SHORTEST lifetime on offer, not the ceiling.
+            #
+            # These were the same number while the ceiling was an hour, so the
+            # default was silently the most permissive value the moment longer
+            # grants were allowed. A caller that does not state a lifetime has
+            # not asked for a week — it has not asked at all, and the answer to
+            # an unasked question is the least authority that works.
             expiry = delegation.requested_expiry(
-                body.get("days", delegation.MAX_GRANT_SECONDS / 86400))
+                body.get("days", delegation.GRANT_CHOICES_SECONDS[0] / 86400))
             per_trade = _stable_units(body.get("per_trade_cap_usd", 500))
             daily = _stable_units(body.get("daily_cap_usd", 2000))
             # Autonomous is the only mode. Always Ask was removed on 2026-08-11
@@ -804,11 +949,17 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             ],
         }
 
-    async def _price_of(symbol: str) -> tuple[str, float | None]:
+    async def _price_of(symbol: str, *, max_age: float = 0.0) -> tuple[str, float | None]:
         """-> (canonical on-chain symbol, price). Always echo the canonical
         x-suffix casing back, never the caller's — the UI and the model both
-        read this, and showing 'AAPLX' would teach the CEX-style identifier."""
+        read this, and showing 'AAPLX' would teach the CEX-style identifier.
+
+        `max_age` > 0 accepts the warmed cache. Display surfaces pass one;
+        anything that sizes an order or checks a cap must not.
+        """
         asset = reg.resolve(symbol, allowlist=settings.rwa_allowlist)
+        if max_age > 0 and provider is not None:
+            return asset.symbol, await provider.display_price(asset, max_age)
         try:
             q = await dex.quote(asset.address, reg.quote.address, 10 ** asset.decimals)
         except DexError:
@@ -817,14 +968,59 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         return asset.symbol, price
 
     @r.get("/rwa/price/{symbol}")
-    async def rwa_price(symbol: str) -> dict[str, Any]:
+    async def rwa_price(symbol: str, fresh: bool = False) -> dict[str, Any]:
+        """One price. Answered from the warm cache unless `fresh` is asked for.
+
+        The background warmer (see providers/xlayer_rwa.warm_prices_forever)
+        keeps every listed asset priced within its TTL, and this endpoint used
+        to walk straight past it to the aggregator — so a page listing twelve
+        markets made twelve live quotes, each queued behind the process-wide
+        rate limiter, to learn numbers already sitting in memory. That was the
+        several seconds of dashes people watched on the markets page.
+        """
         try:
-            canonical, price = await _price_of(symbol)
+            canonical, price = await _price_of(
+                symbol, max_age=0.0 if fresh else DISPLAY_PRICE_MAX_AGE)
         except ValidationError as e:
             raise HTTPException(400, str(e))
         if price is None:
             raise HTTPException(503, "no route available to price this asset right now")
         return {"symbol": canonical, "price_usdt": price, "at": int(time.time())}
+
+    @r.get("/rwa/prices")
+    async def rwa_prices(symbols: str = "") -> dict[str, Any]:
+        """Many prices, one round trip. -> {"prices": {SYMBOL: price|null}}
+
+        The list pages priced a row at a time, which meant one HTTP request per
+        asset — twelve on the markets page, five on the home ledger — each with
+        its own connection and each racing the others through the aggregator's
+        pacer. They are all display reads of the same warmed cache, so they are
+        one call now, and an asset the cache cannot answer for comes back null
+        rather than holding the whole response.
+
+        Unknown symbols are skipped rather than 400'd: this serves a list, and
+        one stale entry in a client's list must not blank the other forty.
+        """
+        wanted = [s.strip() for s in symbols.split(",") if s.strip()][:MAX_PRICE_BATCH]
+        assets = []
+        for s in wanted:
+            try:
+                assets.append(reg.resolve(s, allowlist=settings.rwa_allowlist))
+            except ValidationError:
+                continue
+        if not assets or provider is None:
+            return {"prices": {}, "at": int(time.time())}
+        prices = await provider.display_prices(assets, budget=WEB_PRICE_BUDGET)
+        # Told plainly so the client knows whether coming back is worth it. A
+        # row still filling in is a different thing from an asset the venue
+        # cannot price, and only one of them is worth asking about again —
+        # both are null in the map, which is why this list is separate.
+        return {
+            "prices": prices,
+            "pending": [s for s, p in prices.items()
+                        if p is None and not provider.unpriceable(s)],
+            "at": int(time.time()),
+        }
 
     @r.get("/rwa/stream/{symbol}")
     async def rwa_stream(symbol: str, request: Request) -> StreamingResponse:
@@ -842,13 +1038,21 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
 
         async def gen():
             last: float | None = None
+            # First tick from the warm cache, so the board shows a number the
+            # moment it connects instead of a row of dashes while an aggregator
+            # call queues. Every tick after this one is quoted live — the board
+            # says LIVE and updates every ~2s, and that has to stay true.
+            first = True
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    _, price = await _price_of(symbol)
+                    _, price = await _price_of(
+                        symbol,
+                        max_age=DISPLAY_PRICE_MAX_AGE if first else PRICE_POLL_SECONDS)
                 except Exception:
                     price = None
+                first = False
                 payload = {
                     "symbol": asset.symbol,
                     "price_usdt": price if price is not None else last,

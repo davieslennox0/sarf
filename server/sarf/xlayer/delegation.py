@@ -72,12 +72,44 @@ CONTRACT_MAX_GRANT_SECONDS = 30 * 24 * 3600
 
 # What this deployment will actually issue, which is far shorter than what the
 # contract permits. A session key is a key that trades without asking, so its
-# lifetime should match the assertion that authorised it rather than outliving
-# it by weeks: one passkey, one hour, then prove it is you again. The contract
-# ceiling above is the backstop, not the policy.
+# lifetime is bounded by policy well under the contract's 30 days.
+#
+# It used to be a flat hour, on the reasoning that the key should die with the
+# passkey assertion that bought it. That reasoning was half right: the passkey
+# proves who is asking, and it should be required to START a grant — but making
+# every user re-prove themselves hourly to keep a $50-per-trade cap alive is a
+# tax on the honest case, and the caps, not the clock, are what bound the
+# damage. So the user picks, up to a week, and the on-chain limits they signed
+# are unchanged whichever they pick.
+#
+# NOTE FOR ANYONE RAISING THIS: nothing about the deployed contract changes.
+# `expiry` is a parameter of the grant the user signs, and SarfSessionKey
+# already accepts anything up to MAX_GRANT = 30 days. No redeploy, no migration
+# — this constant only decides what Sarf is willing to ask for.
 MAX_GRANT_SECONDS = min(
-    int(os.environ.get("SARF_MAX_GRANT_SECONDS", "").strip() or "3600"),
+    int(os.environ.get("SARF_MAX_GRANT_SECONDS", "").strip() or str(7 * 24 * 3600)),
     CONTRACT_MAX_GRANT_SECONDS,
+)
+
+# The lifetimes offered in the UI. A short list beats a free-form number: these
+# are the four spans people actually mean ("today", "the weekend", "a few
+# days", "the week"), and every one is inside the ceiling above. Arbitrary
+# values in between are still accepted — this is what is OFFERED, not what is
+# permitted.
+#
+# These are long for a key that trades without asking, and that is a deliberate
+# trade the account owner makes rather than one Sarf makes for them. The point
+# of a session key is that the assistant works while nobody is at the website;
+# a lifetime measured in hours meant coming back to re-authorise all day, which
+# pushed people toward larger caps to make each authorisation "worth it" — the
+# expensive knob, tightened, to relieve pressure on the cheap one. What bounds
+# the loss is the per-trade and per-day cap enforced by the contract, and those
+# do not stretch with the clock: a week-long grant at $50 a trade is still $50
+# a trade. Revocation stays one click, takes effect on chain, and does not need
+# Sarf's cooperation.
+GRANT_CHOICES_SECONDS = tuple(
+    s for s in (24 * 3600, 48 * 3600, 96 * 3600, 7 * 24 * 3600)
+    if s <= MAX_GRANT_SECONDS
 )
 
 
@@ -172,8 +204,8 @@ def requested_expiry(days: float) -> int:
 
     Bounded at both ends: under an hour is a grant that expires mid-conversation
     and reads as breakage, and MAX_GRANT_SECONDS is the ceiling this deployment
-    will issue — currently one hour, matching the passkey assertion that bought
-    the key in the first place.
+    will issue. The contract would accept far more; this is the narrower of the
+    two, and the narrower of two limits is the one that matters.
     """
     if not isinstance(days, (int, float)) or days != days:
         raise ValidationError("days must be a number")
@@ -182,9 +214,9 @@ def requested_expiry(days: float) -> int:
         raise ValidationError("the shortest grant is 1 hour")
     if seconds > MAX_GRANT_SECONDS:
         raise ValidationError(
-            f"the longest grant is {_humanise(MAX_GRANT_SECONDS)} — a key that "
-            "trades without asking should not outlive the passkey that authorised "
-            "it, so this ceiling is policy, not a contract limit"
+            f"the longest grant is {_humanise(MAX_GRANT_SECONDS)} — this ceiling "
+            "is Sarf's policy, not a contract limit, and it exists because a key "
+            "that trades without asking should have a short life"
         )
     return int(time.time()) + seconds
 

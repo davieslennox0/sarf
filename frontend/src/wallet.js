@@ -205,11 +205,38 @@ async function chainIdOf(p) {
   catch { return null; }
 }
 
+// The chains this app ever switches to, in the shape wallet_addEthereumChain
+// wants. Needed because a wallet cannot switch to a network it has never heard
+// of, and Base is exactly that for someone who installed OKX Wallet for X
+// Layer — the deposit button is the first thing that ever asks them for it.
+const CHAIN_PARAMS = {
+  [CHAIN_ID]: X_LAYER_PARAMS,
+  8453: {
+    chainId: '0x2105',
+    chainName: 'Base',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://mainnet.base.org'],
+    blockExplorerUrls: ['https://basescan.org'],
+  },
+};
+
 async function switchChain(p, id) {
-  await p.request({
-    method: 'wallet_switchEthereumChain',
-    params: [{ chainId: '0x' + Number(id).toString(16) }],
-  });
+  try {
+    await p.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: '0x' + Number(id).toString(16) }],
+    });
+  } catch (e) {
+    // 4902 = the wallet does not know this chain. Add it, which switches too.
+    // ensureXLayer() has always done this; sendOnChain did not, so a deposit
+    // failed at the switch for anyone whose wallet had never seen Base.
+    const params = CHAIN_PARAMS[Number(id)];
+    if (params && e && (e.code === 4902 || e.code === -32603)) {
+      await p.request({ method: 'wallet_addEthereumChain', params: [params] });
+      return;
+    }
+    throw e;
+  }
 }
 
 function toHex(v) {

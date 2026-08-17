@@ -23,8 +23,21 @@ export function secondsLeft(grant, now = Date.now()) {
   return Math.max(0, Math.floor((grant.expires_at * 1000 - now) / 1000));
 }
 
+/**
+ * A countdown at the scale of what is left.
+ *
+ * It used to be minutes and seconds only, which was fine while every grant was
+ * an hour and absurd the moment they could be a day: "1439m 58s" is not a
+ * length anybody reads. Seconds appear only in the last hour, where they are
+ * the thing you are actually watching.
+ */
 export function formatLeft(seconds) {
   if (seconds == null) return '';
+  if (seconds >= 3600) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${h}h ${m}m`;
+  }
   const m = Math.floor(seconds / 60);
   const s = String(seconds % 60).padStart(2, '0');
   return `${m}m ${s}s`;
