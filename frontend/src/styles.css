@@ -929,3 +929,12 @@ pre, code { overflow-x: auto; max-width: 100%; }
   .zap-history li .small { grid-column: 1; }
   .grid.g2 { grid-template-columns: 1fr; }
 }
+
+/* Wordmark is just "Sarf"; the tagline carries what it is. */
+nav .brand .tagline, .site-foot .brandmark .tagline {
+  font-family: var(--sans); font-style: normal; font-weight: 400; font-size: 12px;
+  color: var(--paper-dim); letter-spacing: normal; text-transform: none;
+}
+nav .brand .tagline { margin-left: 12px; }
+.site-foot .brandmark .tagline { display: block; margin-top: 2px; }
+@media (max-width: 720px) { nav .brand .tagline { display: none; } }

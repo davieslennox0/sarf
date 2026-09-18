@@ -448,7 +448,7 @@ export default function App() {
     <div className="app">
       <nav>
         <Link className="brand" to="/">
-          Sarf <span>/</span> X Layer RWA
+          Sarf <em className="tagline">Your X Layer RWA assistant</em>
         </Link>
         <button className="nav-toggle" aria-label="Menu" aria-expanded={navOpen}
                 onClick={() => setNavOpen((v) => !v)}>
@@ -573,7 +573,10 @@ export default function App() {
       */}
       <footer className="site-foot">
         <div className="footrow">
-          <span className="brandmark">Sarf <span>/</span> X Layer RWA</span>
+          <span className="brandmark">
+            Sarf
+            <em className="tagline">Your X Layer RWA assistant</em>
+          </span>
           <div className="footlinks">
             <Link to="/markets">Markets</Link>
             <Link to="/how">How it works</Link>
