@@ -156,7 +156,7 @@ def _iris(path: str, *, timeout: float = 15.0) -> Any:
     # when the corridor was fine and the header was missing.
     req = urllib.request.Request(
         f"{IRIS}{path}",
-        headers={"User-Agent": "sarf/1.0 (+https://sarf.managerx.xyz)",
+        headers={"User-Agent": "sarf/1.0 (+https://getsarf.xyz)",
                  "Accept": "application/json"},
     )
     try:

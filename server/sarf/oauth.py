@@ -64,16 +64,25 @@ def _issuer() -> str:
     return settings.public_url or f"http://127.0.0.1:{settings.port}"
 
 
-def _resource() -> str:
-    return f"{settings.mcp_public_url or _issuer()}/mcp"
+def _mcp_base(host: str | None = None) -> str:
+    """The MCP origin to describe: the legacy host a client is actually on,
+    if it is one (see settings.legacy_mcp_hosts), else the canonical one."""
+    h = (host or "").split(":", 1)[0].strip().lower()
+    if h and h in settings.legacy_mcp_hosts:
+        return f"https://{h}"
+    return settings.mcp_public_url or _issuer()
 
 
-def www_authenticate() -> str:
+def _resource(host: str | None = None) -> str:
+    return f"{_mcp_base(host)}/mcp"
+
+
+def www_authenticate(host: str | None = None) -> str:
     """Header value that tells an MCP client where to start the OAuth flow.
     Sent on every transport 401 from /mcp."""
     return (
         'Bearer resource_metadata='
-        f'"{settings.mcp_public_url or _issuer()}/.well-known/oauth-protected-resource"'
+        f'"{_mcp_base(host)}/.well-known/oauth-protected-resource"'
     )
 
 
@@ -92,9 +101,9 @@ def _as_metadata() -> dict[str, Any]:
     }
 
 
-def _resource_metadata() -> dict[str, Any]:
+def _resource_metadata(host: str | None = None) -> dict[str, Any]:
     return {
-        "resource": _resource(),
+        "resource": _resource(host),
         "authorization_servers": [_issuer()],
         "bearer_methods_supported": ["header"],
     }
@@ -132,8 +141,8 @@ def build_oauth(db: Database) -> APIRouter:
     # variants (…/oauth-protected-resource/mcp).
 
     @r.get("/.well-known/oauth-protected-resource{_:path}")
-    async def protected_resource_metadata(_: str = "") -> dict[str, Any]:
-        return _resource_metadata()
+    async def protected_resource_metadata(request: Request, _: str = "") -> dict[str, Any]:
+        return _resource_metadata(request.headers.get("host"))
 
     @r.get("/.well-known/oauth-authorization-server{_:path}")
     async def authorization_server_metadata(_: str = "") -> dict[str, Any]:

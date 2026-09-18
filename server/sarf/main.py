@@ -358,7 +358,7 @@ async def guard(request: Request, call_next):
                 "itself and stays connected; a ?key= token expires after "
                 f"{settings.session_ttl_seconds // 60} minutes and has to be re-pasted.",
                 status_code=401,
-                headers={"WWW-Authenticate": oauth.www_authenticate()},
+                headers={"WWW-Authenticate": oauth.www_authenticate(request.headers.get("host"))},
             )
         if address is None and settings.env != "production":
             # Dev mode only — deliberately loud on EVERY request so a dev

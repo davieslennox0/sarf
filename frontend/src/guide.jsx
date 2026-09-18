@@ -22,7 +22,7 @@ import React from 'react';
  * connector pointed at it fails with a 404 that reads like the server being
  * down rather than like a wrong address.
  */
-export const MCP_URL = 'https://sarf-mcp.managerx.xyz/mcp';
+export const MCP_URL = 'https://mcp.getsarf.xyz/mcp';
 
 /**
  * Where each client keeps its connector list.

@@ -77,7 +77,7 @@ class Settings:
     # proposal. Empty = no sign_url in responses.
     public_url: str = field(default_factory=lambda: _env("SARF_PUBLIC_URL", "").rstrip("/"))
 
-    # Public MCP connector origin (e.g. https://sarf-mcp.managerx.xyz) — only
+    # Public MCP connector origin (e.g. https://mcp.getsarf.xyz) — only
     # used to show users their personal connector URL after sign-in.
     mcp_public_url: str = field(default_factory=lambda: _env("SARF_MCP_PUBLIC_URL", "").rstrip("/"))
 
@@ -385,6 +385,16 @@ class Settings:
     # The MCP transport's DNS-rebinding protection rejects any other Host
     # header; loopback is always allowed in main.py so local dev works
     # without this being set.
+    # MCP hosts from before a domain move that still serve existing
+    # connectors (e.g. sarf-mcp.managerx.xyz after the move to getsarf.xyz).
+    # OAuth discovery on these describes the legacy host itself, because a
+    # client connected to it must reject metadata naming a different resource
+    # (RFC 9728 s3.3) and would fail its next re-auth.
+    legacy_mcp_hosts: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            h.strip().lower() for h in _env("SARF_LEGACY_MCP_HOSTS", "").split(",") if h.strip()
+        )
+    )
     allowed_hosts: tuple[str, ...] = field(
         default_factory=lambda: tuple(
             h.strip().lower() for h in _env("SARF_ALLOWED_HOSTS", "").split(",") if h.strip()
