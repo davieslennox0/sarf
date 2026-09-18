@@ -20,7 +20,7 @@ export default function Zap() {
   const [mine, setMine] = useState(null);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ pool: '', asset: '', amount: '', exitPct: '5', reentryPct: '' });
+  const [form, setForm] = useState({ pool: '', asset: '', amount: '', exitPct: '8', reentryPct: '' });
 
   useEffect(() => {
     api.zapPools().then((r) => {

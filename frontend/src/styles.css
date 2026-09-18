@@ -892,7 +892,16 @@ pre, code { overflow-x: auto; max-width: 100%; }
 
 /* ---- Zap ---------------------------------------------------------------- */
 .zap-headline { margin-top: 10px; font-family: var(--mono); font-size: 13px; color: var(--accent); }
-.zap-pools .zap-pool { text-align: left; cursor: pointer; font: inherit; color: inherit; width: 100%; }
+.zap-pools .zap-pool {
+  display: block; text-align: left; cursor: pointer; width: 100%; padding: 18px 20px;
+  font-family: var(--sans); font-size: 13px; letter-spacing: normal; text-transform: none;
+  color: inherit; white-space: normal;
+}
+.zap-pools .zap-pool p { overflow-wrap: anywhere; }
+/* On-chain symbols are case-significant (SPCXx is not SPCXX, and wSPCXx is a
+   different token again), so the zap pages switch off the site's uppercase
+   labels wherever a symbol can appear. */
+.zap .eyebrow, .zap .kv span, .zap .stats span, .zap .zap-pool h3 { text-transform: none; }
 .zap-pools .zap-pool:hover { border-color: var(--accent-dim); }
 .zap-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 10px; }
 .zap-fields label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--paper-dim); }

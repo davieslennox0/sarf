@@ -212,7 +212,11 @@ export default function ZapPosition() {
             <div><span>Original {v.deposit.asset}, untouched</span><b>{usd(value.hold_single_asset_usd)}</b></div>
             <div><span>Difference</span><b className={value.vs_hold_single_asset_usd < 0 ? 'error' : 'ok'}>{signed(value.vs_hold_single_asset_usd)}</b></div>
           </div>
-          <p className="small">{value.note}</p>
+          <p className="small">
+            The first comparison is the impermanent-loss benchmark; the second is what
+            you'd have by never zapping. Pool value includes fees earned; incentive
+            rewards are paid separately by X Layer.
+          </p>
         </div>
         <div className="card">
           <h3>Entry and costs</h3>

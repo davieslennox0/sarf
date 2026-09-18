@@ -1802,6 +1802,12 @@ class XLayerRwaProvider:
                 "auto_execute_under_usd": settings.delegated_auto_usd,
             }
             levels = db.risk_params_for(address)
+            for lv in levels:
+                # Stored upper-cased as the row key; shown as the on-chain
+                # symbol, since SPCXX next to SPCXx reads as two assets.
+                known = reg.get(lv["symbol"])
+                if known:
+                    lv["symbol"] = known.symbol
             if levels:
                 base["risk_levels"] = levels
                 base["risk_levels_note"] = (
