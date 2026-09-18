@@ -605,7 +605,11 @@ function render(d){
 # shipped, the server restarted on the new HTML, and every already-connected
 # chat kept drawing the gold card from its cache. Rewriting these styles without
 # turning this number is the one change that looks deployed and is not.
-WIDGET_VERSION = 4
+#
+# v5 puts OKB, USDC and USDT0 into the baked logo map. The map is substituted
+# into this HTML when the resource is read, so it is cached with the body —
+# the same shape as the v2 bump, for the same three symbols that missed it.
+WIDGET_VERSION = 5
 
 
 def _uri(name: str) -> str:

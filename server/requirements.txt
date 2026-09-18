@@ -9,3 +9,4 @@ eth-account>=0.13
 Pillow>=10.0
 cryptography>=42
 eth-abi>=5
+PyJWT>=2.9

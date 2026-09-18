@@ -4,6 +4,7 @@ import { api, ensureSession, getSession, verifyPasskey } from '../api.js';
 import { connect, currentAccount, short } from '../wallet.js';
 import { formatLeft, useGrantClock } from '../grant.js';
 import SessionGrant from '../SessionGrant.jsx';
+import Deposit from './Deposit.jsx';
 import { onPrivyChange, privyContext, privyEnabled } from '../privy.jsx';
 
 /**
@@ -116,7 +117,13 @@ function ExportKey() {
 // time, so the dashboard fold was a second door onto the same orders — and the
 // one that cost an extra fetch on every dashboard load. /dashboard/activity
 // still resolves; it redirects to the page.
+// Deposit is first because it is the one thing here you cannot trade without,
+// and a new account arrives with an empty wallet. It used to have its own slot
+// in the header; that made it a destination, when it is really something you do
+// to this account — the same kind of thing as granting a session key or
+// exporting the wallet, both of which already live on this page.
 const SECTIONS = [
+  { id: 'deposit', title: 'Deposit', blurb: 'Add dollars by card, move them to X Layer' },
   { id: 'agents', title: 'Agents', blurb: 'What is connected, and what it may do' },
   { id: 'security', title: 'Trading in chat', blurb: 'Session key, limits, revoke' },
   { id: 'credentials', title: 'Credentials', blurb: 'Wallet, passkey, session key, export' },
@@ -182,6 +189,8 @@ export default function Dashboard() {
   const assistants = rows.filter((c) => c.kind === 'assistant');
 
   const body = {
+    deposit: () => <Deposit embedded />,
+
     agents: () => (
       <>
         <div className="kv">
@@ -333,8 +342,8 @@ export default function Dashboard() {
     <section>
       <h1>Dashboard</h1>
       <p className="sub">
-        Everything this account has: what is connected to it, what it may spend
-        without asking, and what it has done.
+        Everything this account has: how to fund it, what is connected to it,
+        what it may spend without asking, and the keys it holds.
       </p>
 
       {err && (

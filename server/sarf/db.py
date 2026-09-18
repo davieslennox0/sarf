@@ -225,6 +225,23 @@ CREATE TABLE IF NOT EXISTS orders (
   result_json  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_orders_addr ON orders(address, created_at);
+
+-- Signed trade receipts issued via the Nota protocol (github.com/davieslennox0/nota,
+-- Sui + Walrus) after an order confirms on-chain. One row per order.
+-- `status` is honest about whether issuance actually happened --
+-- 'skipped_not_configured' when no Nota/Sui credentials are set server-side,
+-- never a fabricated receipt.
+CREATE TABLE IF NOT EXISTS trade_receipts (
+  order_id    TEXT PRIMARY KEY,
+  address     TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  receipt_id  TEXT,
+  blob_id     TEXT,
+  view_url    TEXT,
+  tx_digest   TEXT,
+  detail      TEXT,
+  created_at  REAL NOT NULL
+);
 """
 
 # Columns added after the base schema shipped; applied idempotently.
@@ -271,6 +288,19 @@ _MIGRATIONS = [
     # of it.
     "ALTER TABLE sessions ADD COLUMN client_name TEXT",
     "ALTER TABLE sessions ADD COLUMN client_id TEXT",
+    # Agent-to-agent grants were built and then dropped from scope before
+    # they ever shipped. A dev database that ran that build may still hold the
+    # two tables, and they store bearer-token hashes, which should not
+    # outlive the code that checked them. Order rows are left alone: any
+    # orders.origin / agent_grant_id columns such a database gained are
+    # simply no longer read.
+    "DROP TABLE IF EXISTS agent_grant_usage",
+    "DROP TABLE IF EXISTS agent_grants",
+    # Stop-loss/take-profit auto-fire bookkeeping: the last time this level
+    # fired (or attempted to) and what happened, so the watcher never
+    # re-fires the same breach every poll interval.
+    "ALTER TABLE risk_params ADD COLUMN last_triggered_at REAL",
+    "ALTER TABLE risk_params ADD COLUMN last_trigger_status TEXT",
 ]
 
 # Stop-loss / take-profit levels, one row per (address, symbol).
@@ -288,6 +318,80 @@ CREATE TABLE IF NOT EXISTS risk_params (
   updated_at  REAL NOT NULL,
   PRIMARY KEY (address, symbol)
 );
+"""
+
+# Admin console action log.
+#
+# The console can revoke someone's sessions, kill their session-key grant and
+# re-queue a stuck deposit. Those are small powers next to signing, but they
+# are the first things in this system one person can do TO another, and the
+# whole argument for allowing an email-shaped identity to hold them (see
+# privy_auth.py) rests on them being few, bounded and visible afterwards.
+# This table is the "visible afterwards" half, so it is written before the
+# action runs, not after it succeeds — an action that blew up halfway is
+# exactly the one worth having a record of.
+#
+# `actor_email` is the Google address off the verified identity token and
+# `actor_address` the wallet session it was presented alongside; both are
+# recorded because either alone leaves an ambiguous trail.
+# Single-asset zap positions (xlayer/zap.py). One row per position; the
+# position's full transition history lives in zap_events. `flow` is the
+# multi-transaction sequence in progress (enter / exit / reenter) and
+# `flow_step` how far through it the wallet has signed. `flow_ctx` holds the
+# amounts each confirmed step actually credited, read back from its receipt.
+# Steps are never built from estimates.
+_ZAP_TABLES = """
+CREATE TABLE IF NOT EXISTS zap_positions (
+  position_id      TEXT PRIMARY KEY,
+  address          TEXT NOT NULL,
+  pool_key         TEXT NOT NULL,
+  deposit_symbol   TEXT NOT NULL,
+  deposit_amount   TEXT NOT NULL,
+  deposit_usd      REAL,
+  il_threshold_bps INTEGER NOT NULL,
+  reentry_bps      INTEGER NOT NULL,
+  state            TEXT NOT NULL,
+  p_initial        REAL,
+  lp_index_initial REAL,
+  entered_at       REAL,
+  lp_amount        TEXT,
+  hold_rwa         TEXT,
+  hold_other       TEXT,
+  parked_amount    TEXT,
+  parked_index     TEXT,
+  flow             TEXT,
+  flow_step        INTEGER NOT NULL DEFAULT 0,
+  flow_ctx         TEXT NOT NULL DEFAULT '{}',
+  pending_tx       TEXT,
+  last_price       REAL,
+  last_il_bps      REAL,
+  last_checked_at  REAL,
+  created_at       REAL NOT NULL,
+  updated_at       REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_zap_addr ON zap_positions(address, created_at);
+
+CREATE TABLE IF NOT EXISTS zap_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id  TEXT NOT NULL,
+  at           REAL NOT NULL,
+  kind         TEXT NOT NULL,
+  detail_json  TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_zap_events_pos ON zap_events(position_id, at);
+"""
+
+_ADMIN_TABLE = """
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at    REAL NOT NULL,
+  actor_email   TEXT NOT NULL,
+  actor_address TEXT,
+  action        TEXT NOT NULL,
+  target        TEXT,
+  detail_json   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_time ON admin_audit(created_at DESC);
 """
 
 # How long a revoked session row is retained after revocation for auditing
@@ -315,6 +419,8 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.executescript(_RISK_TABLE)
+        self._conn.executescript(_ADMIN_TABLE)
+        self._conn.executescript(_ZAP_TABLES)
         for mig in _MIGRATIONS:
             try:
                 self._conn.execute(mig)
@@ -860,7 +966,9 @@ class Database:
                    ON CONFLICT(address,symbol) DO UPDATE SET
                        stop_loss=excluded.stop_loss,
                        take_profit=excluded.take_profit,
-                       updated_at=excluded.updated_at""",
+                       updated_at=excluded.updated_at,
+                       last_triggered_at=NULL,
+                       last_trigger_status=NULL""",
                 (address.lower(), symbol.upper(), stop_loss, take_profit, now, now),
             )
 
@@ -878,6 +986,98 @@ class Database:
                 "DELETE FROM risk_params WHERE address=? AND symbol=?",
                 (address.lower(), symbol.upper()))
         return cur.rowcount > 0
+
+    # ------------------------------------------------------------------ zap
+
+    _ZAP_JSON = ("flow_ctx",)
+
+    def create_zap_position(self, **cols: Any) -> str:
+        position_id = "zap_" + uuid.uuid4().hex
+        now = time.time()
+        row = {"position_id": position_id, "created_at": now, "updated_at": now, **cols}
+        if "flow_ctx" in row:
+            row["flow_ctx"] = json.dumps(row["flow_ctx"])
+        keys = ",".join(row)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"INSERT INTO zap_positions ({keys}) VALUES ({','.join('?' * len(row))})",
+                tuple(row.values()),
+            )
+        return position_id
+
+    def get_zap_position(self, position_id: str) -> dict[str, Any] | None:
+        cur = self._conn.execute("SELECT * FROM zap_positions WHERE position_id=?",
+                                 (position_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        out = dict(zip([c[0] for c in cur.description], r))
+        out["flow_ctx"] = json.loads(out["flow_ctx"] or "{}")
+        return out
+
+    def zap_positions_for(self, address: str) -> list[dict[str, Any]]:
+        ids = self._conn.execute(
+            "SELECT position_id FROM zap_positions WHERE address=? ORDER BY created_at DESC",
+            (address.lower(),),
+        ).fetchall()
+        return [p for (i,) in ids if (p := self.get_zap_position(i))]
+
+    def zap_positions_in(self, states: tuple[str, ...]) -> list[dict[str, Any]]:
+        ids = self._conn.execute(
+            f"SELECT position_id FROM zap_positions WHERE state IN ({','.join('?' * len(states))})",
+            states,
+        ).fetchall()
+        return [p for (i,) in ids if (p := self.get_zap_position(i))]
+
+    def update_zap_position(self, position_id: str, *, expect_state: str | None = None,
+                            **cols: Any) -> bool:
+        """Update columns; with expect_state, only if the row is still in that
+        state. The watcher and a user's click can race on the same position,
+        and the loser of that race must not overwrite the winner's transition."""
+        if "flow_ctx" in cols:
+            cols["flow_ctx"] = json.dumps(cols["flow_ctx"])
+        cols["updated_at"] = time.time()
+        sets = ",".join(f"{k}=?" for k in cols)
+        sql = f"UPDATE zap_positions SET {sets} WHERE position_id=?"
+        args: tuple[Any, ...] = (*cols.values(), position_id)
+        if expect_state is not None:
+            sql += " AND state=?"
+            args += (expect_state,)
+        with self._lock, self._conn:
+            return self._conn.execute(sql, args).rowcount == 1
+
+    def log_zap_event(self, position_id: str, kind: str, detail: dict[str, Any]) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO zap_events (position_id,at,kind,detail_json) VALUES (?,?,?,?)",
+                (position_id, time.time(), kind, json.dumps(detail, default=str)),
+            )
+
+    def zap_events(self, position_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT at,kind,detail_json FROM zap_events WHERE position_id=? ORDER BY id",
+            (position_id,),
+        ).fetchall()
+        return [{"at": a, "kind": k, **json.loads(d)} for a, k, d in rows]
+
+    def all_risk_params(self) -> list[dict[str, Any]]:
+        """Every armed level, across every address -- what the watcher polls."""
+        rows = self._conn.execute(
+            "SELECT address,symbol,stop_loss,take_profit,last_triggered_at,"
+            "last_trigger_status FROM risk_params "
+            "WHERE stop_loss IS NOT NULL OR take_profit IS NOT NULL"
+        ).fetchall()
+        return [dict(zip(("address", "symbol", "stop_loss", "take_profit",
+                          "last_triggered_at", "last_trigger_status"), r, strict=True))
+                for r in rows]
+
+    def mark_risk_triggered(self, address: str, symbol: str, status: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE risk_params SET last_triggered_at=?, last_trigger_status=? "
+                "WHERE address=? AND symbol=?",
+                (time.time(), status, address.lower(), symbol.upper()),
+            )
 
     def revoke_grant(self, address: str) -> bool:
         """Mark a grant revoked locally and destroy the key material. NOT the
@@ -1075,6 +1275,53 @@ class Database:
                  "amount_in": r[4], "quoted_out": r[5], "est_usd": r[6],
                  "status": r[7], "tx_hash": r[8]} for r in rows]
 
+    # ------------------------------------------------------------- receipts
+
+    def record_trade_receipt(self, *, order_id: str, address: str,
+                             status: str, receipt_id: str | None = None,
+                             blob_id: str | None = None, view_url: str | None = None,
+                             tx_digest: str | None = None, detail: str | None = None) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO trade_receipts (order_id,address,status,receipt_id,
+                                               blob_id,view_url,tx_digest,detail,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(order_id) DO UPDATE SET
+                       status=excluded.status, receipt_id=excluded.receipt_id,
+                       blob_id=excluded.blob_id, view_url=excluded.view_url,
+                       tx_digest=excluded.tx_digest, detail=excluded.detail""",
+                (order_id, address.lower(), status, receipt_id, blob_id,
+                 view_url, tx_digest, detail, time.time()),
+            )
+
+    def get_trade_receipt(self, order_id: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            "SELECT order_id,status,receipt_id,blob_id,view_url,tx_digest,detail,created_at "
+            "FROM trade_receipts WHERE order_id=?", (order_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {"order_id": r[0], "status": r[1], "receipt_id": r[2], "blob_id": r[3],
+                "view_url": r[4], "tx_digest": r[5], "detail": r[6], "created_at": r[7]}
+
+    # -------------------------------------------------------------- xpoints
+    # v1, deliberately simple: 1 point per $10 of CONFIRMED trade volume (est_usd
+    # at order time), plus a flat bonus per confirmed trade. Computed live from
+    # `orders` -- the same rows get_status and the dashboard already show -- not
+    # a separate ledger that could drift from what actually executed. Easy to
+    # retune (see xlayer_rwa.py get_xpoints) or replace with a real ledger later.
+
+    def xpoints_activity(self, address: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(est_usd),0) "
+            "FROM orders WHERE address=? AND status='confirmed'",
+            (address.lower(),),
+        ).fetchone()
+        return {
+            "confirmed_trades": int(row[0] or 0),
+            "confirmed_volume_usd": float(row[1] or 0),
+        }
+
     def set_stat(self, key: str, value: dict[str, Any]) -> None:
         with self._lock, self._conn:
             self._conn.execute(
@@ -1089,3 +1336,314 @@ class Database:
             "SELECT value_json, updated_at FROM stats WHERE key=?", (key,)
         ).fetchone()
         return (json.loads(r[0]), r[1]) if r else None
+
+    # ---------------------------------------------------------------- admin
+    # Read methods for the operator console. Every one of them is an
+    # AGGREGATE or a recent-rows page: the console answers "how is the service
+    # doing" and "what is stuck", not "what is in this person's wallet". No
+    # method here returns a sealed key, a public key blob, a session token or
+    # a proposal body, and that is a property to preserve when adding to this
+    # section — the console is the one surface where one account's operator
+    # looks at another account's rows, so what it CANNOT show matters as much
+    # as what it can.
+
+    def user_stats(self, now: float | None = None) -> dict[str, Any]:
+        """Signup and activity counters."""
+        t = time.time() if now is None else now
+        row = self._conn.execute(
+            """SELECT COUNT(*),
+                      SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN last_seen  >= ? THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN source = 'wallet' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN source = 'mcp'    THEN 1 ELSE 0 END)
+               FROM users""",
+            (t - 86400, t - 7 * 86400, t - 86400),
+        ).fetchone()
+        return {
+            "total": int(row[0] or 0),
+            "new_24h": int(row[1] or 0),
+            "new_7d": int(row[2] or 0),
+            "active_24h": int(row[3] or 0),
+            "by_source": {"wallet": int(row[4] or 0), "mcp": int(row[5] or 0)},
+        }
+
+    def recent_users(self, limit: int = 50, offset: int = 0,
+                     q: str | None = None) -> list[dict[str, Any]]:
+        """Most recently active accounts, newest first.
+
+        `q` is an address substring. It is passed as a bound LIKE parameter
+        with the wildcards added here rather than interpolated, so a search
+        box cannot become a query.
+        """
+        sql = ("SELECT address, source, first_seen, last_seen FROM users")
+        args: list[Any] = []
+        if q:
+            sql += " WHERE address LIKE ?"
+            args.append(f"%{q.strip().lower()}%")
+        sql += " ORDER BY last_seen DESC LIMIT ? OFFSET ?"
+        args += [int(limit), int(offset)]
+        rows = self._conn.execute(sql, args).fetchall()
+        return [dict(zip(("address", "source", "first_seen", "last_seen"), r,
+                         strict=True)) for r in rows]
+
+    def session_stats(self, now: float | None = None) -> dict[str, Any]:
+        """Live sessions, and which client each was minted for.
+
+        Live means unexpired AND unrevoked — the same test session_address()
+        applies, so this cannot report a session the auth layer would reject.
+        """
+        t = time.time() if now is None else now
+        live = self._conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT address) FROM sessions "
+            "WHERE expires_at > ? AND revoked_at IS NULL", (t,),
+        ).fetchone()
+        by_client = self._conn.execute(
+            "SELECT COALESCE(client_name,'(unnamed)'), COUNT(*) FROM sessions "
+            "WHERE expires_at > ? AND revoked_at IS NULL "
+            "GROUP BY 1 ORDER BY 2 DESC", (t,),
+        ).fetchall()
+        minted = self._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE created_at >= ?", (t - 86400,),
+        ).fetchone()
+        revoked = self._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE revoked_at >= ?", (t - 86400,),
+        ).fetchone()
+        return {
+            "live": int(live[0] or 0),
+            "live_accounts": int(live[1] or 0),
+            "minted_24h": int(minted[0] or 0),
+            "revoked_24h": int(revoked[0] or 0),
+            "by_client": [{"client": r[0], "count": int(r[1])} for r in by_client],
+        }
+
+    def order_stats(self, now: float | None = None) -> dict[str, Any]:
+        """Order counts, status mix and quoted volume.
+
+        est_usd is the QUOTE at build time, not a settled amount — an order
+        that was proposed and never signed still carries one. `volume_usd` is
+        therefore restricted to orders that reached the chain, and the
+        proposed-but-unsigned figure is reported separately rather than folded
+        in, because the difference between "quoted" and "traded" is the whole
+        question anyone asks this panel.
+        """
+        t = time.time() if now is None else now
+        settled = ("submitted", "confirmed", "executed")
+        marks = ",".join("?" * len(settled))
+        total = self._conn.execute("SELECT COUNT(*) FROM orders").fetchone()
+        by_status = self._conn.execute(
+            "SELECT status, COUNT(*) FROM orders GROUP BY 1 ORDER BY 2 DESC"
+        ).fetchall()
+        vol = self._conn.execute(
+            f"SELECT COALESCE(SUM(est_usd),0), COUNT(*) FROM orders "
+            f"WHERE status IN ({marks})", settled,
+        ).fetchone()
+        vol24 = self._conn.execute(
+            f"SELECT COALESCE(SUM(est_usd),0), COUNT(*) FROM orders "
+            f"WHERE status IN ({marks}) AND created_at >= ?", (*settled, t - 86400),
+        ).fetchone()
+        unsigned = self._conn.execute(
+            "SELECT COALESCE(SUM(est_usd),0), COUNT(*) FROM orders WHERE status='proposed'"
+        ).fetchone()
+        top = self._conn.execute(
+            f"SELECT symbol, COUNT(*), COALESCE(SUM(est_usd),0) FROM orders "
+            f"WHERE status IN ({marks}) GROUP BY 1 ORDER BY 2 DESC LIMIT 8", settled,
+        ).fetchall()
+        return {
+            "total": int(total[0] or 0),
+            "by_status": [{"status": r[0], "count": int(r[1])} for r in by_status],
+            "settled_count": int(vol[1] or 0),
+            "volume_usd": float(vol[0] or 0.0),
+            "settled_count_24h": int(vol24[1] or 0),
+            "volume_usd_24h": float(vol24[0] or 0.0),
+            "unsigned_count": int(unsigned[1] or 0),
+            "unsigned_usd": float(unsigned[0] or 0.0),
+            "top_symbols": [
+                {"symbol": r[0], "count": int(r[1]), "usd": float(r[2] or 0.0)} for r in top
+            ],
+        }
+
+    def recent_orders(self, limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
+        sql = ("SELECT order_id,created_at,address,side,symbol,est_usd,status,tx_hash "
+               "FROM orders")
+        args: list[Any] = []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(int(limit))
+        rows = self._conn.execute(sql, args).fetchall()
+        return [dict(zip(("order_id", "created_at", "address", "side", "symbol",
+                          "est_usd", "status", "tx_hash"), r, strict=True)) for r in rows]
+
+    def deposit_stats(self, now: float | None = None, stuck_after: float = 3600.0) -> dict[str, Any]:
+        """Deposit health, including the number that need a human.
+
+        "Stuck" is pending AND older than an hour. Circle's attestation is
+        usually seconds and the sweeper retries for hours before giving up, so
+        anything still pending after an hour is not slow, it is wrong — and it
+        is the single number this console exists to surface, because until now
+        nothing anywhere reported it.
+        """
+        t = time.time() if now is None else now
+        by_status = self._conn.execute(
+            "SELECT status, COUNT(*), COALESCE(SUM(amount_usd),0) FROM deposits "
+            "GROUP BY 1 ORDER BY 2 DESC"
+        ).fetchall()
+        stuck = self._conn.execute(
+            "SELECT COUNT(*) FROM deposits WHERE status='pending' AND created_at < ?",
+            (t - stuck_after,),
+        ).fetchone()
+        d24 = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(amount_usd),0) FROM deposits WHERE created_at >= ?",
+            (t - 86400,),
+        ).fetchone()
+        minted = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(amount_usd),0) FROM deposits WHERE status='minted'"
+        ).fetchone()
+        return {
+            "by_status": [
+                {"status": r[0], "count": int(r[1]), "usd": float(r[2] or 0.0)}
+                for r in by_status
+            ],
+            "stuck": int(stuck[0] or 0),
+            "stuck_after_seconds": int(stuck_after),
+            "count_24h": int(d24[0] or 0),
+            "usd_24h": float(d24[1] or 0.0),
+            "minted_count": int(minted[0] or 0),
+            "minted_usd": float(minted[1] or 0.0),
+        }
+
+    def recent_deposits(self, limit: int = 50, status: str | None = None) -> list[dict[str, Any]]:
+        sql = ("SELECT burn_tx,address,amount_usd,created_at,updated_at,status,"
+               "mint_tx,attempts,last_error FROM deposits")
+        args: list[Any] = []
+        if status:
+            sql += " WHERE status=?"
+            args.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(int(limit))
+        rows = self._conn.execute(sql, args).fetchall()
+        return [dict(zip(("burn_tx", "address", "amount_usd", "created_at", "updated_at",
+                          "status", "mint_tx", "attempts", "last_error"), r,
+                         strict=True)) for r in rows]
+
+    def requeue_deposit(self, burn_tx: str) -> bool:
+        """Put a deposit back in front of the sweeper. -> whether one moved.
+
+        Resets attempts as well as status, because the attempt counter is what
+        made it stop: leaving it at the cap means the next failure abandons it
+        again immediately, which looks like the retry silently did nothing.
+
+        Deliberately refuses to touch a MINTED row. That deposit is finished on
+        chain, and re-queueing it would have the sweeper try to mint an already
+        minted message — wasted gas at best, and a confusing failure loop in
+        the log at worst.
+        """
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE deposits SET status='pending', attempts=0, last_error=NULL, "
+                "updated_at=? WHERE burn_tx=? AND status<>'minted'",
+                (time.time(), burn_tx.strip().lower()),
+            )
+        return cur.rowcount > 0
+
+    def gas_stats(self, now: float | None = None) -> dict[str, Any]:
+        """What the relayer has given away on Base, as wei strings.
+
+        Wei is summed in Python and returned as a decimal STRING: the totals
+        exceed SQLite's 64-bit integer range in aggregate, and the column is
+        already TEXT for that reason. Turning it into a float here for JSON
+        would reintroduce exactly the precision loss the schema avoided.
+        """
+        t = time.time() if now is None else now
+        allrows = self._conn.execute("SELECT wei, created_at FROM gas_drips").fetchall()
+        total = sum(int(r[0]) for r in allrows)
+        day = sum(int(r[0]) for r in allrows if r[1] >= t - 86400)
+        week = sum(int(r[0]) for r in allrows if r[1] >= t - 7 * 86400)
+        return {
+            "drips": len(allrows),
+            "drips_24h": sum(1 for r in allrows if r[1] >= t - 86400),
+            "wei_total": str(total),
+            "wei_24h": str(day),
+            "wei_7d": str(week),
+            "recipients": int(
+                self._conn.execute("SELECT COUNT(DISTINCT address) FROM gas_drips")
+                .fetchone()[0] or 0
+            ),
+        }
+
+    def grant_stats(self, now: float | None = None) -> dict[str, Any]:
+        """Session-key grants. Counts only — no key material, sealed or not."""
+        t = time.time() if now is None else now
+        row = self._conn.execute(
+            """SELECT COUNT(*),
+                      SUM(CASE WHEN revoked_at IS NULL AND expiry > ? THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END)
+               FROM grants""", (t,),
+        ).fetchone()
+        return {
+            "total": int(row[0] or 0),
+            "live": int(row[1] or 0),
+            "revoked": int(row[2] or 0),
+        }
+
+    def live_grants(self, limit: int = 50, now: float | None = None) -> list[dict[str, Any]]:
+        """Live grants for the console's revoke control.
+
+        The SELECT names its columns rather than using *, because `grants`
+        holds `sealed_key` and a widening select on this table is how an
+        encrypted signing key ends up in a JSON response.
+        """
+        t = time.time() if now is None else now
+        rows = self._conn.execute(
+            "SELECT address,session_address,delegate,expiry,per_trade_cap,daily_cap,"
+            "created_at,rotated_at,approval_mode,autonomous_limit FROM grants "
+            "WHERE revoked_at IS NULL AND expiry > ? ORDER BY created_at DESC LIMIT ?",
+            (t, int(limit)),
+        ).fetchall()
+        return [dict(zip(("address", "session_address", "delegate", "expiry",
+                          "per_trade_cap", "daily_cap", "created_at", "rotated_at",
+                          "approval_mode", "autonomous_limit"), r, strict=True))
+                for r in rows]
+
+    def passkey_stats(self) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT address) FROM passkeys"
+        ).fetchone()
+        users = self._conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        return {
+            "credentials": int(row[0] or 0),
+            "accounts": int(row[1] or 0),
+            "accounts_total": int(users[0] or 0),
+        }
+
+    def oauth_client_stats(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Registered MCP clients, most recent first. Names are self-declared
+        (RFC 7591) and authorise nothing — displayed as labels only."""
+        rows = self._conn.execute(
+            "SELECT client_id, COALESCE(client_name,'(unnamed)'), created_at "
+            "FROM oauth_clients ORDER BY created_at DESC LIMIT ?", (int(limit),),
+        ).fetchall()
+        return [{"client_id": r[0], "client_name": r[1], "created_at": r[2]} for r in rows]
+
+    def record_admin_action(self, *, actor_email: str, actor_address: str | None,
+                            action: str, target: str | None = None,
+                            detail: dict[str, Any] | None = None) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO admin_audit "
+                "(created_at,actor_email,actor_address,action,target,detail_json) "
+                "VALUES (?,?,?,?,?,?)",
+                (time.time(), actor_email, actor_address, action, target,
+                 json.dumps(detail) if detail else None),
+            )
+
+    def admin_audit_log(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT created_at,actor_email,actor_address,action,target,detail_json "
+            "FROM admin_audit ORDER BY created_at DESC LIMIT ?", (int(limit),),
+        ).fetchall()
+        return [{"created_at": r[0], "actor_email": r[1], "actor_address": r[2],
+                 "action": r[3], "target": r[4],
+                 "detail": json.loads(r[5]) if r[5] else None} for r in rows]

@@ -444,7 +444,11 @@ def send_gas(to: str, wei: int) -> str:
 
     from ..config import settings
 
-    key = settings.relayer_private_key
+    # Base first, X Layer relayer as the fallback. The two chains hold separate
+    # balances under the same key by default, and the X Layer one being full is
+    # no evidence at all about Base — which is how MoonPay deposits came to be
+    # silently uncovered while in-chat execution worked fine.
+    key = settings.base_relayer_private_key or settings.relayer_private_key
     if not key:
         raise DepositError(
             "no relayer configured, so Sarf cannot cover the gas for this burn"

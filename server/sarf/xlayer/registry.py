@@ -160,7 +160,7 @@ class XStocksRegistry:
         self._by_symbol = assets
         # Reverse index for explaining the prefix/suffix trap back to a user
         # who typed the CEX ticker. Resolution still returns the x-suffix asset.
-        self._by_cex = {a.cex_ticker.upper(): a for a in assets.values()}
+        self._by_cex = {a.cex_ticker.upper(): a for a in assets.values() if a.cex_ticker}
 
     @property
     def symbols(self) -> list[str]:

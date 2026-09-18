@@ -6,8 +6,10 @@ import Portfolio from './pages/Portfolio.jsx';
 import Markets from './pages/Markets.jsx';
 import How from './pages/How.jsx';
 import Dashboard from './pages/Dashboard.jsx';
-import Deposit from './pages/Deposit.jsx';
+import Admin from './pages/Admin.jsx';
 import Sign from './pages/Sign.jsx';
+import Zap from './pages/Zap.jsx';
+import ZapPosition from './pages/ZapPosition.jsx';
 import Authorize from './pages/Authorize.jsx';
 import { api, clearSession, getSession, registerPasskey } from './api.js';
 import Onboarding from './Onboarding.jsx';
@@ -32,9 +34,12 @@ import { CLIENTS, MCP_URL, STEPS, openClient } from './guide.jsx';
  * links. The full page is still one click away and unchanged; this is a faster
  * door onto it, not a replacement.
  *
- * It also buys back a slot in the header. Signed in, the bar was Home, Markets,
- * How it works, Deposit, Portfolio, Dashboard, Activity — seven flat links with
- * the reference material sitting at equal weight to the pages you use daily.
+ * It also buys back a slot in the header, which mattered: signed in, the bar
+ * was Home, Markets, How it works, Deposit, Portfolio, Dashboard, Activity —
+ * seven flat links that ran past the page width, with the reference material at
+ * equal weight to the pages you use daily. Three of those seven are gone now.
+ * Home was what the wordmark already does, Deposit is a dashboard fold, and
+ * this is the third.
  */
 function GuideMenu({ pathname }) {
   const [open, setOpen] = useState(false);
@@ -355,6 +360,28 @@ export default function App() {
   const signedIn = Boolean(session);
   const refresh = () => setSession(getSession());
 
+  // Whether to show the Admin tab.
+  //
+  // Asked of the server rather than decided here, and asked once per session
+  // rather than per render: /api/admin/whoami is the same check every admin
+  // route makes, so the tab cannot disagree with what the routes will do.
+  //
+  // This is presentation only. Hiding the tab keeps the header clean for the
+  // people it does not concern; it protects nothing, because /admin itself
+  // renders from data those routes independently refuse to anyone else. A
+  // failure here is therefore "no tab", never a broken header — which is also
+  // why it swallows its error: for every ordinary user the honest answer to
+  // "are you an admin" arrives as a refusal, and that is not a fault to show.
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    if (!signedIn) { setIsAdmin(false); return undefined; }
+    let cancelled = false;
+    api.adminWhoami()
+      .then((r) => { if (!cancelled) setIsAdmin(Boolean(r?.is_admin)); })
+      .catch(() => { if (!cancelled) setIsAdmin(false); });
+    return () => { cancelled = true; };
+  }, [signedIn, session?.address]);
+
   // Whether the wallet layer can answer questions yet.
   //
   // Privy rehydrates asynchronously, and account pages open by asking it who
@@ -435,14 +462,28 @@ export default function App() {
               Security is not in the list at all any more: it was one control
               and three paragraphs about it, and it now unfolds inside the
               dashboard beside the agent it applies to. */}
-          <Link className={pathname === '/' ? 'on' : ''} to="/">Home</Link>
+          {/* No Home link. The brand at the left IS the way home — that is what
+              a wordmark in the top-left means on every site anyone has used, so
+              a second control saying the same thing spent a slot to teach
+              nobody anything. Removing it and folding Deposit into the
+              dashboard is what brings the signed-in header back inside the page
+              width instead of overflowing it. */}
           <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
+          <Link className={pathname.startsWith('/zap') ? 'on' : ''} to="/zap">Zap</Link>
           {signedIn ? (
             <>
-              <Link className={pathname === '/deposit' ? 'on' : ''} to="/deposit">Deposit</Link>
               <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
-              <Link className={pathname === '/dashboard' ? 'on' : ''} to="/dashboard">Dashboard</Link>
+              {/* startsWith, not equality: the sections are their own URLs, so
+                  /dashboard/deposit must still light the tab it is part of. */}
+              <Link className={pathname.startsWith('/dashboard') ? 'on' : ''}
+                    to="/dashboard">Dashboard</Link>
               <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
+              {/* Only for the operator, and only as a convenience — see the
+                  isAdmin hook above for why this is not the gate. */}
+              {isAdmin && (
+                <Link className={pathname.startsWith('/admin') ? 'on' : ''}
+                      to="/admin">Admin</Link>
+              )}
               {/* Last, and a menu rather than a link — see GuideMenu. Once you
                   are connected the guide is reference material, and the one
                   line in it you actually come back for is the endpoint. */}
@@ -464,9 +505,17 @@ export default function App() {
           <Route path="/" element={<Home />} />
           {/* Portfolio is account-only. It used to read any pasted address,
               which made a wallet-shaped page look public. */}
-          <Route path="/deposit" element={gate('Depositing funds', <Deposit />)} />
+          {/* Depositing now lives as a dashboard fold. The URL is kept as a
+              redirect and must stay: the MCP `deposit` tool hands out
+              `{public_url}/deposit` to the assistant, so it is a link already
+              printed in other people's chat histories. */}
+          <Route path="/deposit" element={<Navigate to="/dashboard/deposit" replace />} />
           <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
           <Route path="/markets" element={<Markets />} />
+          {/* Public on purpose: a position page is shared and bookmarked, and
+              acting on it asks for the owner's wallet at the moment of acting. */}
+          <Route path="/zap" element={<Zap />} />
+          <Route path="/zap/:id" element={<ZapPosition />} />
           <Route path="/how" element={<How />} />
           {/* /security is now a section of the dashboard. Kept as a redirect
               because the URL is printed in server error messages ("verify at
@@ -492,6 +541,13 @@ export default function App() {
               its own page. One data fetch, two layouts. */}
           <Route path="/dashboard/:section" element={gate('Your dashboard', <Dashboard />)} />
           <Route path="/activity" element={gate('Your activity', <Activity />)} />
+          {/* Operator console. Behind the ordinary session gate like any other
+              account page — the admin check itself is the server's, and the
+              page renders whichever of its three states applies (not
+              configured / not an admin / the console). Two routes for the
+              same reason the dashboard has two: the tab is the URL. */}
+          <Route path="/admin" element={gate('The operator console', <Admin />)} />
+          <Route path="/admin/:section" element={gate('The operator console', <Admin />)} />
           {/* /send removed — transfers belong in chat, where the passkey
               prompt is already the approval step. */}
           <Route path="/send" element={<Navigate to="/portfolio" replace />} />

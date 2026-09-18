@@ -889,3 +889,34 @@ pre, code { overflow-x: auto; max-width: 100%; }
 .row-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .row-id { display: flex; flex-direction: column; min-width: 0; }
 
+
+/* ---- Zap ---------------------------------------------------------------- */
+.zap-headline { margin-top: 10px; font-family: var(--mono); font-size: 13px; color: var(--accent); }
+.zap-pools .zap-pool { text-align: left; cursor: pointer; font: inherit; color: inherit; width: 100%; }
+.zap-pools .zap-pool:hover { border-color: var(--accent-dim); }
+.zap-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 10px; }
+.zap-fields label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--paper-dim); }
+.zap-fields input, .zap-fields select {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r);
+  color: var(--paper); font-family: var(--mono); font-size: 14px; padding: 10px 12px;
+}
+.zap-stats { margin-top: 26px; }
+.il-meter { position: relative; height: 8px; margin-top: 14px; background: var(--panel-2); border-radius: 4px; }
+.il-fill { position: absolute; inset: 0 auto 0 0; background: var(--green); border-radius: 4px; transition: width .4s; }
+.il-fill.over { background: var(--red); }
+.il-mark { position: absolute; top: -4px; width: 2px; height: 16px; }
+.il-mark.re { background: var(--accent-dim); }
+.il-mark.ex { background: var(--red); }
+.handoff { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.btn.small { padding: 7px 11px; font-size: 11px; }
+.zap-steps { margin: 14px 0 0 18px; font-family: var(--mono); font-size: 12px; color: var(--paper-dim); line-height: 1.9; }
+.zap-steps li.done { color: var(--green); }
+.zap-steps li.now { color: var(--accent); }
+.zap-history { list-style: none; border-top: 1px solid var(--line); }
+.zap-history li { display: grid; grid-template-columns: 170px 1fr; gap: 4px 14px; padding: 10px 4px; border-bottom: 1px solid var(--line); }
+.zap-history li .small { grid-column: 2; color: var(--paper-dim); word-break: break-word; }
+@media (max-width: 640px) {
+  .zap-history li { grid-template-columns: 1fr; }
+  .zap-history li .small { grid-column: 1; }
+  .grid.g2 { grid-template-columns: 1fr; }
+}

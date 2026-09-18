@@ -35,7 +35,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
 from pydantic import Field
 
-from .. import passkey
+from .. import auth, nota_client, passkey
 from ..auth import require_address
 from ..config import settings
 from ..db import Database
@@ -364,6 +364,18 @@ class XLayerRwaProvider:
         if self._logo_json is None:
             allow = settings.rwa_allowlist
             m: dict[str, str] = {}
+            # The cash and gas rows belong in here too. `reg.assets` is the
+            # equities alone, so OKB, USDC and USDT0 never reached the map and
+            # fell back to monograms in the widget — the exact failure
+            # test_every_non_equity_holding_has_a_logo describes, which passed
+            # because it checks the registry's logo_url rather than the map
+            # actually baked into the page. They are never allowlisted either:
+            # rwa_allowlist names tradable equities, and holding gas is not a
+            # trading permission.
+            for a in (NATIVE, USDC, self.reg.quote):
+                uri = logo_data_uri(getattr(a, "logo_url", ""))
+                if uri:
+                    m[a.symbol.upper()] = uri
             for a in self.reg.assets:
                 if allow and a.symbol.upper() not in allow:
                     continue
@@ -415,6 +427,90 @@ class XLayerRwaProvider:
                 logging.getLogger("sarf").debug("price warmer cycle failed",
                                                 exc_info=True)
             await asyncio.sleep(PRICE_WARM_SPACING)
+
+    async def watch_risk_levels_forever(self) -> None:
+        """Poll stop-loss/take-profit levels and auto-fire a SELL when one
+        breaches. OFF unless settings.risk_watch_enabled -- see main.py, which
+        only starts this task when that flag is set.
+
+        This does NOT introduce a new custody path. It builds and executes
+        the trade through self._place_order / self._execute_order -- the exact
+        same tool code a human-triggered order runs through -- so a breach can
+        only auto-settle if the account already has a live, on-chain
+        session-key grant AND a fresh-enough passkey assertion AND the order
+        is under delegated_auto_usd, i.e. exactly the conditions under which
+        execute_order would already let the user fire it with zero prompts.
+        No grant, no recent passkey, or too large -> the order is still BUILT
+        (so nothing is lost) but left for the user to sign, and the level is
+        recorded as triggered_unexecuted rather than silently retried forever.
+
+        v1 rule: a breach sells the ENTIRE held balance of that symbol (an
+        exit, matching what a stop-loss/take-profit conventionally means).
+        Partial-position levels are not supported in this pass.
+        """
+        from .. import auth  # local import: avoids a cycle at module load time
+
+        log = logging.getLogger("sarf.risk_watch")
+        while True:
+            try:
+                for row in self.db.all_risk_params():
+                    if row.get("last_triggered_at"):
+                        continue  # armed once per (re-)set; see put_risk_params
+                    try:
+                        asset = self.reg.resolve(row["symbol"])
+                    except Exception:
+                        continue
+                    price = await self._unit_price_usd(asset)
+                    if price is None:
+                        continue
+                    side = None
+                    if row["stop_loss"] is not None and price <= row["stop_loss"]:
+                        side = "stop_loss"
+                    elif row["take_profit"] is not None and price >= row["take_profit"]:
+                        side = "take_profit"
+                    if side is None:
+                        continue
+
+                    address = row["address"]
+                    auth.bind_session(address, "valid")
+                    try:
+                        held = await rpc.erc20_balance(asset.address, address)
+                        if held <= 0:
+                            self.db.mark_risk_triggered(address, asset.symbol, "no_position")
+                            continue
+                        amount_str = _fmt_units(held, asset.decimals)
+                        result = await self._place_order(
+                            symbol=asset.symbol, side="sell", amount=amount_str,
+                            slippage_percent=None,
+                        )
+                        payload = json.loads(result[0].text)
+                        if payload.get("can_execute"):
+                            ex_result = await self._execute_order(order_id=payload["order_id"])
+                            ex_payload = json.loads(ex_result[0].text)
+                            status = "executed" if ex_payload.get("executed") else "execute_failed"
+                            log.info("risk level %s/%s breached (%s): %s (tx=%s)",
+                                     address, asset.symbol, side, status,
+                                     ex_payload.get("tx_hash"))
+                        else:
+                            status = "triggered_unexecuted"
+                            log.info(
+                                "risk level %s/%s breached (%s) but no live "
+                                "auto-execute grant/passkey -- order %s built for "
+                                "manual signature", address, asset.symbol, side,
+                                payload.get("order_id"),
+                            )
+                        self.db.mark_risk_triggered(address, asset.symbol, status)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        log.warning("risk watcher failed for %s/%s: %s",
+                                   address, asset.symbol, e, exc_info=True)
+                        self.db.mark_risk_triggered(address, asset.symbol, "error")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - a watcher must never die
+                log.debug("risk watch cycle failed", exc_info=True)
+            await asyncio.sleep(settings.risk_watch_interval_seconds)
 
     @staticmethod
     def fee_plan(stable_leg_usd: float | None) -> dict[str, Any]:
@@ -1709,11 +1805,145 @@ class XLayerRwaProvider:
             if levels:
                 base["risk_levels"] = levels
                 base["risk_levels_note"] = (
-                    "Watch levels only — Sarf does not sell on its own. Compare them "
-                    "against the current price and tell the user if one has been "
-                    "reached; the trade still needs building and approving."
+                    (
+                        "Auto-execution is ON for this deployment: a background watcher "
+                        "polls these levels and, when one is breached, fires execute_order "
+                        "itself -- but ONLY through the same non-custodial session-key "
+                        "grant/passkey path any in-chat trade uses, so it can never move "
+                        "more than the user already authorised. With no live grant, a "
+                        "breach is recorded as triggered_unexecuted rather than acted on."
+                    ) if settings.risk_watch_enabled else (
+                        "Watch levels only — Sarf does not sell on its own. Compare them "
+                        "against the current price and tell the user if one has been "
+                        "reached; the trade still needs building and approving."
+                    )
                 )
             return base
+
+        @mcp.tool()
+        async def place_basket_order(
+            assets: Annotated[list[dict[str, Any]], Field(
+                description="[{'ticker': 'AAPLx', 'weight': 0.5}, {'ticker': 'TSLAx', 'weight': 0.5}]. "
+                            "Weights need not sum to 1 -- they are normalized."
+            )],
+            total_amount: Annotated[str, Field(description="Total USDT to spend across the basket")],
+            slippage_percent: Annotated[float | None, Field(
+                default=None, description="Optional slippage tolerance, 0.05-5.0, applied to every leg"
+            )] = None,
+        ) -> dict[str, Any]:
+            """Split total_amount across multiple tokenized stocks by weight and
+            BUILD one unsigned buy order per asset.
+
+            There is no atomic multi-asset settlement on X Layer -- this is N
+            independent place_order calls, each quoted against its own pool, not
+            one basket fill at one price. Reports the combined estimated USD and
+            a USD-weighted blended price impact across the legs that priced
+            successfully. Each leg still needs its own signature (or executes
+            under the same rules as any other order); a leg that fails to price
+            does not block the others.
+            """
+            address = require_address()
+            if not assets:
+                raise ValidationError("assets must be a non-empty list of {ticker, weight}")
+            total_units = validate_amount(total_amount, reg.quote.decimals,
+                                          what="total_amount (USDT)")
+            weight_sum = sum(float(a.get("weight", 0)) for a in assets)
+            if weight_sum <= 0:
+                raise ValidationError("weights must sum to a positive number")
+
+            legs: list[dict[str, Any]] = []
+            errors: list[dict[str, Any]] = []
+            total_est_usd = 0.0
+            impact_weighted = 0.0
+            for a in assets:
+                ticker = str(a.get("ticker", "")).strip()
+                weight = float(a.get("weight", 0) or 0)
+                if not ticker or weight <= 0:
+                    errors.append({"ticker": ticker or "(missing)", "error": "ticker/weight missing or non-positive"})
+                    continue
+                leg_units = int(total_units * (weight / weight_sum))
+                if leg_units <= 0:
+                    errors.append({"ticker": ticker, "error": "weight too small to produce a nonzero leg"})
+                    continue
+                leg_amount = _fmt_units(leg_units, reg.quote.decimals)
+                try:
+                    result = await place_order(symbol=ticker, side="buy", amount=leg_amount,
+                                               slippage_percent=slippage_percent)
+                except Exception as e:
+                    errors.append({"ticker": ticker, "error": str(e)})
+                    continue
+                payload = json.loads(result[0].text)
+                est = payload.get("estimated_usd") or 0.0
+                impact = payload.get("price_impact_percent")
+                legs.append({
+                    "ticker": ticker, "weight": weight, "order_id": payload["order_id"],
+                    "spending": payload["spending"],
+                    "receiving_estimated": payload["receiving_estimated"],
+                    "estimated_usd": est, "price_impact_percent": impact,
+                    "sign_url": payload["sign_url"], "can_execute": payload["can_execute"],
+                    "status": payload["status"],
+                })
+                total_est_usd += est
+                if impact is not None:
+                    impact_weighted += impact * est
+
+            return {
+                "basket_size": len(legs),
+                "legs": legs,
+                "errors": errors or None,
+                "total_requested_usd": float(
+                    Decimal(total_units) / (Decimal(10) ** reg.quote.decimals)
+                ),
+                "total_estimated_usd": round(total_est_usd, 2),
+                "blended_price_impact_percent": (
+                    round(impact_weighted / total_est_usd, 3) if total_est_usd else None
+                ),
+                "note": (
+                    "Each leg quotes and settles independently -- this is the sum of "
+                    "N separate X Layer transactions, not one atomic basket fill."
+                ),
+                "next_step": (
+                    "Walk the user through each leg's sign_url (or can_execute) like "
+                    "any other order. If `errors` is non-empty, say plainly which "
+                    "tickers failed and why -- the successful legs still stand."
+                ),
+                "disclosure": SYNTHETIC_DISCLOSURE,
+            }
+
+        @mcp.tool()
+        async def get_xpoints() -> dict[str, Any]:
+            """Xpoints balance and how it was earned.
+
+            v1 accrual rule, deliberately simple and easy to retune: 1 point per
+            $10 of CONFIRMED trade volume, plus a 5-point bonus per confirmed
+            trade. Computed live from this account's own order history (the same
+            rows get_status shows) -- not a separate ledger that could drift from
+            what actually executed. Streaks and referrals are NOT implemented in
+            this pass (Sarf logs neither yet); they are omitted rather than
+            faked.
+            """
+            address = require_address()
+            activity = db.xpoints_activity(address)
+            volume_points = int(activity["confirmed_volume_usd"] // 10)
+            trade_bonus = activity["confirmed_trades"] * 5
+            return {
+                "address": address,
+                "xpoints": volume_points + trade_bonus,
+                "breakdown": {
+                    "from_volume": {
+                        "points": volume_points,
+                        "rule": "1 point per $10 of confirmed trade volume",
+                        "confirmed_volume_usd": round(activity["confirmed_volume_usd"], 2),
+                    },
+                    "from_trades": {
+                        "points": trade_bonus,
+                        "rule": "5 points per confirmed trade",
+                        "confirmed_trades": activity["confirmed_trades"],
+                    },
+                },
+                "not_yet_tracked": ["referrals", "login/trading streaks"],
+                "rules_version": "v1",
+            }
 
         @mcp.tool(meta=ui(ORDER_CARD_URI))
         async def execute_order(
@@ -1920,6 +2150,29 @@ class XLayerRwaProvider:
                 {"confirmed": "confirmed", "failed": "failed"}.get(state, "submitted"),
                 tx_hash=tx_hash,
             )
+
+            receipt: dict[str, Any] | None = None
+            if confirmed:
+                # Nota (github.com/davieslennox0/nota), reused rather than a
+                # new receipt system -- see nota_client.py for exactly what
+                # that reuse does and does not cover. A Nota outage or missing
+                # config must never turn a settled trade into a reported
+                # failure, so this is best-effort and never raises.
+                try:
+                    receipt = await nota_client.issue_receipt(
+                        tx_hash=tx_hash, asset=order["symbol"], action="SWAP",
+                        amount=str(order["amount_in"]), currency=order["symbol"],
+                        recipient=address,
+                    )
+                except Exception as e:  # pragma: no cover - defense in depth
+                    receipt = {"status": "failed", "detail": f"{type(e).__name__}: {e}"}
+                db.record_trade_receipt(
+                    order_id=order_id, address=address,
+                    status=receipt["status"],
+                    receipt_id=receipt.get("receipt_id"), blob_id=receipt.get("blob_id"),
+                    view_url=receipt.get("view_url"), tx_digest=receipt.get("tx_digest"),
+                    detail=receipt.get("detail"),
+                )
             if confirmed:
                 next_step = (
                     "Confirmed on-chain. Tell the user the trade settled, naming the "
@@ -1960,11 +2213,22 @@ class XLayerRwaProvider:
                 "status": state if state != "unknown" else "submitted",
                 "executed": confirmed,
                 "settlement": settle,
+                # Cryptographic trade receipt via Nota. None when the trade
+                # didn't confirm; status is 'skipped_not_configured' rather
+                # than a fabricated receipt when Nota credentials aren't set.
+                "receipt": receipt,
                 "next_step": next_step,
                 "disclosure": SYNTHETIC_DISCLOSURE,
             }
             payload["card"] = render_order_card_text(payload)
             return [TextContent(type="text", text=json.dumps(payload, default=str))]
+
+        # Exposed on self so watch_risk_levels_forever (below, NOT a tool --
+        # called from main.py's lifespan) can build and settle a trade through
+        # the exact same code path and safety gates as any human-triggered
+        # one, instead of a second implementation that could drift from it.
+        self._place_order = place_order
+        self._execute_order = execute_order
 
         # Plain helpers, not tools. Their capability is still reachable — it
         # moved into get_status — but it no longer costs a slot in the client's

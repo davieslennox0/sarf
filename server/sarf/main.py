@@ -29,14 +29,17 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, oauth
+from . import admin, auth, oauth
 from .config import settings
 from .db import Database
 from .providers.xlayer_rwa import XLayerRwaProvider
+from .providers.zap_tools import register_zap_tools
 from .xlayer import deposit
 from .xlayer.api import build_xlayer_api
 from .xlayer.okx_dex import dex
 from .xlayer.registry import registry as load_registry
+from .xlayer.zap import ZapEngine
+from .xlayer.zap_api import build_zap_api
 
 # Host-header validation for the MCP transport (DNS-rebinding protection).
 # Loopback always allowed for dev; public hostnames come from
@@ -147,6 +150,11 @@ db = Database(settings.db_path)
 rwa_registry = load_registry()
 provider = XLayerRwaProvider(db, dex, rwa_registry)
 provider.register_tools(mcp)
+# Single-asset zap. One engine behind both the MCP tools and /api/zap, so the
+# two surfaces are the same code rather than two implementations to keep in
+# step.
+zap_engine = ZapEngine(db, dex, rwa_registry)
+register_zap_tools(mcp, zap_engine)
 
 
 @asynccontextmanager
@@ -180,6 +188,21 @@ async def lifespan(app: FastAPI):
     retirer = asyncio.create_task(_retire_grants_forever())
     # Finish deposits nobody is watching any more. See below.
     settler = asyncio.create_task(_settle_deposits_forever())
+    # Stop-loss/take-profit auto-execution. OFF by default (RISK_WATCH_ENABLED
+    # unset) -- see provider.watch_risk_levels_forever's own docstring for why
+    # this is safe to turn on rather than a new custody hole, and
+    # config.Settings.risk_watch_enabled for why it defaults off regardless.
+    watcher = (
+        asyncio.create_task(provider.watch_risk_levels_forever())
+        if settings.risk_watch_enabled else None
+    )
+    # Zap IL watcher. OFF by default (ZAP_AUTOEXIT_ENABLED unset). When on, it
+    # flips positions to exit_pending / reentry_pending; the wallet still
+    # signs the transactions. See xlayer/zap.py.
+    zap_watcher = (
+        asyncio.create_task(zap_engine.watch_forever())
+        if settings.zap_autoexit_enabled else None
+    )
     try:
         async with mcp.session_manager.run():
             yield
@@ -187,6 +210,10 @@ async def lifespan(app: FastAPI):
         warmer.cancel()
         retirer.cancel()
         settler.cancel()
+        if watcher:
+            watcher.cancel()
+        if zap_watcher:
+            zap_watcher.cancel()
 
 
 GRANT_SWEEP_SECONDS = 60
@@ -373,6 +400,12 @@ async def healthz():
 
 app.include_router(build_xlayer_api(db, dex, rwa_registry, provider))
 app.include_router(oauth.build_oauth(db))
+app.include_router(build_zap_api(db, zap_engine))
+# Operator console. Registered unconditionally: with SARF_ADMIN_EMAILS unset
+# every route 403s, which is the same outcome as not mounting it and one
+# fewer way for the two to disagree. /whoami is what the frontend asks before
+# it renders anything, and it answers false rather than erroring.
+app.include_router(admin.build_admin_api(db, dex, rwa_registry))
 
 # Dashboard + signer static bundle (built by `npm run build` in frontend/).
 # Explicit routes/mounts win over the catch-all MCP mount below; /dashboard
@@ -405,7 +438,7 @@ _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
     "/settings", "/activity", "/send", "/sign", "/approve", "/dashboard",
-    "/deposit",
+    "/deposit", "/admin", "/zap",
 ]
 
 # Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with

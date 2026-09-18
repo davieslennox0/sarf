@@ -5,6 +5,7 @@
  */
 
 import { signMessage } from './wallet.js';
+import { identityToken } from './privy.jsx';
 
 const KEY = 'sarf.session';
 
@@ -48,6 +49,26 @@ async function req(path, opts = {}) {
     throw new Error(body.detail || body.message || `Request failed (${res.status})`);
   }
   return body;
+}
+
+/**
+ * `req` plus the Privy identity token.
+ *
+ * The token is fetched per call rather than cached, because Privy rotates it
+ * and a stale copy would turn the console into an intermittent 403 that looks
+ * like the allow-list is wrong. It is cheap — Privy reads it from its own
+ * cookie, no network hop.
+ *
+ * A missing token is NOT short-circuited here. Letting the request go and the
+ * server refuse keeps one place deciding who is an admin; deciding it twice,
+ * once in a browser, is how the two versions drift apart.
+ */
+async function adminReq(path, opts = {}) {
+  const id = await identityToken();
+  return req(path, {
+    ...opts,
+    headers: { ...(opts.headers || {}), ...(id ? { 'x-privy-id-token': id } : {}) },
+  });
 }
 
 export const api = {
@@ -127,6 +148,23 @@ export const api = {
     req('/api/grant/relay', { method: 'POST', body: JSON.stringify(body) }),
   grantRevoke: () => req('/api/grant/revoke', { method: 'POST' }),
 
+  // Single-asset zap. The same endpoints behind the MCP zap tools, so the page
+  // and the chat never compute a split or an IL figure differently.
+  zapPools: () => req('/api/zap/pools'),
+  zapPosition: (id) => req(`/api/zap/position/${encodeURIComponent(id)}`),
+  zapMine: () => req('/api/zap/positions'),
+  zapDeposit: (body) => req('/api/zap/deposit', { method: 'POST', body: JSON.stringify(body) }),
+  zapThreshold: (id, body) =>
+    req(`/api/zap/${encodeURIComponent(id)}/threshold`, { method: 'POST', body: JSON.stringify(body) }),
+  zapExit: (id) => req(`/api/zap/${encodeURIComponent(id)}/exit`, { method: 'POST' }),
+  zapReenter: (id) => req(`/api/zap/${encodeURIComponent(id)}/reenter`, { method: 'POST' }),
+  zapCancel: (id) => req(`/api/zap/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  zapStep: (id) => req(`/api/zap/${encodeURIComponent(id)}/step`, { method: 'POST' }),
+  zapStepSubmitted: (id, txHash) =>
+    req(`/api/zap/${encodeURIComponent(id)}/step/submitted`, {
+      method: 'POST', body: JSON.stringify({ tx_hash: txHash }),
+    }),
+
   passkeyStatus: () => req('/api/passkey/status'),
   passkeyRegisterOptions: () => req('/api/passkey/register/options', { method: 'POST' }),
   passkeyRegisterVerify: (cred) =>
@@ -134,6 +172,41 @@ export const api = {
   passkeyAuthOptions: () => req('/api/passkey/auth/options', { method: 'POST' }),
   passkeyAuthVerify: (cred) =>
     req('/api/passkey/auth/verify', { method: 'POST', body: JSON.stringify(cred) }),
+
+  // --- admin console ---------------------------------------------------
+  //
+  // Two credentials, both required by the server (see server/sarf/admin.py):
+  // the ordinary session bearer that `req` already attaches, plus the Privy
+  // identity token, which is the half that says WHICH HUMAN this is rather
+  // than which wallet. Sent through `adminReq` rather than `req` so it rides
+  // only on these calls — the identity token has no business on a quote or a
+  // portfolio read, and a header added globally is a header that ends up
+  // everywhere.
+  //
+  // Every one of these 403s for anyone not on SARF_ADMIN_EMAILS. The one
+  // exception is adminWhoami, which answers `{is_admin: false}` instead, so
+  // the ordinary user's page load does not have to treat a refusal as an
+  // error.
+  adminWhoami: () => adminReq('/api/admin/whoami'),
+  adminOverview: () => adminReq('/api/admin/overview'),
+  adminUsers: (q, limit = 50) =>
+    adminReq(`/api/admin/users?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ''}`),
+  adminOrders: (limit = 50) => adminReq(`/api/admin/orders?limit=${limit}`),
+  adminDeposits: (limit = 50) => adminReq(`/api/admin/deposits?limit=${limit}`),
+  adminGrants: (limit = 50) => adminReq(`/api/admin/grants?limit=${limit}`),
+  adminAudit: (limit = 100) => adminReq(`/api/admin/audit?limit=${limit}`),
+  adminRevokeSessions: (address) =>
+    adminReq('/api/admin/sessions/revoke', {
+      method: 'POST', body: JSON.stringify({ address }),
+    }),
+  adminRevokeGrant: (address) =>
+    adminReq('/api/admin/grants/revoke', {
+      method: 'POST', body: JSON.stringify({ address }),
+    }),
+  adminRetryDeposit: (burnTx) =>
+    adminReq('/api/admin/deposits/retry', {
+      method: 'POST', body: JSON.stringify({ burn_tx: burnTx }),
+    }),
 };
 
 /**

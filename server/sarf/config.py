@@ -222,6 +222,24 @@ class Settings:
     relayer_private_key: str = field(
         default_factory=lambda: _env("SARF_RELAYER_PRIVATE_KEY", "").strip()
     )
+    # The Base-side signer for deposit.send_gas, which tops a depositor up so
+    # they can send their own CCTP burn. Separate from the X Layer relayer
+    # because the two chains need separate balances — the X Layer wallet can be
+    # full of OKB while the Base wallet is empty, and it was: MoonPay deposits
+    # silently fell back to "send yourself some ETH" for exactly that reason.
+    #
+    # Unset falls back to the X Layer relayer, which is right when one wallet is
+    # funded on both chains.
+    #
+    # NOTE, deliberately: unlike the X Layer relayer, the wallet configured here
+    # is NOT gas-only — it is MannyFi's operating wallet, which holds funds on
+    # X Layer. The "compromising the server buys an attacker a gas bill and
+    # nothing else" property does not hold for this key. It is a funding
+    # decision, not an oversight; revisit it by moving Base gas to a dedicated
+    # wallet when there is one to move it to.
+    base_relayer_private_key: str = field(
+        default_factory=lambda: _env("SARF_BASE_RELAYER_PRIVATE_KEY", "").strip()
+    )
     # Warn below this. A swap costs ~300k gas at ~0.02 gwei on X Layer, so
     # 0.002 OKB is still hundreds of trades — the threshold is about noticing
     # early, not about running close to empty.
@@ -269,6 +287,95 @@ class Settings:
     # grant's own lifetime rather than a single order.
     passkey_session_seconds: int = field(
         default_factory=lambda: int(_env("PASSKEY_SESSION_SECONDS", "3600"))
+    )
+
+    # --- Admin console (see admin.py / privy_auth.py) ------------------------
+    # Who may open it, by Google address. Empty = the console does not exist:
+    # every /api/admin route 403s and the frontend never shows the tab. That
+    # is the correct default, and it is why this is not "empty means everyone".
+    #
+    # These are matched against a GOOGLE-VERIFIED address inside a Privy
+    # identity token that this server verifies the signature of — not against
+    # anything the browser simply says about itself.
+    admin_emails: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            e.strip().lower() for e in _env("SARF_ADMIN_EMAILS", "").split(",") if e.strip()
+        )
+    )
+    # The Privy app the identity token must have been minted FOR. Without this
+    # as the expected audience, a token from any other Privy app would verify
+    # against the same issuer key — and anyone can make an app and put any
+    # email in it. It must equal frontend/.env's VITE_PRIVY_APP_ID.
+    privy_app_id: str = field(default_factory=lambda: _env("PRIVY_APP_ID", "").strip())
+    # Privy's ES256 PUBLIC key ("Verification key" in the dashboard, under
+    # Settings -> Basics). Public, so it is not a secret — it still lives in
+    # .env rather than in code because it is per-app deployment config.
+    # Accepts PEM, PEM with escaped newlines, or the bare base64 body.
+    privy_verification_key: str = field(
+        default_factory=lambda: _env("PRIVY_VERIFICATION_KEY", "").strip()
+    )
+
+    # --- Stop-loss / take-profit auto-execution (see set_risk_params) --------
+    # OFF by default on purpose: this is new code that has not run in
+    # production yet, and enabling it changes set_risk_params from a passive
+    # watch-list into something that can move funds on its own (bounded by the
+    # same session-key grant/passkey rules as any in-chat trade -- it never
+    # gains authority a human-initiated order wouldn't already have; see
+    # _watch_risk_levels_forever in main.py). Flip on deliberately, not by
+    # inheriting a default.
+    risk_watch_enabled: bool = field(
+        default_factory=lambda: _env("RISK_WATCH_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
+    risk_watch_interval_seconds: int = field(
+        default_factory=lambda: int(_env("RISK_WATCH_INTERVAL_SECONDS", "30"))
+    )
+
+    # --- Single-asset zap: IL watcher (see xlayer/zap.py) ---------------------
+    # OFF by default, same as RISK_WATCH_ENABLED. With it off, positions still
+    # show live IL whenever they are read, but nothing flips a position to
+    # exit_pending / reentry_pending on its own. Turning it on still moves no
+    # funds: the watcher decides and queues the transition, and the
+    # transactions are signed by the user's wallet (see zap.py's module
+    # docstring for why the session key cannot sign them).
+    zap_autoexit_enabled: bool = field(
+        default_factory=lambda: _env("ZAP_AUTOEXIT_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
+    zap_watch_interval_seconds: int = field(
+        default_factory=lambda: int(_env("ZAP_WATCH_INTERVAL_SECONDS", "60"))
+    )
+    # Tolerance on every in-pool swap and on addLiquidity/removeLiquidity
+    # minimums. The pools are meme/xStock pairs, so 1% is tight but honest.
+    zap_slippage_pct: float = field(
+        default_factory=lambda: float(_env("ZAP_SLIPPAGE_PCT", "1.0"))
+    )
+
+    # --- Nota trade receipts (github.com/davieslennox0/nota) -----------------
+    # Nota anchors a signed receipt on Sui + Walrus via the `@sykeclone/nota-sdk`
+    # Node SDK -- there is no Python client and no write-capable REST API (the
+    # public nota-gateway is read-only: verify/receipt/stats). Issuance here
+    # shells out to a tiny Node script (see nota_client.py) that wraps the real
+    # SDK. Unset SUI_PRIVATE_KEY/PACKAGE_ID/REGISTRY_ID = issuance is skipped
+    # and recorded as 'skipped_not_configured', never faked.
+    nota_enabled: bool = field(
+        default_factory=lambda: _env("NOTA_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
+    nota_sui_private_key: str = field(default_factory=lambda: _env("NOTA_SUI_PRIVATE_KEY", "").strip())
+    nota_package_id: str = field(default_factory=lambda: _env("NOTA_PACKAGE_ID", "").strip())
+    nota_registry_id: str = field(default_factory=lambda: _env("NOTA_REGISTRY_ID", "").strip())
+    nota_namespace: str = field(default_factory=lambda: _env("NOTA_NAMESPACE", "sarf").strip())
+    nota_sui_rpc_url: str = field(
+        default_factory=lambda: _env("NOTA_SUI_RPC_URL", "https://fullnode.mainnet.sui.io:443")
+    )
+    nota_walrus_aggregator_url: str = field(
+        default_factory=lambda: _env("NOTA_WALRUS_AGGREGATOR_URL", "https://aggregator.walrus.space")
+    )
+    nota_walrus_publisher_url: str = field(
+        default_factory=lambda: _env("NOTA_WALRUS_PUBLISHER_URL", "https://publisher.walrus.space")
+    )
+    # Read-only verification layer (github.com/davieslennox0/nota-gateway),
+    # genuinely reusable from Python via plain HTTP -- no SDK needed for reads.
+    nota_gateway_url: str = field(
+        default_factory=lambda: _env("NOTA_GATEWAY_URL", "https://nota-gateway.duckdns.org")
     )
 
     # Simple per-client rate limit for the MCP endpoint.

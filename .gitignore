@@ -44,3 +44,7 @@ frontend/dist-legacy/
 *.db-wal
 *.log
 .DS_Store
+# Dated snapshots of earlier bundles, kept on the server for rollback.
+frontend/dist.bak-*/
+frontend/dist.new/
+frontend/dist.previous-*/

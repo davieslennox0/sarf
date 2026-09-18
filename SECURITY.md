@@ -156,6 +156,84 @@ over exact proposal bytes. The session layer protects read privacy and
 prevents resource abuse; the wallet signature remains the authorization to
 move funds.
 
+## Admin console — the one identity that is not an address
+
+`/admin` is the single surface in Sarf gated by an **email** rather than by a
+proven address, and it is worth stating plainly why that exception exists and
+how far it reaches.
+
+**Two independent credentials, both required**, on every `/api/admin/*` route:
+
+| Factor | What it proves | Enforced in |
+|---|---|---|
+| Ordinary Sarf session (`Authorization: Bearer`) | a wallet signed this server's nonce | `auth.resolve_session_state` |
+| Privy identity token (`X-Privy-Id-Token`) | Privy — not the browser — asserts a Google-verified address on `SARF_ADMIN_EMAILS` | `privy_auth.admin_email` |
+
+Signing keys come from Privy's per-app **JWKS**
+(`https://auth.privy.io/api/v1/apps/$PRIVY_APP_ID/jwks.json`), cached for an
+hour and re-fetched when a token arrives bearing a `kid` we have not seen.
+This is not incidental: the key set for this app publishes **two** ES256 keys,
+so pinning a single public key in `.env` would stop verifying the moment Privy
+signed with the other one — and the symptom is the console refusing the one
+account it exists to admit. `PRIVY_VERIFICATION_KEY` survives as an override
+for a deployment with no outbound network, and is documented as the fragile
+option.
+
+The JWKS URL is derived from the configured app id and nothing else. A token's
+`kid` selects *which published key is tried*; it cannot introduce a key or
+redirect the fetch, so there is no attacker-reachable URL here. Unknown `kid`s
+are rate-limited (one fetch per minute per app) so forged headers cannot turn
+each request into an outbound call, and a failed refresh falls back to the
+cached set rather than locking the operator out — stale *public* keys admit
+nobody, since a token still has to carry a signature one of them made. With no
+cached set and no network, it fails closed.
+
+Neither alone admits anyone. Session-only would mean "admin = anyone signed
+in"; identity-token-only would make a Privy outage or compromise the whole
+boundary.
+
+**What is verified on the identity token**, all of it by PyJWT with the
+algorithm pinned — nothing in the token decides how the token is checked:
+
+- `ES256` only, passed as an explicit allow-list. The classic JWT break is
+  honouring the token's own `alg` header (`"none"`, or an RSA key
+  reinterpreted as an HMAC secret); an explicit list forecloses it.
+- `iss == "privy.io"` **and `aud == PRIVY_APP_ID`**. The audience check is
+  load-bearing: Privy signs every app's tokens with the same issuer key, so
+  without it a token minted for an attacker's own Privy app — where they
+  choose the email — would verify here.
+- `exp`, with `iat`/`sub`/`aud`/`iss` required to be present.
+- The address is read **only** from a `google_oauth` linked account, i.e. one
+  Google confirmed. A self-asserted `email` account does not count.
+- Exact match after lowercasing. Gmail dots and `+tags` are deliberately not
+  folded — an allow-list should cover only what was written down.
+
+**Fails closed.** `SARF_ADMIN_EMAILS` unset (the default) means the console
+does not exist: every route refuses everyone and the tab never renders. A
+half-configured deployment — allow-list set, verification key missing — also
+refuses, and says which variable is missing to authenticated callers only.
+
+**Scope of the power.** This is why the exception is acceptable here and
+nowhere else. The console reads aggregates (counts, volumes, deposit health,
+gas outflow) and holds exactly three actions: revoke an account's sessions and
+refresh families, revoke a session-key grant *locally*, and re-queue a stuck
+deposit. It cannot sign, cannot transfer, cannot mint a session for another
+account, cannot raise a cap, and returns no balances, portfolios, proposal
+bodies, tokens, sealed keys or passkey blobs. The local grant revoke is
+labelled as such in its own response: the binding revocation is the on-chain
+one, which only the account's own wallet can send. Re-queueing a deposit
+cannot misdeliver — the recipient is inside the message the user already
+signed on Base — and already-minted deposits are refused outright.
+
+**Every action is written to `admin_audit` before it runs**, with the actor's
+verified email, the wallet session it arrived with, the target and the client
+IP. Before, not after: an action that failed halfway is exactly the one worth
+having a record of.
+
+Hiding the Admin tab from non-admins is a courtesy, not a control. Every
+number on the page came from a route that independently refused everyone else,
+which is what makes the hiding a UI decision rather than a load-bearing one.
+
 ## In-chat signer & ephemeral keys
 
 The signer page (`/sign?p=<proposal_id>`) changes UX, not custody:

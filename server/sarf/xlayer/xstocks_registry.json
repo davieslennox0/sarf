@@ -1,7 +1,7 @@
 {
-  "_comment": "xStocks tokenized-equity registry for X Layer (chain 196). Every address was verified against X Layer RPC: eth_getCode non-empty, ERC-20 symbol() and decimals() matched the indexed values, at generation time. NOTE: on-chain symbols use an x SUFFIX (AAPLx); OKX's centralized order book uses an X PREFIX (XAAPL) for the same underlying. They are different identifiers - never resolve one against the other.",
+  "_comment": "xStocks tokenized-equity registry for X Layer (chain 196). Every address was verified against X Layer RPC: eth_getCode non-empty, ERC-20 symbol() and decimals() matched the indexed values, at generation time. NOTE: on-chain symbols use an x SUFFIX (AAPLx); OKX's centralized order book uses an X PREFIX (XAAPL) for the same underlying. They are different identifiers - never resolve one against the other. 2026-09-18: SPCXx, CSPCx, RSGx added after the same RPC checks (code, symbol(), decimals()). cex_ticker is left empty where OKX's spot instrument list has no matching ticker (CSPCx, RSGx) rather than guessing one.",
   "chain_id": 196,
-  "generated_at": 1786124277,
+  "generated_at": 1789758295,
   "quote_asset": {
     "symbol": "USDT",
     "onchain_symbol": "USD₮0",
@@ -329,6 +329,30 @@
       "decimals": 18,
       "cex_ticker": "XSOXL",
       "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x53ee7f58cf031ea4d897fdfcdafad124b3160689-900/type=default_90_0"
+    },
+    {
+      "symbol": "SPCXx",
+      "name": "SpaceX xStock",
+      "address": "0x68fa48b1c2fe52b3d776e1953e0e782b5044ce28",
+      "decimals": 18,
+      "cex_ticker": "XSPCX",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x68fa48b1c2fe52b3d776e1953e0e782b5044ce28-900/type=default_90_0"
+    },
+    {
+      "symbol": "CSPCx",
+      "name": "CSPC Pharmaceutical xStock",
+      "address": "0x74f4f275d72b2c431a2c049ce46220a8b21f5a90",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x74f4f275d72b2c431a2c049ce46220a8b21f5a90-900/type=default_90_0"
+    },
+    {
+      "symbol": "RSGx",
+      "name": "Republic Services xStock",
+      "address": "0x24ddc68f76b8ffe95dd1f4763aed201a44a846d9",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x24ddc68f76b8ffe95dd1f4763aed201a44a846d9-900/type=default_90_0"
     }
   ],
   "dex_router_address": "0x722db4f285F8bD91ef7AF6DA397e83f7fA4E80a7"

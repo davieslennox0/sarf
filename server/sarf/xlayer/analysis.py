@@ -143,6 +143,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     # Health care
     "LLYx":  (_NAME, "Health care"),
     "HIMSx": (_NAME, "Health care"),
+    "CSPCx": (_NAME, "Health care"),
+    # Industrials
+    "SPCXx": (_NAME, "Aerospace & defense"),
+    "RSGx":  (_NAME, "Industrials"),
     # Crypto infrastructure
     "BMNRx": (_NAME, "Crypto mining & infrastructure"),
     "IRENx": (_NAME, "Crypto mining & infrastructure"),

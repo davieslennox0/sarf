@@ -45,6 +45,46 @@ export function provider() {
 }
 
 /**
+ * The provider, waiting for it if Privy has not finished rehydrating.
+ *
+ * `provider()` returns null for the first few seconds of every page load on a
+ * phone: there is no injected wallet to fall back to, and Privy resolves its
+ * embedded provider asynchronously (see the retry backoff in privy.jsx). Three
+ * call sites used to dereference that null directly, and the one that mattered
+ * was signMessage — on the login path, AFTER the server had already issued a
+ * challenge. The user got a TypeError from deep inside a click handler, no
+ * session, and a page that looked like it had ignored them; tapping again a
+ * few seconds later worked, because by then the provider had arrived. That is
+ * the "it takes three tries to sign in" bug.
+ *
+ * Waiting is the correct behaviour rather than a workaround: not-ready-yet is
+ * a wait, not a refusal, which is the same conclusion connect() reached about
+ * `ready` for the same reason.
+ */
+export async function waitForProvider(timeoutMs = 12000) {
+  const now = provider();
+  if (now) return now;
+  if (!privyEnabled()) {
+    throw new Error('No EVM wallet found. Install OKX Wallet to trade on X Layer.');
+  }
+  await waitForReady(timeoutMs);
+  const afterReady = provider();
+  if (afterReady) return afterReady;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      off();
+      reject(new Error(
+        'Your wallet is still loading. Give it a moment and try again — or reload the page.'
+      ));
+    }, timeoutMs);
+    const off = onPrivyChange(() => {
+      const p = provider();
+      if (p) { clearTimeout(timer); off(); resolve(p); }
+    });
+  });
+}
+
+/**
  * Whether signing is possible at all. With Privy configured this is true before
  * login too — the wallet does not exist yet, but it will, and the user needs a
  * login button rather than "install a wallet extension".
@@ -145,7 +185,7 @@ export async function ensureXLayer() {
 
 /** EIP-191 personal_sign of the server's login challenge. Authorizes nothing. */
 export async function signMessage(address, message) {
-  const p = provider();
+  const p = await waitForProvider();
   return p.request({ method: 'personal_sign', params: [message, address] });
 }
 
@@ -156,7 +196,7 @@ export async function signMessage(address, message) {
  * the user is approving economically.
  */
 export async function sendTransaction(address, tx) {
-  const p = provider();
+  const p = await waitForProvider();
   await ensureXLayer();
   const params = {
     from: address,
@@ -256,7 +296,7 @@ function toHex(v) {
  * to install something they do not need.
  */
 export async function sendWithAuthorization(address, tx, delegate, relayer) {
-  const p = provider();
+  const p = await waitForProvider();
   await ensureXLayer();
   const base = {
     from: address,

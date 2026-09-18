@@ -145,10 +145,24 @@ export default function SessionGrant({ onMessage, onError, passkey }) {
         // Splitting it is the fix, and only the first half ever needed 7702:
         // the relayer carries the authorization list, and then the wallet makes
         // an ordinary self-call, where msg.sender IS the account.
-        await api.grantRelay({
+        // The relay carries a gas top-up as its `value`: this self-call is the
+        // one transaction in the flow the relayer structurally cannot pay for
+        // (authorize() is self-only), and an embedded wallet that has only ever
+        // received tokens holds no OKB to pay it with.
+        const relayed = await api.grantRelay({
           authorization: plain,
           transaction: { to: addr, data: '0x' },
         });
+        // Both halves have to be on-chain before the wallet estimates: the
+        // delegate's code to call into, and the OKB to pay for the call. The
+        // server waits for the receipt, so an unmined relay here means it did
+        // not land in time — sending now just reproduces the error it avoids.
+        if (relayed && relayed.mined === false) {
+          throw new Error(
+            `The delegation transaction (${relayed.tx_hash}) has not been mined yet. `
+            + 'Wait a few seconds and press Authorize again — nothing was lost.',
+          );
+        }
         hash = await sendTransaction(addr, { to: addr, data: prep.transaction.data });
       }
       // Confirm the RECEIPT, not just the hash. The first live run reported

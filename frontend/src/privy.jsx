@@ -20,7 +20,7 @@
 import React, { useEffect } from 'react';
 import {
   PrivyProvider, usePrivy, useWallets, useSign7702Authorization,
-  useAddFunds, useExportWallet,
+  useAddFunds, useExportWallet, getIdentityToken,
 } from '@privy-io/react-auth';
 
 export const PRIVY_APP_ID = import.meta.env.VITE_PRIVY_APP_ID || '';
@@ -79,6 +79,43 @@ const _subs = new Set();
 
 export function privyContext() {
   return _ctx;
+}
+
+/**
+ * The Privy identity token, for the admin console and nothing else.
+ *
+ * This is the one place the app hands Privy's own word about who you are to
+ * our server. It is not the login state the file header warns about — that is
+ * a boolean the browser reports, unfalsifiable only in the sense that nobody
+ * bothered. This is a JWT Privy signed, and `server/sarf/privy_auth.py`
+ * verifies the signature, the issuer, the audience and the expiry before
+ * reading a single claim out of it. So the browser cannot mint one, and a
+ * token minted for somebody else's Privy app does not verify here.
+ *
+ * It still authorises nothing that moves money, and it must stay that way:
+ * the admin console reads aggregates and revokes sessions. Signing is the
+ * wallet's job and approval is the passkey's, exactly as before.
+ *
+ * Waits for initialisation first, for the same reason waitForAccount does:
+ * for the first few hundred milliseconds of a page load Privy has not
+ * rehydrated its stored token, so asking then returns null. The admin gate
+ * calls this exactly once per page load to decide whether you are an operator,
+ * and a null there is indistinguishable from "not an admin" — the console
+ * would refuse the one account it exists to admit, and only a second reload
+ * that happened to lose the race would let them in. That is precisely the bug
+ * the wallet provider had; not initialising yet is a wait, not an answer.
+ *
+ * -> the token, or null when Privy is off / signed out / has none yet.
+ * Never throws: a page load must not fail because a token could not be read.
+ */
+export async function identityToken() {
+  if (!privyEnabled()) return null;
+  try {
+    await waitForReady();
+    return (await getIdentityToken()) || null;
+  } catch {
+    return null;
+  }
 }
 
 function publish(next) {

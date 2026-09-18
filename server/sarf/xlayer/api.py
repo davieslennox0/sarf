@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import time
 from collections import defaultdict, deque
@@ -721,22 +722,67 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         if str(to).lower() != addr.lower():
             raise HTTPException(400, "transaction must target the authorising account")
 
+        # Fund the self-call that has to follow this one. authorize() is
+        # self-only, so the relayer can carry the authorization but not the
+        # call — and an embedded wallet holding no OKB cannot send it. The
+        # top-up rides along as the `value` of a transaction the relayer is
+        # paying for regardless, so it costs one send rather than two.
+        #
+        # Capped per transfer and per day, both against the relayer's own
+        # balance, so a repeated prepare/relay cycle cannot drain the gas tank
+        # one ceiling at a time. A read that fails is not fatal: the install is
+        # what the user is waiting on.
+        drip = 0
+        try:
+            state = await delegation.grant_gas_shortfall(addr)
+            if state["short"] > 0:
+                given = db.gas_given_since(addr, time.time() - 86400)
+                room = min(delegation.GRANT_DRIP_MAX_WEI,
+                           delegation.GRANT_DRIP_DAILY_MAX_WEI - given)
+                drip = await delegation.affordable_drip(
+                    max(0, min(state["short"], room)))
+        except Exception:  # pragma: no cover - RPC failure; relay without it
+            # Logged, never silent. A drip that quietly becomes zero hands the
+            # user back the same "insufficient funds" this exists to remove,
+            # with nothing anywhere saying why.
+            logging.getLogger("sarf").warning(
+                "grant gas top-up skipped for %s", addr, exc_info=True)
+            drip = 0
+        if not drip:
+            logging.getLogger("sarf").info(
+                "grant relay for %s carries no gas top-up", addr)
+
         try:
             tx_hash = await delegation.relay_authorization(
-                authorization=auth, to=to, data=data,
+                authorization=auth, to=to, data=data, value=drip,
             )
         except delegation.DelegationError as e:
             raise HTTPException(400, str(e))
         except Exception as e:  # pragma: no cover - upstream/RPC failure
             raise HTTPException(502, f"relay failed: {e}")
 
+        if drip:
+            # Recorded against the cap the moment it is broadcast, whether or
+            # not the wait below sees it land: the OKB has left the relayer
+            # either way.
+            db.record_gas_drip(tx_hash=tx_hash, address=addr, wei=drip)
+
+        # Wait for it. The caller's next move is a self-call from the user's own
+        # wallet, and that needs BOTH halves of this transaction to have landed
+        # — the delegate's code to call into, and the OKB to pay for it.
+        mined = await delegation.await_relay_mined(tx_hash)
+
         return {
             "tx_hash": tx_hash,
             "relayer": delegation.relayer_address(),
             "explorer_url": EXPLORER_TX.format(tx_hash),
+            "mined": mined,
+            "gas_funded_wei": str(drip),
             "note": (
                 "Broadcast by Sarf's relayer, which paid gas. The authorization "
                 "it carried was signed by your wallet and names the limits you set."
+                + (" It also carried the OKB for the next step, which only your "
+                   "own wallet can send." if drip else "")
             ),
         }
 

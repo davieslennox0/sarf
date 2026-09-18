@@ -35,6 +35,7 @@ GAS
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -332,8 +333,101 @@ async def relay(*, to: str, data: str, gas_limit: int = 900_000) -> str:
     return await rpc.send_raw_transaction("0x" + raw.hex())
 
 
+# ------------------------------------------------- gas for the self-call
+#
+# WHY A DRIP IS NEEDED ON X LAYER TOO
+#     Installing the delegate and authorising the grant cannot be one relayed
+#     transaction: SarfSessionKey.authorize() is self-only (`msg.sender !=
+#     address(this) -> NotSelf`), so the relayer can carry the 7702
+#     authorization but not the call that has to follow it. That second half is
+#     an ordinary self-call sent by the user's OWN wallet, and a Privy embedded
+#     wallet that has only ever received tokens holds no OKB — so it fails on
+#     "insufficient funds for transfer" before it reaches the contract at all.
+#     The delegate ends up installed and the grant never recorded, which reads
+#     to the user as the whole setup having failed.
+#
+#     The fix rides along with the relay the server is already paying for. That
+#     transaction targets the user's account anyway, so giving it a `value`
+#     installs the delegate and funds the follow-up in a single send.
+#
+# THE BOUNDS
+#     The same fence as the Base drip in deposit.py, for the same reason: only
+#     to the session's own verified address, only when that address is
+#     genuinely short, only up to the shortfall, never more than
+#     GRANT_DRIP_MAX_WEI at once, and no more than GRANT_DRIP_DAILY_MAX_WEI per
+#     address per day. The caller is already behind a fresh passkey assertion
+#     and a prepared grant row — a narrower gate than the Base drip's "hold
+#     enough USDC to be making a real deposit".
+
+# Measured against the live delegate on X Layer: grant() with a 40-token
+# allowlist estimates at ~1.1M gas. Rounded up, because under-funding is the
+# one failure this exists to prevent and the difference is a fraction of a cent.
+GAS_GRANT = 1_300_000
+# Multiplier on the current gas price, so a top-up sent now still covers a call
+# the user signs a minute later into a busier block.
+GRANT_GAS_PRICE_HEADROOM = 3.0
+
+GRANT_DRIP_MAX_WEI = int(os.environ.get("XLAYER_GAS_DRIP_MAX_WEI", str(10 ** 14)))
+GRANT_DRIP_DAILY_MAX_WEI = int(
+    os.environ.get("XLAYER_GAS_DRIP_DAILY_WEI", str(3 * 10 ** 14))
+)
+
+
+async def grant_gas_shortfall(owner: str) -> dict[str, int]:
+    """-> {balance, required, short}. All wei on X Layer, all read live."""
+    have = await rpc.native_balance(owner)
+    price = await rpc.gas_price()
+    need = int(price * GRANT_GAS_PRICE_HEADROOM * GAS_GRANT)
+    return {"balance": have, "required": need, "short": max(0, need - have)}
+
+
+async def affordable_drip(wei: int) -> int:
+    """Clamp a top-up to what the relayer can send and still pay its own gas.
+
+    A thin gas tank degrades to "the delegate installed, the top-up was
+    skipped" rather than to "nothing worked". The install is what the user is
+    waiting on; the drip only saves them from having to fund the wallet
+    themselves.
+    """
+    if wei <= 0:
+        return 0
+    addr = relayer_address()
+    if not addr:
+        return 0
+    have = await rpc.native_balance(addr)
+    price = await rpc.gas_price()
+    # Reserve this transaction's own worst case before giving anything away.
+    reserve = 900_000 * price * 2
+    return max(0, min(wei, have - reserve))
+
+
+async def await_relay_mined(tx_hash: str, *, timeout: float = 25.0) -> bool:
+    """Block until a relayed transaction is in a block. -> whether it landed.
+
+    The wait is not optional, for the same reason deposit.await_mined exists: a
+    broadcast hash has not moved anything yet, and the browser prices its
+    self-call against the balance it can SEE. Returning the instant the relay
+    was submitted would hand the user back the very "insufficient funds" this
+    drip removes — and would race the delegate install besides, since the
+    self-call is only valid once the account has the delegate's code.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            status = await rpc.tx_status(tx_hash)
+        except Exception:  # pragma: no cover - transient RPC failure
+            status = None
+        if status is not None and status.mined:
+            # A reverted install would be odd, but reporting it as landed
+            # would be a lie the next step cannot recover from.
+            return status.success is not False
+        await asyncio.sleep(1.0)
+    return False
+
+
 async def relay_authorization(
     *, authorization: dict[str, Any], to: str, data: str, gas_limit: int = 900_000,
+    value: int = 0,
 ) -> str:
     """Broadcast the user's signed EIP-7702 authorization and return the hash.
 
@@ -354,6 +448,11 @@ async def relay_authorization(
     The signing wallet must therefore NOT be the authority: the authorization is
     built with the relayer as `executor`, so its own nonce advances rather than
     the user's.
+
+    `value` is the gas drip described above — OKB handed to the account so it
+    can send the self-call that authorize() requires. The ceiling is enforced
+    here and not only by the caller that computes the amount, because free
+    money attracts scripts and this is the function that actually spends.
     """
     key = settings.relayer_private_key
     if not key:
@@ -361,6 +460,11 @@ async def relay_authorization(
             "no relayer configured — set SARF_RELAYER_PRIVATE_KEY to a gas-only "
             "wallet before enabling in-chat execution"
         )
+    value = int(value)
+    if value < 0:
+        raise DelegationError("a relayed gas top-up cannot be negative")
+    if value > GRANT_DRIP_MAX_WEI:
+        raise DelegationError("gas top-up above the per-transfer ceiling")
     acct = Account.from_key(key)
     validate_evm_address(to)
 
@@ -373,7 +477,7 @@ async def relay_authorization(
     to = to_checksum_address(to)
     gas_price = await rpc.gas_price()
     tx = {
-        "to": to, "data": data, "value": 0, "gas": gas_limit,
+        "to": to, "data": data, "value": value, "gas": gas_limit,
         "maxFeePerGas": gas_price * 2,
         "maxPriorityFeePerGas": gas_price,
         "nonce": nonce, "chainId": CHAIN_ID, "type": 4,

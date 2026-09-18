@@ -65,7 +65,13 @@ function MoonPayMark() {
 
 const PRESETS = [50, 100, 250, 1000];
 
-export default function Deposit() {
+/**
+ * @param embedded  Rendered as a dashboard fold rather than as its own page.
+ *   Depositing belongs with the account rather than beside it: it is something
+ *   you do to this wallet, like granting a session key or exporting it, not a
+ *   place you go. It had a top-level nav slot mainly because it arrived late.
+ */
+export default function Deposit({ embedded = false }) {
   const [address, setAddress] = useState(null);
   const [amount, setAmount] = useState(100);
   const [quote, setQuote] = useState(null);
@@ -271,14 +277,23 @@ export default function Deposit() {
     finally { setBusy(null); await refresh(); }
   };
 
+  // Embedded, this is a fold inside the dashboard and the page already has a
+  // heading — so the title block is dropped rather than repeated, and the
+  // wrapper becomes a plain div so a <section> does not nest inside one.
+  const Wrap = embedded ? 'div' : 'section';
+
   return (
-    <section>
-      <div className="eyebrow tick">Add funds</div>
-      <h1>Deposit dollars</h1>
-      <p className="sub">
-        Move dollars from a card into USDC on X Layer, ready to buy tokenized
-        stocks. Sarf never holds the money at any point.
-      </p>
+    <Wrap>
+      {!embedded && (
+        <>
+          <div className="eyebrow tick">Add funds</div>
+          <h1>Deposit dollars</h1>
+          <p className="sub">
+            Move dollars from a card into USDC on X Layer, ready to buy
+            tokenized stocks. Sarf never holds the money at any point.
+          </p>
+        </>
+      )}
 
       <div className="kv">
         <div><span>Depositing to</span><b className="addr">{address || '—'}</b></div>
@@ -431,6 +446,6 @@ export default function Deposit() {
         transfer between chains is Circle's CCTP, burning and minting the same
         asset rather than bridging into a wrapper.
       </p>
-    </section>
+    </Wrap>
   );
 }

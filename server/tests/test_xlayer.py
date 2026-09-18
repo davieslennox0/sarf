@@ -741,18 +741,26 @@ def test_a_failed_balance_read_is_reported_not_silently_zeroed():
 
     from sarf.xlayer import rpc
 
-    async def fake_call(method, params, **kw):
-        to = params[0]["to"] if method == "eth_call" else ""
-        if to == ADDR_B:
-            raise rpc.RpcError("node said no")
-        return hex(42)
+    # Patched at the transport, not at _call: balances now travel as ONE
+    # batched request per ten tokens, so the fake has to answer a batch. This
+    # exercises the id-matching in _batch as well as the caller's handling.
+    async def fake_post(payload, **kw):
+        out = []
+        for req in payload:
+            to = req["params"][0]["to"]
+            if to == ADDR_B:
+                out.append({"jsonrpc": "2.0", "id": req["id"],
+                            "error": {"code": -32000, "message": "node said no"}})
+            else:
+                out.append({"jsonrpc": "2.0", "id": req["id"], "result": hex(42)})
+        return out
 
-    original = rpc._call
-    rpc._call = fake_call
+    original = rpc._post
+    rpc._post = fake_post
     try:
         got, unread = asyncio.run(rpc.erc20_balances([ADDR_A, ADDR_B], ADDR_A))
     finally:
-        rpc._call = original
+        rpc._post = original
 
     assert got == {ADDR_A: 42}
     assert unread == [ADDR_B]
@@ -763,16 +771,16 @@ def test_every_balance_failing_is_an_error_not_an_empty_wallet():
 
     from sarf.xlayer import rpc
 
-    async def fake_call(method, params, **kw):
+    async def fake_post(payload, **kw):
         raise rpc.RpcError("node down")
 
-    original = rpc._call
-    rpc._call = fake_call
+    original = rpc._post
+    rpc._post = fake_post
     try:
         with pytest.raises(rpc.RpcError):
             asyncio.run(rpc.erc20_balances([ADDR_A, ADDR_B], ADDR_A))
     finally:
-        rpc._call = original
+        rpc._post = original
 
 
 # --- what is connected -------------------------------------------------------
@@ -1127,6 +1135,111 @@ def test_gas_given_away_is_counted_per_address_and_ages_out(db):
     assert db.gas_given_since(ADDR_A, time.time() - 86400) == 3500
 
 
+# --- the one transaction the relayer cannot pay for ---------------------------
+#
+# authorize() is self-only, so the grant call has to come from the user's own
+# wallet. An embedded wallet that has only ever received tokens holds no OKB,
+# and the whole setup dies there with the delegate installed and no grant.
+
+def _resolved(value):
+    """A stand-in for an awaitable RPC read."""
+    async def go(*_a, **_k):
+        return value
+    return go
+
+
+def test_a_wallet_with_no_okb_cannot_send_the_self_call_and_is_short_by_it(monkeypatch):
+    import asyncio
+
+    from sarf.xlayer import delegation as dg
+
+    monkeypatch.setattr(dg.rpc, "native_balance", _resolved(0))
+    monkeypatch.setattr(dg.rpc, "gas_price", _resolved(2 * 10 ** 7))  # 0.02 gwei
+
+    state = asyncio.run(dg.grant_gas_shortfall(ADDR_A))
+    assert state["short"] == state["required"] > 0
+    # Whatever the estimate, it has to stay inside the ceiling relay_authorization
+    # enforces — otherwise the top-up is capped below the thing it is for.
+    assert state["required"] <= dg.GRANT_DRIP_MAX_WEI
+
+
+def test_a_wallet_that_already_has_okb_is_given_nothing(monkeypatch):
+    import asyncio
+
+    from sarf.xlayer import delegation as dg
+
+    monkeypatch.setattr(dg.rpc, "gas_price", _resolved(2 * 10 ** 7))
+    monkeypatch.setattr(dg.rpc, "native_balance", _resolved(10 ** 18))
+    assert asyncio.run(dg.grant_gas_shortfall(ADDR_A))["short"] == 0
+
+
+def test_the_relay_never_carries_more_than_its_ceiling(monkeypatch):
+    """Free money attracts scripts. The per-transfer ceiling is enforced in
+    relay_authorization itself, not only by the endpoint that computes it."""
+    import asyncio
+
+    from sarf.xlayer import delegation as dg
+
+    monkeypatch.setenv("SARF_RELAYER_PRIVATE_KEY", "0x" + "11" * 32)
+    monkeypatch.setattr(dg, "settings", Settings())
+    # Matched on the message, so this cannot pass on some unrelated failure —
+    # the empty authorization below would raise too, just later and for the
+    # wrong reason.
+    for bad, why in ((dg.GRANT_DRIP_MAX_WEI + 1, "ceiling"), (-1, "negative")):
+        with pytest.raises(dg.DelegationError, match=why):
+            asyncio.run(dg.relay_authorization(
+                authorization={}, to=ADDR_A, data="0x", value=bad))
+
+
+def test_a_thin_gas_tank_skips_the_top_up_instead_of_breaking_the_install(monkeypatch):
+    """The install is what the user is waiting on; the drip only saves them a
+    step. A relayer that cannot afford both must still do the first."""
+    import asyncio
+
+    from sarf.xlayer import delegation as dg
+
+    monkeypatch.setenv("SARF_RELAYER_PRIVATE_KEY", "0x" + "11" * 32)
+    monkeypatch.setattr(dg, "settings", Settings())
+    monkeypatch.setattr(dg.rpc, "gas_price", _resolved(2 * 10 ** 7))
+
+    # Enough for its own gas and nothing to spare.
+    monkeypatch.setattr(dg.rpc, "native_balance", _resolved(900_000 * 2 * 10 ** 7 * 2))
+    assert asyncio.run(dg.affordable_drip(10 ** 14)) == 0
+
+    # Comfortable: the ask is granted whole, never more than asked.
+    monkeypatch.setattr(dg.rpc, "native_balance", _resolved(10 ** 18))
+    assert asyncio.run(dg.affordable_drip(10 ** 12)) == 10 ** 12
+
+
+def test_an_unmined_relay_is_not_reported_as_landed(monkeypatch):
+    """Returning early would hand back the same insufficient-funds error the
+    drip exists to remove: the browser prices its self-call against the balance
+    it can SEE, and an unmined transfer has moved nothing."""
+    import asyncio
+
+    from sarf.xlayer import delegation as dg
+    from sarf.xlayer.rpc import TxStatus
+
+    monkeypatch.setattr(dg.asyncio, "sleep", _resolved(None))
+
+    pending = TxStatus("0x" + "ab" * 32, found=True, mined=False,
+                       success=None, block_number=None, gas_used=None)
+    monkeypatch.setattr(dg.rpc, "tx_status", _resolved(pending))
+    assert asyncio.run(dg.await_relay_mined("0x" + "ab" * 32, timeout=0.05)) is False
+
+    landed = TxStatus("0x" + "ab" * 32, found=True, mined=True,
+                      success=True, block_number=1, gas_used=21_000)
+    monkeypatch.setattr(dg.rpc, "tx_status", _resolved(landed))
+    assert asyncio.run(dg.await_relay_mined("0x" + "ab" * 32, timeout=5)) is True
+
+    # A reverted install must not be reported as a landing the next step can
+    # build on — there would be no delegate code to call into.
+    reverted = TxStatus("0x" + "ab" * 32, found=True, mined=True,
+                        success=False, block_number=1, gas_used=21_000)
+    monkeypatch.setattr(dg.rpc, "tx_status", _resolved(reverted))
+    assert asyncio.run(dg.await_relay_mined("0x" + "ab" * 32, timeout=5)) is False
+
+
 # --- a position sold to nothing is not a position -----------------------------
 
 def test_dust_left_by_a_full_sale_is_not_listed_as_a_holding():
@@ -1211,3 +1324,149 @@ def test_the_warm_cache_outlives_a_full_sweep():
     sweep = assets * (p.PRICE_WARM_SPACING + 1.0)
     assert sweep < p.PRICE_CACHE_TTL, (
         f"a {sweep:.0f}s sweep cannot keep a {p.PRICE_CACHE_TTL:.0f}s cache warm")
+
+
+# --- RPC batching ------------------------------------------------------------
+# A portfolio load used to make 43 separate concurrent POSTs — one per tradable
+# asset plus USDT, USDC and the native balance. The public endpoint answered a
+# burst like that with HTTP 429, and the three unprotected single reads turned
+# that into "internal server error" on a page that had worked seconds earlier.
+# These pin the three properties that fixed it.
+
+def test_balances_are_batched_not_one_request_per_token():
+    import asyncio
+
+    from sarf.xlayer import rpc
+
+    posts = []
+
+    async def fake_post(payload, **kw):
+        posts.append(len(payload))
+        return [{"jsonrpc": "2.0", "id": r["id"], "result": hex(7)} for r in payload]
+
+    tokens = [f"0x{i:040x}" for i in range(40)]
+    original = rpc._post
+    rpc._post = fake_post
+    try:
+        got, unread = asyncio.run(rpc.erc20_balances(tokens, ADDR_A))
+    finally:
+        rpc._post = original
+
+    assert len(got) == 40 and unread == []
+    # Four requests, not forty. That ratio IS the fix.
+    assert len(posts) == 4, posts
+    # And none of them may exceed the endpoint's hard ceiling of ten, which it
+    # enforces by rejecting the WHOLE batch (-32014), losing every balance in it.
+    assert max(posts) <= 10
+
+
+def test_a_reordered_batch_response_is_matched_by_id_not_position():
+    """JSON-RPC lets a server answer a batch in any order. Trusting arrival
+    order would attribute one token's balance to another — a wallet would be
+    shown holdings it does not have."""
+    import asyncio
+
+    from sarf.xlayer import rpc
+
+    async def fake_post(payload, **kw):
+        out = [{"jsonrpc": "2.0", "id": r["id"], "result": hex(100 + r["id"])}
+               for r in payload]
+        return list(reversed(out))
+
+    tokens = [f"0x{i:040x}" for i in range(5)]
+    original = rpc._post
+    rpc._post = fake_post
+    try:
+        got, _ = asyncio.run(rpc.erc20_balances(tokens, ADDR_A))
+    finally:
+        rpc._post = original
+
+    assert got == {t: 100 + i for i, t in enumerate(tokens)}
+
+
+def test_a_throttled_read_is_retried_before_it_is_a_failure():
+    """429 means "ask again", and a transient throttle must not reach the user
+    as a 500."""
+    import asyncio
+
+    import httpx
+
+    from sarf.xlayer import rpc
+
+    calls = {"n": 0}
+
+    class FakeClient:
+        is_closed = False
+
+        async def post(self, url, json=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(429, headers={"retry-after": "0"}, json={})
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1,
+                                             "result": hex(5)})
+
+    async def go():
+        original = rpc._http
+        rpc._http = lambda: _done(FakeClient())
+        try:
+            return await rpc.erc20_balance(ADDR_A, ADDR_B)
+        finally:
+            rpc._http = original
+
+    async def _done(v):
+        return v
+
+    assert asyncio.run(go()) == 5
+    assert calls["n"] == 2  # retried once, then succeeded
+
+
+def test_a_batch_refused_as_too_large_splits_instead_of_losing_everything():
+    """BATCH_SIZE should make this unreachable; it exists so a change at the
+    far end degrades rather than blanking the portfolio."""
+    import asyncio
+
+    from sarf.xlayer import rpc
+
+    async def fake_post(payload, **kw):
+        if len(payload) > 4:
+            return {"jsonrpc": "2.0", "id": None,
+                    "error": {"code": -32014,
+                              "message": "too many RPC calls in batch request"}}
+        return [{"jsonrpc": "2.0", "id": r["id"], "result": hex(1)} for r in payload]
+
+    calls = [("eth_call", [{"to": ADDR_A, "data": "0x"}, "latest"])] * 10
+    original = rpc._post
+    rpc._post = fake_post
+    try:
+        res = asyncio.run(rpc._batch(calls))
+    finally:
+        rpc._post = original
+
+    assert len(res) == 10
+    assert not any(isinstance(r, BaseException) for r in res)
+
+
+# --- Base gas has its own wallet ----------------------------------------------
+
+def test_base_gas_falls_back_to_the_xlayer_relayer_when_unset(monkeypatch):
+    """One wallet funded on both chains is the simple case, and stays working:
+    an unset Base key must not mean "no relayer" and a refused top-up."""
+    from sarf.xlayer import deposit as d
+
+    monkeypatch.setenv("SARF_RELAYER_PRIVATE_KEY", "0x" + "11" * 32)
+    monkeypatch.setenv("SARF_BASE_RELAYER_PRIVATE_KEY", "")
+    s = Settings()
+    assert (s.base_relayer_private_key or s.relayer_private_key) == "0x" + "11" * 32
+
+    # And an explicit Base key wins, because a full X Layer balance is no
+    # evidence about Base — the gap that left MoonPay deposits uncovered.
+    monkeypatch.setenv("SARF_BASE_RELAYER_PRIVATE_KEY", "0x" + "22" * 32)
+    s = Settings()
+    assert (s.base_relayer_private_key or s.relayer_private_key) == "0x" + "22" * 32
+
+    # Neither configured is still an error the caller can report, not a crash.
+    monkeypatch.setenv("SARF_RELAYER_PRIVATE_KEY", "")
+    monkeypatch.setenv("SARF_BASE_RELAYER_PRIVATE_KEY", "")
+    monkeypatch.setattr(d, "settings", Settings(), raising=False)
+    s = Settings()
+    assert not (s.base_relayer_private_key or s.relayer_private_key)

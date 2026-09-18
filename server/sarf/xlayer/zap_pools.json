@@ -1,0 +1,112 @@
+{
+  "_comment": "Pools the single-asset zap may deposit into. Every address below was taken from an official source (URL alongside it) and then checked against X Layer RPC on 2026-09-18: eth_getCode non-empty, and each pair address is the value UniswapV2Factory.getPair() returns for its two tokens, not a copied string. The incentive program itself (OKX/X Layer) publishes pair NAMES only, never addresses, which is why each pair is derived from the factory rather than quoted.",
+  "chain_id": 196,
+  "verified_at": "2026-09-18",
+  "uniswap_v2": {
+    "factory": "0xDf38F24fE153761634Be942F9d859f3DBA857E95",
+    "router02": "0x182a927119d56008d921126764bf884221b10f59",
+    "fee_bps": 30,
+    "source": "https://developers.uniswap.org/docs/protocols/v2/deployments"
+  },
+  "aave_v3": {
+    "pool": "0xE3F3Caefdd7180F884c01E57f65Df979Af84f116",
+    "park_asset": "0x779ded0c9e1022225f8e0630b35a9b54be713736",
+    "park_asset_symbol": "USDT",
+    "park_asset_decimals": 6,
+    "a_token": "0xF356ae412dB5df43BD3a10746f7ad4e1C4De4297",
+    "source": "https://github.com/bgd-labs/aave-address-book/blob/main/src/AaveV3XLayer.sol"
+  },
+  "incentive_program": {
+    "name": "X Layer RWA Ecosystem Liquidity Incentive Program, Round 2",
+    "window": "2026-09-18 to 2026-09-25 (UTC+8)",
+    "rewards": "100,000 USDG across the listed pairs, hourly snapshots, paid by X Layer to LPs who earn trading fees in the pool",
+    "sources": [
+      "https://www.okx.com/en-us/orbit/insight/87674924306176",
+      "https://www.okx.com/en-us/learn/xlayer-blog-incentive-programm-2"
+    ],
+    "note": "Round 1's RWA+stablecoin pairs ran two weeks from 2026-08-24 and have ended. No RWA+stablecoin pair is incentivised in the current round, and neither SPCXx nor wSPCXx has a Uniswap V2 pair against USDT. XDOG/wSPCXx is incentivised on Uniswap V4, which this zap does not build for."
+  },
+  "pools": [
+    {
+      "key": "LAIKA-wSPCXx",
+      "pair": "0x68084c1d2873b22f4ef2dce9c293ef2c12576147",
+      "rwa": {
+        "symbol": "wSPCXx",
+        "name": "Wrapped SpaceX xStock",
+        "address": "0x8e2eed8b8b5e13ea7bf38e50d7821d2c57309072",
+        "decimals": 18,
+        "underlying_symbol": "SPCXx",
+        "underlying_address": "0x68fa48b1c2fe52b3d776e1953e0e782b5044ce28"
+      },
+      "other": {
+        "symbol": "LAIKA",
+        "name": "LAIKA Coin",
+        "address": "0x4fec966f98d8530507787d947d1ab24fa145a999",
+        "decimals": 18,
+        "buy_tax_bps": 200,
+        "sell_tax_bps": 200
+      }
+    },
+    {
+      "key": "STARLINK-wSPCXx",
+      "pair": "0x75f29bb65eac55a675808f671572699caafdece0",
+      "rwa": {
+        "symbol": "wSPCXx",
+        "name": "Wrapped SpaceX xStock",
+        "address": "0x8e2eed8b8b5e13ea7bf38e50d7821d2c57309072",
+        "decimals": 18,
+        "underlying_symbol": "SPCXx",
+        "underlying_address": "0x68fa48b1c2fe52b3d776e1953e0e782b5044ce28"
+      },
+      "other": {
+        "symbol": "STARLINK",
+        "name": "starlink cat",
+        "address": "0x87359b7d78b03bd81b567bf425263b453c73eeee",
+        "decimals": 18,
+        "buy_tax_bps": 100,
+        "sell_tax_bps": 300
+      }
+    },
+    {
+      "key": "IGNIX-wSPCXx",
+      "pair": "0xd67a15e729a03203b4e1ec0eaef7896e7d87a652",
+      "rwa": {
+        "symbol": "wSPCXx",
+        "name": "Wrapped SpaceX xStock",
+        "address": "0x8e2eed8b8b5e13ea7bf38e50d7821d2c57309072",
+        "decimals": 18,
+        "underlying_symbol": "SPCXx",
+        "underlying_address": "0x68fa48b1c2fe52b3d776e1953e0e782b5044ce28"
+      },
+      "other": {
+        "symbol": "IGNIX",
+        "name": "IGNIX",
+        "address": "0x0c9535416fd3b772646c4575e0664fd65afeeeee",
+        "decimals": 18,
+        "buy_tax_bps": 300,
+        "sell_tax_bps": 300
+      }
+    },
+    {
+      "key": "STERLING-wNVDAx",
+      "pair": "0xec879367c3a1c1ae721079e65dfbc4972ccf16ab",
+      "rwa": {
+        "symbol": "wNVDAx",
+        "name": "Wrapped NVIDIA xStock",
+        "address": "0xa8ddb5cd96b5222afe198316e9a57caa642850d5",
+        "decimals": 18,
+        "underlying_symbol": "NVDAx",
+        "underlying_address": "0xc845b2894dbddd03858fd2d643b4ef725fe0849d"
+      },
+      "other": {
+        "symbol": "STERLING",
+        "name": "Sterling",
+        "address": "0x2026a3fcb9f2d2317085ab59bd666b64dd81eeee",
+        "decimals": 18,
+        "buy_tax_bps": 100,
+        "sell_tax_bps": 100
+      }
+    }
+  ],
+  "_comment_taxes": "buy_tax_bps / sell_tax_bps: the transfer tax each paired token takes when it leaves / enters the pair, measured 2026-09-18 on an anvil fork of X Layer mainnet by swapping through the pair with amountOutMin=0 and comparing the received amount to getAmountsOut. They are properties of the token contracts, which can change them, so the engine treats them as a floor for minimums, not a promise."
+}
