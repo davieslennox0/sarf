@@ -59,6 +59,13 @@ DISPLAY_PRICE_MAX_AGE = float(
     __import__("os").environ.get("RWA_DISPLAY_PRICE_MAX_AGE", "120"))
 # A list request is a list request; nobody needs four hundred symbols priced.
 MAX_PRICE_BATCH = 60
+# Candle overview for the market pages (sparklines, 24h change, 24h volume).
+# Hourly candles barely move inside ten minutes, and a full refresh of 43
+# assets is ~10s of paced calls, so it is cached per asset.
+OVERVIEW_TTL = 600.0
+OVERVIEW_BUDGET = 3.0
+_overview_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+_overview_inflight: dict[str, "asyncio.Future"] = {}
 # How long the batch endpoint waits on a cold entry before answering with what
 # it has. Much shorter than the chat card's budget, because a web page has
 # somewhere to show a pending row and can ask again — blocking the paint for
@@ -1032,6 +1039,71 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         if price is None:
             raise HTTPException(503, "no route available to price this asset right now")
         return {"symbol": canonical, "price_usdt": price, "at": int(time.time())}
+
+    @r.get("/rwa/overview")
+    async def rwa_overview(symbols: str = "") -> dict[str, Any]:
+        """Last 24 hourly closes, 24h change and 24h volume per asset, for the
+        sparklines and change columns on the market pages.
+
+        Same contract as /rwa/prices: one round trip, answered from what is
+        ready within a short budget. Anything still being fetched comes back in
+        `pending` and lands in the cache for the next ask. An asset the venue
+        has no candles for is null, never a flat line pretending to be data.
+        """
+        wanted = [s.strip() for s in symbols.split(",") if s.strip()][:MAX_PRICE_BATCH]
+        assets = []
+        for s_ in wanted:
+            try:
+                assets.append(reg.resolve(s_, allowlist=settings.rwa_allowlist))
+            except ValidationError:
+                continue
+        now = time.time()
+        out: dict[str, Any] = {}
+        todo = []
+        for a in assets:
+            hit = _overview_cache.get(a.symbol)
+            if hit and now - hit[0] < OVERVIEW_TTL:
+                out[a.symbol] = hit[1]
+            else:
+                todo.append(a)
+
+        async def fetch(a):
+            if a.symbol in _overview_inflight:
+                return await _overview_inflight[a.symbol]
+            fut = asyncio.ensure_future(_overview_of(a))
+            _overview_inflight[a.symbol] = fut
+            try:
+                return await fut
+            finally:
+                _overview_inflight.pop(a.symbol, None)
+
+        pending: list[str] = []
+        if todo:
+            tasks = {asyncio.ensure_future(fetch(a)): a for a in todo}
+            done, not_done = await asyncio.wait(tasks, timeout=OVERVIEW_BUDGET)
+            for t in done:
+                out[tasks[t].symbol] = t.result() if not t.exception() else None
+            pending = [tasks[t].symbol for t in not_done]  # keep running; cache fills
+        return {"assets": out, "pending": pending, "at": int(now)}
+
+    async def _overview_of(a) -> dict[str, Any] | None:
+        try:
+            cs = await dex.candles(a.address, bar="1H", limit=25)
+        except DexError:
+            cs = []
+        if len(cs) < 2:
+            view = None
+        else:
+            last, first = cs[-1]["c"], cs[0]["c"]
+            day = [c for c in cs if c["ts"] >= cs[-1]["ts"] - 24 * 3600]
+            view = {
+                "spark": [round(c["c"], 6) for c in cs[-24:]],
+                "last": last,
+                "change_24h_pct": round((last - first) / first * 100, 3) if first else None,
+                "volume_24h_usd": round(sum(c["vol_usd"] for c in day), 2),
+            }
+        _overview_cache[a.symbol] = (time.time(), view)
+        return view
 
     @r.get("/rwa/prices")
     async def rwa_prices(symbols: str = "") -> dict[str, Any]:

@@ -69,7 +69,7 @@ export default function Zap() {
 
   return (
     <section className="zap">
-      <div className="eyebrow">X Layer · RWA liquidity</div>
+      <div className="eyebrow tick">X Layer · RWA liquidity</div>
       <h1>Zap</h1>
       <p className="sub">
         Deposit one asset. Sarf splits it into an X Layer RWA incentive pool, watches

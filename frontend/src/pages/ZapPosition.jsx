@@ -148,7 +148,7 @@ export default function ZapPosition() {
 
   return (
     <section className="zap">
-      <div className="eyebrow"><Link to="/zap">Zap</Link> · {pool.pair} · Uniswap V2 on X Layer</div>
+      <div className="eyebrow tick"><Link to="/zap">Zap</Link> · {pool.pair} · Uniswap V2 on X Layer</div>
       <h1 style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         {pool.pair}
         <span className={`chip${pending ? ' accent' : ''}`}>{v.state.replace('_', ' ')}</span>
@@ -268,19 +268,26 @@ export default function ZapPosition() {
 
       <div className="section-label" style={{ marginTop: 32 }}>History</div>
       <ol className="zap-history">
-        {[...v.history].reverse().map((e, i) => (
-          <li key={i}>
-            <span className="muted small">{when(e.at)}</span>
-            <b>{EVENT_LABELS[e.kind] || e.kind}</b>
-            <span className="small">
-              {e.step && <>{e.step.replace(/_/g, ' ')} </>}
-              {e.tx_hash && <a href={txUrl(e.tx_hash)} target="_blank" rel="noreferrer">tx ↗</a>}
-              {e.il_bps != null && <> IL {pctBps(e.il_bps)}</>}
-              {e.il_bps_at_exit != null && <> IL at exit {pctBps(e.il_bps_at_exit)} · entry {Number(e.p_initial).toFixed(2)} → exit {Number(e.p_at_exit).toFixed(2)} · {e.parked}</>}
-              {e.deposited && <> {e.deposited}</>}
-            </span>
-          </li>
-        ))}
+        {[...v.history].reverse().map((e, i) => {
+          const step = e.kind === 'step_confirmed';
+          const label = step
+            ? e.step.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
+            : (EVENT_LABELS[e.kind] || e.kind);
+          return (
+            <li key={i} className={step ? 'is-step' : 'is-event'}>
+              <span className="when">{when(e.at)}</span>
+              <span className="what">
+                <b>{step ? '\u2713 ' : ''}{label}</b>
+                <span className="muted">
+                  {e.tx_hash && <a href={txUrl(e.tx_hash)} target="_blank" rel="noreferrer">tx ↗</a>}
+                  {e.il_bps != null && <> IL {pctBps(e.il_bps)}</>}
+                  {e.il_bps_at_exit != null && <> IL at exit {pctBps(e.il_bps_at_exit)} · entry {Number(e.p_initial).toFixed(2)} → exit {Number(e.p_at_exit).toFixed(2)} · {e.parked}</>}
+                  {e.deposited && <> {e.deposited}</>}
+                </span>
+              </span>
+            </li>
+          );
+        })}
       </ol>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 28 }}>

@@ -150,6 +150,9 @@ export const api = {
 
   // Single-asset zap. The same endpoints behind the MCP zap tools, so the page
   // and the chat never compute a split or an IL figure differently.
+  // Sparklines, 24h change and 24h volume for the market board. Display only.
+  overview: (symbols) =>
+    req(`/api/rwa/overview?symbols=${encodeURIComponent(symbols.join(','))}`),
   zapPools: () => req('/api/zap/pools'),
   zapPosition: (id) => req(`/api/zap/position/${encodeURIComponent(id)}`),
   zapMine: () => req('/api/zap/positions'),

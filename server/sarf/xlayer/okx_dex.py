@@ -285,6 +285,41 @@ class OkxDexClient:
             fetched_at=time.time(),
         )
 
+    async def candles(self, address: str, *, bar: str = "1H", limit: int = 24) -> list[dict[str, float]]:
+        """Recent OHLC candles for a token on X Layer, oldest first.
+
+        Display only: sparklines and a 24h change on the market pages. Nothing
+        sizes an order or checks a cap from these. The HTTP API answers rows as
+        [ts, o, h, l, c, vol, volUsd, confirm]; the CLI answers objects. Both
+        come back in the same shape.
+        """
+        t = self.transport
+        if t == "none":
+            raise DexError("no market data backend configured")
+        limit = max(1, min(int(limit), 299))
+        if t == "http":
+            raw = await self._http("/api/v6/dex/market/candles", {
+                "chainIndex": CHAIN_ID, "tokenContractAddress": address,
+                "bar": bar, "limit": limit,
+            })
+        else:
+            raw = await self._cli(["market", "kline", "--chain", str(CHAIN_ID),
+                                   "--address", address, "--bar", bar, "--limit", str(limit)])
+        out = []
+        for row in raw or []:
+            try:
+                if isinstance(row, dict):
+                    ts, o, h, l_, c, vu = (row["ts"], row["o"], row["h"], row["l"], row["c"],
+                                           row.get("volUsd", 0))
+                else:
+                    ts, o, h, l_, c, _, vu = row[:7]
+                out.append({"ts": int(ts) / 1000, "o": float(o), "h": float(h), "l": float(l_),
+                            "c": float(c), "vol_usd": float(vu or 0)})
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+        out.sort(key=lambda r: r["ts"])
+        return out
+
     def supports_fee(self) -> bool:
         """Only the HTTP transport can attach referral fee parameters.
 

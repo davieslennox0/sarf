@@ -1470,3 +1470,32 @@ def test_base_gas_falls_back_to_the_xlayer_relayer_when_unset(monkeypatch):
     monkeypatch.setattr(d, "settings", Settings(), raising=False)
     s = Settings()
     assert not (s.base_relayer_private_key or s.relayer_private_key)
+
+
+# ----------------------------------------------------------- market overview
+
+def test_candles_normalises_http_rows_and_cli_objects(monkeypatch):
+    import asyncio
+    from sarf.xlayer import okx_dex
+
+    c = okx_dex.OkxDexClient()
+    rows = [["1789848000000", "10", "11", "9", "10.5", "1", "105", "0"],
+            ["1789844400000", "9", "10", "8", "10", "2", "20", "1"]]
+    monkeypatch.setattr(okx_dex.OkxDexClient, "transport", property(lambda self: "http"))
+
+    async def http(self, path, params):
+        assert path == "/api/v6/dex/market/candles" and params["chainIndex"] == 196
+        return rows
+    monkeypatch.setattr(okx_dex.OkxDexClient, "_http", http)
+    out = asyncio.run(c.candles("0xabc", limit=2))
+    assert [r["c"] for r in out] == [10.0, 10.5]  # oldest first
+    assert out[-1]["vol_usd"] == 105.0
+
+    monkeypatch.setattr(okx_dex.OkxDexClient, "transport", property(lambda self: "cli"))
+
+    async def cli(self, args):
+        return [{"ts": "1789848000000", "o": "1", "h": "2", "l": "1", "c": "2", "volUsd": "7"},
+                {"ts": "bad"}]
+    monkeypatch.setattr(okx_dex.OkxDexClient, "_cli", cli)
+    out = asyncio.run(c.candles("0xabc"))
+    assert len(out) == 1 and out[0]["c"] == 2.0  # malformed rows dropped, not zeroed
