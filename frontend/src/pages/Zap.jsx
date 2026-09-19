@@ -72,15 +72,80 @@ export default function Zap() {
       <div className="eyebrow tick">X Layer · RWA liquidity</div>
       <h1>Zap</h1>
       <p className="sub">
-        Deposit one asset. Sarf splits it into an X Layer RWA incentive pool, watches
-        impermanent loss against your entry price, moves you to Aave when it crosses
-        your line, and brings you back when the price does. Every move is signed in
-        your own wallet.
+        Deposit one asset into an X Layer RWA incentive pool, with a line for impermanent
+        loss. Past it, Sarf moves you to Aave to earn yield; when the price recovers, it
+        brings you back. Do it here, or ask Sarf in Claude or ChatGPT: both work on the
+        same position.
       </p>
+
+      <div className="section-label">How zap works</div>
+      <div className="steps grid g4">
+        <div className="step">
+          <span className="step-num">1</span>
+          <div className="step-body">
+            <h3>Deposit one asset</h3>
+            <p>
+              Bring SPCXx or NVDAx. Sarf wraps it into the token the incentive pool lists,
+              then swaps the right share into the pool's other token through that same pool,
+              so both sides match and nothing is left over.
+            </p>
+          </div>
+        </div>
+        <div className="step">
+          <span className="step-num">2</span>
+          <div className="step-body">
+            <h3>Earn in the pool</h3>
+            <p>
+              Your liquidity earns Uniswap trading fees, and X Layer pays incentive rewards to
+              LPs in these pools during the program window.
+            </p>
+          </div>
+        </div>
+        <div className="step">
+          <span className="step-num">3</span>
+          <div className="step-body">
+            <h3>Exit when IL crosses your line</h3>
+            <p>
+              Sarf checks impermanent loss against your entry price about once a minute. Past
+              your exit line it lines up the way out: withdraw, convert to USDT, supply to Aave.
+            </p>
+          </div>
+        </div>
+        <div className="step">
+          <span className="step-num">4</span>
+          <div className="step-body">
+            <h3>Re-enter when the price recovers</h3>
+            <p>
+              Parked in Aave you earn supply yield. When IL falls back under your re-entry line,
+              Sarf lines up the way back in and resets your entry price.
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="grid g2" style={{ marginTop: 14 }}>
+        <div className="card">
+          <h3>What impermanent loss is</h3>
+          <p>
+            When one side of a pool moves against the other, the pool rebalances you into more
+            of the side that fell. IL is how much less that leaves you with than simply holding
+            the two amounts: 0 at your entry price, about 0.6% if the price moves 25%, and 5.7%
+            if it doubles or halves.
+          </p>
+        </div>
+        <div className="card">
+          <h3>What you sign, and what it costs</h3>
+          <p>
+            Sarf never holds your funds: every step, in and out, is signed in your own wallet,
+            on this page or from the link Sarf gives you in chat. Each pool's paired token
+            charges a transfer tax, so an exit and a re-entry cost a few percent. Each pool
+            shows its cost below; set your exit line above it.
+          </p>
+        </div>
+      </div>
 
       {err && <p className="error" style={{ marginTop: 18 }}>{err}</p>}
 
-      <div className="section-label" style={{ marginTop: 36 }}>Incentivised pools</div>
+      <div className="section-label" style={{ marginTop: 44 }}>Incentivised pools</div>
       {!pools && !err && <p className="muted small">Reading X Layer…</p>}
       {pools && (
         <div className="grid g2 zap-pools">

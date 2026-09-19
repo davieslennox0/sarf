@@ -782,3 +782,69 @@ h1 .chip { font-size: 13px; padding: 6px 12px; letter-spacing: 0; vertical-align
   .toolbar .seg button { flex: none; }
   .search { min-width: 0; width: 100%; }
 }
+
+/* ---- swap ------------------------------------------------------------------------------ */
+.swap-page .sub { margin-bottom: 8px; }
+.swap-card {
+  max-width: 520px; margin: 28px 0 0; padding: 14px;
+  background: var(--s1); border: 1px solid var(--line); border-radius: var(--r-lg);
+}
+.swap-leg { background: var(--s2); border-radius: 18px; padding: 14px 16px; }
+.swap-leg-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.swap-leg-top .linkish { font-size: 13px; color: var(--paper-dim); }
+.swap-leg-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.swap-amount {
+  flex: 1; min-width: 0; background: none; border: 0; outline: none; padding: 0;
+  font-family: var(--sans); font-size: 32px; font-weight: 600; letter-spacing: -.02em;
+  color: var(--accent); font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.swap-amount::placeholder { color: var(--paper-dim); opacity: .5; }
+.swap-amount.out { color: var(--paper); }
+.swap-flip {
+  display: flex; margin: -12px auto; position: relative; z-index: 2;
+  width: 40px; height: 40px; padding: 0; border-radius: 12px; font-size: 14px;
+  background: var(--panel-2); border: 4px solid #0e0e10; color: var(--paper);
+}
+.swap-flip:hover:not(:disabled) { background: var(--s3); }
+.swap-details { margin: 14px 4px 0; display: flex; flex-direction: column; gap: 10px; }
+.swap-details > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 14px; }
+.swap-details span { color: var(--paper-dim); }
+.swap-details b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.small-seg { padding: 3px; }
+.small-seg button { padding: 5px 11px; font-size: 13px; }
+
+.picker { position: relative; flex: none; }
+.picker-btn { gap: 8px; padding: 7px 12px 7px 8px; background: var(--s3); font-weight: 600; }
+.picker-btn .caret { font-size: 10px; color: var(--paper-dim); }
+.picker-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; width: 320px; max-width: 86vw;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+.picker-list { display: flex; flex-direction: column; max-height: 340px; overflow-y: auto; }
+.picker-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; justify-content: flex-start;
+  padding: 9px 10px; background: none; border-radius: var(--r-sm); text-align: left; font-weight: 400;
+}
+.picker-item:hover:not(:disabled) { background: var(--s2); }
+@media (max-width: 560px) { .swap-amount { font-size: 26px; } }
+
+/* ---- two surfaces ------------------------------------------------------------------------ */
+.surfaces { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.surface { padding: 24px; border-radius: var(--r-lg); background: var(--s1); border: 1px solid var(--line); }
+.surface h3 { font-size: 18px; margin-bottom: 6px; }
+.surface > p { font-size: 14px; color: var(--paper-dim); line-height: 1.6; }
+.surface ul { list-style: none; margin: 14px 0 18px; display: flex; flex-direction: column; gap: 8px; }
+.surface li { font-size: 14px; color: var(--paper); display: flex; gap: 10px; align-items: baseline; }
+.surface li::before { content: '✓'; color: var(--green); font-size: 13px; }
+.surface li em { font-style: normal; color: var(--paper-dim); }
+@media (max-width: 860px) { .surfaces { grid-template-columns: 1fr; } }
+
+.parity { width: 100%; }
+.parity td:first-child { color: var(--paper); font-weight: 500; }
+.parity td { color: var(--paper-dim); }
+.parity td b { color: var(--paper); font-weight: 500; }
+
+.trade-menu .trade-here { background: var(--accent); color: #0A0A0B; font-weight: 600; text-align: center; margin-bottom: 6px; }
+.trade-menu .trade-here:hover { background: #fff; }

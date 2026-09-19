@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import Admin from './pages/Admin.jsx';
 import Sign from './pages/Sign.jsx';
 import Zap from './pages/Zap.jsx';
+import Swap from './pages/Swap.jsx';
 import ZapPosition from './pages/ZapPosition.jsx';
 import Authorize from './pages/Authorize.jsx';
 import { api, clearSession, getSession, registerPasskey } from './api.js';
@@ -469,6 +470,7 @@ export default function App() {
               dashboard is what brings the signed-in header back inside the page
               width instead of overflowing it. */}
           <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
+          <Link className={pathname === '/swap' ? 'on' : ''} to="/swap">Swap</Link>
           <Link className={pathname.startsWith('/zap') ? 'on' : ''} to="/zap">Zap</Link>
           {signedIn ? (
             <>
@@ -514,6 +516,7 @@ export default function App() {
           <Route path="/markets" element={<Markets />} />
           {/* Public on purpose: a position page is shared and bookmarked, and
               acting on it asks for the owner's wallet at the moment of acting. */}
+          <Route path="/swap" element={<Swap />} />
           <Route path="/zap" element={<Zap />} />
           <Route path="/zap/:id" element={<ZapPosition />} />
           <Route path="/how" element={<How />} />

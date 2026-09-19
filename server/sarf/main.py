@@ -40,6 +40,8 @@ from .xlayer.okx_dex import dex
 from .xlayer.registry import registry as load_registry
 from .xlayer.zap import ZapEngine
 from .xlayer.zap_api import build_zap_api
+from .xlayer.swap_api import build_swap_api
+from .xlayer.account_api import build_account_api
 
 # Host-header validation for the MCP transport (DNS-rebinding protection).
 # Loopback always allowed for dev; public hostnames come from
@@ -59,7 +61,12 @@ mcp = FastMCP(
         "Sarf — non-custodial tokenized-stock (xStocks) assistant on X Layer "
         "(EVM chain 196). All tools act on the wallet-verified account bound "
         "to this connector's session token — there is no way (and no need) to "
-        "pass an address. If a tool returns an authentication error the "
+        "pass an address. Everything these tools do is also on the website "
+        f"({settings.public_url or 'the Sarf site'}): /swap to trade, /zap for "
+        "IL-protected liquidity, /portfolio for holdings, xPoints, sends and "
+        "stop-loss levels. If the user would rather click than chat, point "
+        "them there; both work on the same account and the same orders. "
+        "If a tool returns an authentication error the "
         "session expired: the user reconnects this connector (Claude will "
         "prompt to re-authenticate) or signs in on the Sarf dashboard. "
         "IMPORTANT — identifiers: on-chain symbols carry an x SUFFIX (AAPLx, "
@@ -401,6 +408,8 @@ async def healthz():
 app.include_router(build_xlayer_api(db, dex, rwa_registry, provider))
 app.include_router(oauth.build_oauth(db))
 app.include_router(build_zap_api(db, zap_engine))
+app.include_router(build_swap_api(db, dex, rwa_registry, provider))
+app.include_router(build_account_api(db, rwa_registry, provider))
 # Operator console. Registered unconditionally: with SARF_ADMIN_EMAILS unset
 # every route 403s, which is the same outcome as not mounting it and one
 # fewer way for the two to disagree. /whoami is what the frontend asks before
@@ -438,7 +447,7 @@ _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
     "/settings", "/activity", "/send", "/sign", "/approve", "/dashboard",
-    "/deposit", "/admin", "/zap",
+    "/deposit", "/admin", "/zap", "/swap",
 ]
 
 # Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with

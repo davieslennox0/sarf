@@ -2235,6 +2235,12 @@ class XLayerRwaProvider:
         # one, instead of a second implementation that could drift from it.
         self._place_order = place_order
         self._execute_order = execute_order
+        # The website's swap form (xlayer/swap_api.py) builds through this same
+        # function, so a swap built on the page and one built in chat pass the
+        # same checks and produce the same order.
+        self._swap = swap
+        self._set_risk_params = set_risk_params
+        self._get_xpoints = get_xpoints
 
         # Plain helpers, not tools. Their capability is still reachable — it
         # moved into get_status — but it no longer costs a slot in the client's

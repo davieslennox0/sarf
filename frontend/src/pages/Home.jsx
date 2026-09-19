@@ -154,13 +154,13 @@ export default function Home() {
         <div className="eyebrow tick">Live on X Layer · {assets.length || 43} tokenized stocks and ETFs</div>
         <h1>Sarf, your AI-RWA Portfolio <Rotator words={ROLES} /></h1>
         <p className="sub">
-          Ask for a position, a price, or a read on what you hold, in Claude or
-          ChatGPT. Sarf prices and builds every trade; you sign it in your own
-          wallet. The server holds no keys and cannot move your funds.
+          Trade tokenized stocks on X Layer two ways: ask in Claude or ChatGPT, or do it
+          right here. Sarf prices and builds every trade; you sign it in your own wallet.
+          The server holds no keys and cannot move your funds.
         </p>
         <div className="hero-cta">
           <Link className="cta-btn" to="/how">Connect to Claude or ChatGPT</Link>
-          <Link className="cta-btn ghost" to="/markets">Browse markets</Link>
+          <Link className="cta-btn ghost" to="/swap">Trade on the website</Link>
         </div>
         <div className="stats">
           <div><b>{assets.length || '—'}</b><span>assets</span></div>
@@ -205,20 +205,46 @@ export default function Home() {
         </>
       )}
 
+      <div className="section-label">Two ways to use Sarf</div>
+      <div className="surfaces">
+        <div className="surface">
+          <h3>In Claude or ChatGPT</h3>
+          <p>Ask in plain words. Sarf quotes it live, builds it, and hands you a link to sign.</p>
+          <ul>
+            <li>"buy $50 of NVDAx"</li>
+            <li>"zap 0.5 SPCXx, exit at 8% IL"</li>
+            <li>"split $100 across SPYx and QQQx"</li>
+            <li>"how is my portfolio doing?"</li>
+          </ul>
+          <Link className="btn primary" to="/how">Connect in a minute</Link>
+        </div>
+        <div className="surface">
+          <h3>On the website</h3>
+          <p>No chat needed: the same prices, checks and fee, signed in your own wallet.</p>
+          <ul>
+            <li>Swap <em>· any stock against USDT, USDC, OKB or another stock</em></li>
+            <li>Zap <em>· liquidity with an impermanent-loss line</em></li>
+            <li>Portfolio <em>· holdings, xPoints, send, stop-loss levels</em></li>
+            <li>Dashboard <em>· add money by card, session key</em></li>
+          </ul>
+          <Link className="btn primary" to="/swap">Open Swap</Link>
+        </div>
+      </div>
+
       <div className="section-label">How it works</div>
       <div className="steps grid g3">
         <div className="step">
           <span className="step-num">1</span>
           <div className="step-body">
-            <h3>Connect once</h3>
-            <p>Add Sarf as a connector in Claude or ChatGPT and sign in with your wallet.</p>
+            <h3>Sign in with your wallet</h3>
+            <p>Here, or once in Claude or ChatGPT by adding Sarf as a connector.</p>
           </div>
         </div>
         <div className="step">
           <span className="step-num">2</span>
           <div className="step-body">
-            <h3>Ask in plain words</h3>
-            <p>"Buy $50 of NVDAx", "how is my portfolio doing", "zap my SPCXx". Sarf quotes it live.</p>
+            <h3>Pick a trade</h3>
+            <p>On the Swap or Zap page, or in words: "buy $50 of NVDAx". Sarf quotes it live.</p>
           </div>
         </div>
         <div className="step">

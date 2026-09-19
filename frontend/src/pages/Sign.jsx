@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, ensureSession, verifyPasskey } from '../api.js';
 import { connect, currentAccount, sendTransaction, short, txUrl } from '../wallet.js';
 
@@ -87,9 +87,13 @@ export default function Sign() {
           <a href={txUrl(result.hash)} target="_blank" rel="noreferrer">view on explorer ↗</a>
         </p>
         <p className="muted">
-          Settlement is final once mined. You can close this tab and return to the chat —
-          ask for <i>settlement status</i> to confirm it there.
+          Settlement is final once mined. If this came from a chat, go back and ask for
+          <i> settlement status</i> to confirm it there.
         </p>
+        <div className="cta">
+          <Link className="btn primary" to="/portfolio">View portfolio</Link>
+          <Link className="btn" to="/swap">Another swap</Link>
+        </div>
       </section>
     );
   }

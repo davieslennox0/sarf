@@ -153,6 +153,16 @@ export const api = {
   // Sparklines, 24h change and 24h volume for the market board. Display only.
   overview: (symbols) =>
     req(`/api/rwa/overview?symbols=${encodeURIComponent(symbols.join(','))}`),
+  // Swap on the website. Built by the same code as the chat's swap tool; the
+  // result is an unsigned order the /sign page signs in the wallet.
+  xpoints: () => req('/api/me/xpoints'),
+  levels: () => req('/api/me/levels'),
+  setLevels: (body) => req('/api/me/levels', { method: 'POST', body: JSON.stringify(body) }),
+  swapTokens: () => req('/api/swap/tokens'),
+  swapQuote: (from, to, amount) =>
+    req(`/api/swap/quote?from_symbol=${encodeURIComponent(from)}&to_symbol=${encodeURIComponent(to)}&amount=${encodeURIComponent(amount)}`),
+  swapBuild: (body) => req('/api/swap/build', { method: 'POST', body: JSON.stringify(body) }),
+
   zapPools: () => req('/api/zap/pools'),
   zapPosition: (id) => req(`/api/zap/position/${encodeURIComponent(id)}`),
   zapMine: () => req('/api/zap/positions'),

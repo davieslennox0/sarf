@@ -138,7 +138,11 @@ function TradeButton({ side, symbol }) {
       </button>
       {open && (
         <span className="trade-menu" role="menu">
-          <span className="muted small">Opens your chat with the order written. You sign it in your wallet.</span>
+          <Link className="trade-here" to={side === 'buy' ? `/swap?from=USDT&to=${symbol}` : `/swap?from=${symbol}&to=USDT`}
+                onClick={() => setOpen(false)}>
+            {side === 'buy' ? 'Buy' : 'Sell'} {symbol} here →
+          </Link>
+          <span className="muted small">or in your chat, with the order written:</span>
           <a href={l.claude} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>Open in Claude ↗</a>
           <a href={l.chatgpt} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}>Open in ChatGPT ↗</a>
         </span>

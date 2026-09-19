@@ -114,27 +114,29 @@ export const STEPS = [
     id: 'step-passkey',
     num: '03',
     title: 'Add a passkey',
-    hint: 'Face ID, Touch ID or a device PIN — approves every trade',
+    hint: 'Face ID, Touch ID or a device PIN, set the first time you sign in',
     body: (
       <p>
-        One touch of Face ID, Touch ID, or your device PIN. It is what approves
-        every transaction from then on — nothing gets signed without it, and it
-        never leaves your device.
+        One touch of Face ID, Touch ID or your device PIN, registered the first time you
+        sign in. It confirms it is really you when a small trade settles in chat, and it is
+        asked again for every transfer to another address. It never leaves your device and
+        it is not your wallet key.
       </p>
     ),
   },
   {
     id: 'step-limits',
     num: '04',
-    title: 'Choose how it asks',
-    hint: 'Always Ask, or autonomous up to a limit you set',
+    title: 'Optional: trade in chat without a wallet prompt',
+    hint: 'A capped, revocable session key',
     body: (
       <p>
-        <b>Always Ask</b> — every trade needs your passkey, whatever the size.
-        <br />
-        <b>Autonomous</b> — trades up to a limit you set go through without a
-        prompt; anything above it still asks. Changing that limit needs your
-        passkey again, so the agent can never raise it on its own.
+        From <b>Dashboard → Trading in chat</b>, you can give Sarf a session key with a
+        per-trade cap, a daily cap and an expiry. Trades up to $250 that fit those caps then
+        settle right in the chat. Anything larger, anything paid in OKB, and every transfer
+        still comes to your wallet to sign. Revoke it from the dashboard at any time; it also
+        ends on its own when it expires. Skip this step and every trade is signed in your
+        wallet, which works just as well.
       </p>
     ),
   },
@@ -142,11 +144,11 @@ export const STEPS = [
     id: 'step-ask',
     num: '05',
     title: 'Start asking',
-    hint: '"what can I buy?", "price of NVDAx", "how am I balanced?"',
+    hint: '"buy $50 of NVDAx", "how is my portfolio doing?"',
     body: (
       <p>
-        Try "what can I buy?", "price of NVDAx", or "how is my portfolio
-        balanced?" right in the chat.
+        Try "what can I buy?", "buy $50 of NVDAx", "how is my portfolio doing?" or
+        "zap 0.5 SPCXx, exit at 8% IL" right in the chat.
       </p>
     ),
   },

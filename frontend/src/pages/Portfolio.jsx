@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, ensureSession, getSession } from '../api.js';
 import { currentAccount, short } from '../wallet.js';
 import { markBg } from './Home.jsx';
+import { LevelsPanel, SendPanel, useXPoints } from '../account.jsx';
 
 /**
  * Portfolio: what is held, and what it is worth.
@@ -29,6 +30,8 @@ export default function Portfolio() {
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const mine = !queried && Boolean(getSession());
+  const xp = useXPoints();
 
   const loadMine = async () => {
     setErr(null); setBusy(true);
@@ -120,6 +123,7 @@ export default function Portfolio() {
             {/* "positions" read as the whole ledger; it is only the equity
                 sleeve, which is now one part of a list that also holds cash. */}
             <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>tokenized stocks</span></div>
+            {mine && xp && <div><b>{Number(xp.xpoints).toLocaleString()}</b><span>xPoints</span></div>}
             {/* The USDT and OKB tiles that sat here are gone. They are rows in
                 the ledger below now, with a value and a quantity like every
                 other holding — a tile repeating the same balance in a second
@@ -188,6 +192,20 @@ export default function Portfolio() {
                   {showAll ? 'Show fewer' : `Show all ${sorted.length} holdings →`}
                 </button>
               )}
+            </>
+          )}
+
+          {mine && (
+            <>
+              <div className="cta">
+                <Link className="btn primary" to="/swap">Swap</Link>
+                <Link className="btn" to="/zap">Zap</Link>
+                <Link className="btn" to="/dashboard/deposit">Add money</Link>
+              </div>
+              <div className="grid g2" style={{ marginTop: 18 }}>
+                <SendPanel holdings={sorted.filter((h) => Number(h.quantity) > 0)} />
+                <LevelsPanel symbols={positions.map((p) => p.symbol)} />
+              </div>
             </>
           )}
 
