@@ -180,6 +180,10 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             "address": addr,
             "registered": bool(creds),
             "credential_count": len(creds),
+            # Passkeys made on another domain (sarf.managerx.xyz before the
+            # move). They cannot be used here, so the site asks for a new one
+            # and says why.
+            "other_domains": db.legacy_passkey_domains(addr),
             "stepup_threshold_usd": settings.passkey_stepup_usd,
             "required": settings.passkey_required,
             "last_verified_at": int(last) if last else None,
@@ -459,6 +463,9 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             "count": len(rows),
             "connections": [
                 {
+                    # Revoke by client when there is one (it also ends the
+                    # client's refresh tokens), else by this session's handle.
+                    "id": row["client_id"] or f"s:{row['handle']}",
                     "name": row["client_name"] or "Unnamed connector",
                     # Sessions minted before the client was recorded, and
                     # legacy ?key= connectors, have no name. Said plainly
@@ -482,6 +489,29 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
     # signs them. Every state-changing step here produces an UNSIGNED payload —
     # there is deliberately no endpoint that installs or removes a grant on the
     # user's behalf, because that is the one thing that must stay theirs.
+
+    @r.post("/connections/revoke")
+    async def revoke_connection(body: dict[str, Any],
+                                authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Disconnect one agent ({"id": ...} from /connections), or every agent
+        but this browser ({"all": true}). Ends sessions and refresh tokens
+        only: it moves nothing and does not touch the on-chain session key,
+        which is revoked from the wallet."""
+        addr = _session_addr(authorization)
+        token = authorization[7:].strip()
+        token_id = token.split("_", 2)[-1].split(".", 1)[0]
+        if body.get("all"):
+            return {"revoked": db.revoke_agents_except(addr, token_id)}
+        ident = str(body.get("id") or "")
+        if not ident:
+            raise HTTPException(400, "which connection? pass its id, or all: true")
+        if ident.startswith("s:"):
+            n = db.revoke_agent(addr, handle=ident[2:])
+        else:
+            n = db.revoke_agent(addr, client_id=ident)
+        if not n:
+            raise HTTPException(404, "no live connection with that id on this account")
+        return {"revoked": n}
 
     @r.get("/grant")
     async def grant_status(authorization: str | None = Header(default=None)) -> dict[str, Any]:

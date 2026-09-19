@@ -92,6 +92,9 @@ def _rp_id() -> str:
     return host.split(":", 1)[0]
 
 
+current_rp_id = _rp_id
+
+
 def _expected_origins() -> list[str]:
     origins = [settings.public_url] if settings.public_url else []
     origins += ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8760"]

@@ -29,7 +29,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import admin, auth, oauth
+from . import admin, auth, oauth, passkey
 from .config import settings
 from .db import Database
 from .providers.xlayer_rwa import XLayerRwaProvider
@@ -154,6 +154,8 @@ mcp = FastMCP(
 )
 
 db = Database(settings.db_path)
+# Passkeys count only on the domain the browser will offer them for.
+db.passkey_rp_id = passkey.current_rp_id()
 rwa_registry = load_registry()
 provider = XLayerRwaProvider(db, dex, rwa_registry)
 provider.register_tools(mcp)

@@ -92,3 +92,45 @@ def test_levels_and_xpoints(env):
     lv = env.c.get("/api/me/levels", headers=env.h).json()
     assert lv["levels"][0]["symbol"] == "NVDAx" and lv["levels"][0]["price"] == 100.0
     assert "auto_execute" in lv
+
+
+def test_revoke_one_agent_and_all_agents_but_this_browser():
+    from sarf.xlayer.api import build_xlayer_api
+    db = Database(":memory:")
+    app = FastAPI()
+    app.include_router(build_xlayer_api(db, SimpleNamespace(transport="none"), registry(), None))
+    c = TestClient(app)
+    web, _ = auth.mint_session(db, ADDR, client_name="Sarf website")
+    claude, _ = auth.mint_session(db, ADDR, client_name="Claude", client_id="cl_claude")
+    gpt, _ = auth.mint_session(db, ADDR, client_name="ChatGPT", client_id="cl_gpt")
+    db._conn.execute(
+        "INSERT INTO oauth_refresh (token_id,family_id,address,client_id,created_at,expires_at) "
+        "VALUES ('r1','f1',?,'cl_claude',0,9e12)", (ADDR,))
+    H = {"authorization": f"Bearer {web}"}
+    rows = c.get("/api/connections", headers=H).json()["connections"]
+    assert {r["id"] for r in rows} >= {"cl_claude", "cl_gpt"}
+    assert c.post("/api/connections/revoke", json={"id": "cl_claude"}, headers=H).json() == {"revoked": 1}
+    assert auth.resolve_session(db, claude) is None
+    assert db._conn.execute("SELECT revoked_at FROM oauth_refresh WHERE token_id='r1'").fetchone()[0]
+    assert auth.resolve_session(db, gpt) == ADDR
+    assert c.post("/api/connections/revoke", json={"id": "cl_nope"}, headers=H).status_code == 404
+    assert c.post("/api/connections/revoke", json={"all": True}, headers=H).json() == {"revoked": 1}
+    assert auth.resolve_session(db, gpt) is None
+    assert auth.resolve_session(db, web) == ADDR  # the browser doing it stays signed in
+
+
+def test_passkeys_count_only_on_the_domain_they_were_made_for():
+    """After the move to getsarf.xyz a passkey made on sarf.managerx.xyz cannot
+    be offered by the browser, so it must not count as registered, or the site
+    never asks for a new one and every transaction fails."""
+    db = Database(":memory:")
+    db._conn.execute(
+        "INSERT INTO passkeys (credential_id,address,public_key,sign_count,created_at,rp_id) "
+        "VALUES ('old',?,x'00',0,1786000000,'sarf.managerx.xyz')", (ADDR,))
+    db.passkey_rp_id = "getsarf.xyz"
+    assert db.passkeys_for_address(ADDR) == []
+    assert db.legacy_passkey_domains(ADDR) == ["sarf.managerx.xyz"]
+    db.put_passkey(credential_id="new", address=ADDR, public_key=b"\x01", sign_count=0)
+    assert [c["credential_id"] for c in db.passkeys_for_address(ADDR)] == ["new"]
+    db.passkey_rp_id = None  # unset: no filtering, as before
+    assert len(db.passkeys_for_address(ADDR)) == 2

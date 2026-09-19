@@ -8,6 +8,7 @@ get_portfolio and lets the audit trail name things).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -295,6 +296,16 @@ _MIGRATIONS = [
     # orders.origin / agent_grant_id columns such a database gained are
     # simply no longer read.
     "DROP TABLE IF EXISTS agent_grant_usage",
+    # Passkeys belong to the site address they were created on (the WebAuthn
+    # relying-party id), and a browser will not offer one to any other. Sarf
+    # moved from sarf.managerx.xyz to getsarf.xyz on 2026-09-18 20:54:45 UTC
+    # (epoch 1789764885), so every passkey is tagged with the domain it can be
+    # used on, and only the current domain's count as "registered". Older
+    # rows are kept, not deleted: they are the audit trail, and they would
+    # work again if the site ever served that domain.
+    "ALTER TABLE passkeys ADD COLUMN rp_id TEXT",
+    "UPDATE passkeys SET rp_id='sarf.managerx.xyz' WHERE rp_id IS NULL AND created_at < 1789764885",
+    "UPDATE passkeys SET rp_id='getsarf.xyz' WHERE rp_id IS NULL AND created_at >= 1789764885",
     "DROP TABLE IF EXISTS agent_grants",
     # Stop-loss/take-profit auto-fire bookkeeping: the last time this level
     # fired (or attempted to) and what happened, so the watcher never
@@ -646,6 +657,9 @@ class Database:
         ).fetchall()
         return [
             {
+                # An opaque handle for revoking this one row: a hash of the id,
+                # never the id itself, which is half of the credential.
+                "handle": hashlib.sha256(r[0].encode()).hexdigest()[:20],
                 # The token id is a credential half — never returned. The row is
                 # identified by when it was created, which is all the UI needs.
                 "created_at": r[1],
@@ -764,6 +778,49 @@ class Database:
             )
             return cur.rowcount
 
+    def revoke_agent(self, address: str, *, client_id: str | None = None,
+                     handle: str | None = None, reason: str = "user_revoked_agent") -> int:
+        """Disconnect one agent. By client_id: every session that client holds
+        for this address AND its refresh tokens, or it would mint a new access
+        token on its next call. By handle: one session (legacy ?key= tokens,
+        which have no client). Returns how many sessions were ended."""
+        now = time.time()
+        with self._lock, self._conn:
+            if client_id:
+                n = self._conn.execute(
+                    "UPDATE sessions SET revoked_at=?, revocation_reason=? WHERE address=? "
+                    "AND client_id=? AND revoked_at IS NULL", (now, reason, address.lower(), client_id),
+                ).rowcount
+                self._conn.execute(
+                    "UPDATE oauth_refresh SET revoked_at=?, revocation_reason=? WHERE address=? "
+                    "AND client_id=? AND revoked_at IS NULL", (now, reason, address.lower(), client_id))
+                return n
+            rows = self._conn.execute(
+                "SELECT token FROM sessions WHERE address=? AND revoked_at IS NULL",
+                (address.lower(),)).fetchall()
+            n = 0
+            for (tok,) in rows:
+                if hashlib.sha256(tok.encode()).hexdigest()[:20] == handle:
+                    n += self._conn.execute(
+                        "UPDATE sessions SET revoked_at=?, revocation_reason=? WHERE token=?",
+                        (now, reason, tok)).rowcount
+            return n
+
+    def revoke_agents_except(self, address: str, keep_token_id: str,
+                             reason: str = "user_revoked_all_agents") -> int:
+        """Disconnect every agent but keep the caller's own browser session:
+        all other sessions and every refresh token for the address."""
+        now = time.time()
+        with self._lock, self._conn:
+            n = self._conn.execute(
+                "UPDATE sessions SET revoked_at=?, revocation_reason=? WHERE address=? "
+                "AND token<>? AND revoked_at IS NULL AND expires_at > ?",
+                (now, reason, address.lower(), keep_token_id, now)).rowcount
+            self._conn.execute(
+                "UPDATE oauth_refresh SET revoked_at=?, revocation_reason=? WHERE address=? "
+                "AND revoked_at IS NULL", (now, reason, address.lower()))
+            return n
+
     def revoke_refresh_for_address(self, address: str, reason: str) -> int:
         """What makes "End session" actually end it: without this, a connector
         holding a refresh token would simply mint itself a new access token and
@@ -821,15 +878,21 @@ class Database:
 
     # ------------------------------------------------------------- passkeys
 
+    # The relying-party id this server runs as (set by main.py from the public
+    # URL). When set, every "which passkeys does this wallet have" question is
+    # answered for this domain only; see the rp_id migration above.
+    passkey_rp_id: str | None = None
+
     def put_passkey(self, *, credential_id: str, address: str,
-                    public_key: bytes, sign_count: int) -> None:
+                    public_key: bytes, sign_count: int, rp_id: str | None = None) -> None:
         with self._lock, self._conn:
             self._conn.execute(
-                """INSERT INTO passkeys (credential_id,address,public_key,sign_count,created_at)
-                   VALUES (?,?,?,?,?)
+                """INSERT INTO passkeys (credential_id,address,public_key,sign_count,created_at,rp_id)
+                   VALUES (?,?,?,?,?,?)
                    ON CONFLICT(credential_id) DO UPDATE SET
                        sign_count=excluded.sign_count""",
-                (credential_id, address.lower(), public_key, sign_count, time.time()),
+                (credential_id, address.lower(), public_key, sign_count, time.time(),
+                 rp_id or self.passkey_rp_id),
             )
 
     def get_passkey(self, credential_id: str) -> dict[str, Any] | None:
@@ -843,12 +906,26 @@ class Database:
                 "sign_count": r[3], "last_used_at": r[4]}
 
     def passkeys_for_address(self, address: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT credential_id,sign_count,created_at,last_used_at "
-            "FROM passkeys WHERE address=? ORDER BY created_at", (address.lower(),),
-        ).fetchall()
+        """Passkeys usable on this site. One made for another domain cannot be
+        offered by the browser here, so it does not count."""
+        sql = "SELECT credential_id,sign_count,created_at,last_used_at FROM passkeys WHERE address=?"
+        args: tuple = (address.lower(),)
+        if self.passkey_rp_id:
+            sql += " AND rp_id=?"
+            args += (self.passkey_rp_id,)
+        rows = self._conn.execute(sql + " ORDER BY created_at", args).fetchall()
         return [{"credential_id": r[0], "sign_count": r[1],
                  "created_at": r[2], "last_used_at": r[3]} for r in rows]
+
+    def legacy_passkey_domains(self, address: str) -> list[str]:
+        """Other domains this wallet has passkeys on, so the site can say why
+        the one you remember making is not being offered here."""
+        if not self.passkey_rp_id:
+            return []
+        rows = self._conn.execute(
+            "SELECT DISTINCT rp_id FROM passkeys WHERE address=? AND rp_id IS NOT NULL AND rp_id<>?",
+            (address.lower(), self.passkey_rp_id)).fetchall()
+        return [r[0] for r in rows]
 
     def touch_passkey(self, credential_id: str, *, sign_count: int, verified_at: float) -> None:
         with self._lock, self._conn:
