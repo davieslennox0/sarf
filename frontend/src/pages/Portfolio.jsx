@@ -111,6 +111,8 @@ export default function Portfolio() {
   // and forth does not refetch it.
   const [activitySeen, setActivitySeen] = useState(tab === 'activity');
   const xp = useXPoints();
+  // Roughly a handful of swaps at X Layer gas prices; below it, warn.
+  const LOW_GAS_OKB = 0.002;
 
   const load = async () => {
     setErr(null); setBusy(true);
@@ -122,6 +124,8 @@ export default function Portfolio() {
   // leaving one) leaves the previous account's holdings on screen, labelled
   // as the new one's, until the fetch returns.
   useEffect(() => { setData(null); if (queried || signedIn) load(); }, [queried, address]);
+
+  const lowGas = data != null && Number(data.gas_balance_okb || 0) < LOW_GAS_OKB;
 
   const setQuery = (patch) => {
     const next = new URLSearchParams(params);
@@ -149,6 +153,21 @@ export default function Portfolio() {
           <div><b>{data.total_value_usd != null ? `$${Number(data.total_value_usd).toLocaleString()}` : '—'}</b><span>total value</span></div>
           <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>tokenized stocks</span></div>
           {mine && xp && <div><b>{Number(xp.xpoints).toLocaleString()}</b><span>xPoints</span></div>}
+        </div>
+      )}
+
+      {/* Gas is the one balance that stops everything else working, and it is
+          not the one anybody watches. A wallet full of stocks and empty of OKB
+          cannot sign a thing. */}
+      {mine && data && lowGas && (
+        <div className="callout warning" style={{ marginTop: 18 }}>
+          <span className="callout-k">Gas</span>
+          <b className="callout-v">{Number(data.gas_balance_okb || 0).toFixed(5)} OKB</b>
+          <span className="callout-s">
+            Every trade is signed from this wallet and pays its own gas. Top up OKB before
+            the next one, or a signature will fail for want of a fraction of a cent.
+            <button className="linkish" onClick={() => setFund(true)}>Fund</button>
+          </span>
         </div>
       )}
 

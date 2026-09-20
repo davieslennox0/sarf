@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, ensureSession, verifyPasskey } from '../api.js';
 import {connect, currentAccount, sendTransaction, txUrl, waitForTx, shortAddr, shortHash} from '../wallet.js';
+import { Fact } from '../zapui.jsx';
 
 /**
  * The order signer. Claude links here (sign_url on every order). The page
@@ -184,12 +185,43 @@ export default function Sign() {
   }
 
   const fee = order.platform_fee;
+  const impact = order.price_impact_percent;
+  const bigImpact = impact != null && Math.abs(impact) > 1;
   return (
     <section className="sign-card">
       <h1>Review &amp; sign</h1>
       <div className="summary">
         {order.side?.toUpperCase()} {order.symbol} on X Layer
       </div>
+
+      {/* The numbers a signature turns on, before the full terms. Reading them
+          out of a list of nine rows is how people sign what they did not
+          mean to. */}
+      <div className="dp-facts" style={{ marginTop: 18 }}>
+        <Fact label="You pay" value={order.spending ?? order.amount_in} />
+        {order.minimum_received && (
+          <Fact label="You receive at least" value={order.minimum_received}
+                sub="below this the trade reverts" />
+        )}
+        <Fact label="Order value"
+              value={order.est_usd != null ? `$${Number(order.est_usd).toFixed(2)}` : 'n/a'} />
+        {impact != null && (
+          <Fact label="Price impact" value={`${Math.abs(impact).toFixed(2)}%`}
+                tone={bigImpact ? 'warn' : undefined}
+                sub={bigImpact ? 'your size moves this pool' : 'what your size costs'} />
+        )}
+      </div>
+
+      {bigImpact && (
+        <div className="callout warning" style={{ marginTop: 12 }}>
+          <span className="callout-k">Price impact</span>
+          <b className="callout-v">{Math.abs(impact).toFixed(2)}%</b>
+          <span className="callout-s">
+            Large for the pool behind this pair, and that cost is yours. A smaller size,
+            or splitting it, usually fills closer to the quoted rate.
+          </span>
+        </div>
+      )}
 
       <div className="kv">
         <div><span>Action</span><b>{order.side} {order.symbol}</b></div>

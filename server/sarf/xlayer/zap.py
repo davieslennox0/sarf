@@ -99,7 +99,7 @@ STATE_LABELS = {
     "reentry_pending": "Price has normalised. Re-entry is ready to sign",
     "reentering": "Re-entering the pool",
     "close_pending": "Closing: the way out is ready to sign",
-    "closing": "Closing: moving the position back to your wallet",
+    "closing": "Closing: unwinding the pool back into your wallet",
     "closed": "Closed. The proceeds are in your wallet",
     "cancelled": "Cancelled before anything was signed",
 }
@@ -1315,7 +1315,7 @@ class ZapEngine:
             "exiting": "Finish signing the exit steps on the position page",
             "reentry_pending": "Sign the re-entry on the position page: withdraw from Aave, re-split, re-deposit",
             "reentering": "Finish signing the re-entry steps on the position page",
-            "close_pending": "Sign the close on the position page: unwind, convert to USDT, into your wallet",
+            "close_pending": "Sign the close on the position page: unwind the pool and send it back to your wallet",
             "closing": "Finish signing the close on the position page",
         }.get(pos["state"])
 

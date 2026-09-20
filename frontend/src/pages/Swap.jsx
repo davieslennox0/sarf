@@ -4,6 +4,7 @@ import { api, ensureSession, getSession } from '../api.js';
 import { connect, currentAccount } from '../wallet.js';
 import { OpenInChat } from '../handoff.jsx';
 import { ASSET_COUNT, SearchIcon, TokenMark } from '../market.jsx';
+import { Fact } from '../zapui.jsx';
 
 /**
  * Swap on the website, for anyone who would rather not go through a chat.
@@ -174,11 +175,31 @@ export default function Swap() {
           </div>
         </div>
 
+        {/* What the quote means, as facts rather than rows: the rate, what
+            your size costs, and the fee. */}
+        <div className="dp-facts" style={{ marginTop: 16 }}>
+          <Fact label="Rate" value={quote?.rate ? `${(+quote.rate.toPrecision(6))}` : '—'}
+                sub={quote?.rate ? `${to} per ${from}` : 'enter an amount'} />
+          <Fact label="Price impact"
+                value={impact == null ? '—' : `${Math.abs(impact).toFixed(2)}%`}
+                tone={impact != null && Math.abs(impact) > 1 ? 'warn' : undefined}
+                sub={impact != null && Math.abs(impact) > 1
+                  ? 'your size moves this pool' : 'what your size costs'} />
+          <Fact label="Platform fee" value="$0.01" sub="per swap, in the stablecoin leg" />
+        </div>
+
+        {impact != null && Math.abs(impact) > 1 && (
+          <div className="callout warning" style={{ marginTop: 12 }}>
+            <span className="callout-k">Price impact</span>
+            <b className="callout-v">{Math.abs(impact).toFixed(2)}%</b>
+            <span className="callout-s">
+              Large for the liquidity behind this pair. A smaller size usually fills closer
+              to the rate above.
+            </span>
+          </div>
+        )}
+
         <div className="swap-details">
-          <div><span>Rate</span><b>{quote?.rate ? `1 ${from} = ${(+quote.rate.toPrecision(6))} ${to}` : '—'}</b></div>
-          <div><span>Price impact</span>
-            <b className={impact != null && Math.abs(impact) > 1 ? 'error' : ''}>{impact == null ? '—' : `${Math.abs(impact).toFixed(2)}%`}</b></div>
-          <div><span>Platform fee</span><b>$0.01 per swap</b></div>
           <div>
             <span>Slippage tolerance</span>
             <span className="seg small-seg">
