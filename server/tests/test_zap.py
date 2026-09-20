@@ -640,3 +640,30 @@ def test_incentives_are_counted_from_arrivals_never_estimated():
                             "amount": "9000000"}])
     assert run(eng.view(db.get_zap_position(pid)))["earnings"]["paid_separately"][
         "received_usdg"] == 2.0
+
+
+def test_steps_carry_a_gas_limit_wide_enough_for_the_token_s_heavy_path():
+    """A taxed token sells its collected tax into the pair on some transfers
+    and not others. A wallet estimating for itself measures whichever path the
+    current state implies and sends exactly that, so the transfer that trips
+    the swap-back runs out of gas: mainnet 0xfd0440b5 reverted at 99.2% of its
+    limit with no logs, and the retry survived by 6,500 gas."""
+    eng = ZapEngine(Database(":memory:"), None, registry())
+
+    async def estimate(*, from_address, to, data, value=0):
+        return 215_000
+
+    zapmod.rpc.estimate_gas = estimate
+    heavy = run(eng._gas_for(zapmod.Step("swap_in", "t", "0x" + "11" * 20, "0xabcd"), OWNER))
+    light = run(eng._gas_for(zapmod.Step("approve", "t", "0x" + "11" * 20, "0xabcd"), OWNER))
+    assert heavy >= 215_000 * 1.5          # room for the swap-back path
+    assert light >= 215_000 + 30_000       # every step gets some headroom
+    assert heavy > light
+
+    # An estimate that cannot be made must not block the step; the wallet
+    # still gets its own chance.
+    async def boom(**_):
+        raise RuntimeError("node said no")
+
+    zapmod.rpc.estimate_gas = boom
+    assert run(eng._gas_for(zapmod.Step("swap_in", "t", "0x" + "11" * 20, "0xabcd"), OWNER)) is None

@@ -671,11 +671,15 @@ class ZapEngine:
                         "data": built.data.lower(), "ctx": built.ctx or {}}
                 self.db.update_zap_position(pos["position_id"], flow_step=idx, flow_ctx=ctx,
                                             pending_tx=json.dumps(pend))
+                tx = {"chainId": 196, "to": built.to, "data": built.data,
+                      "value": built.value}
+                gas = await self._gas_for(built, pos["address"])
+                if gas:
+                    tx["gas"] = str(gas)
                 return {
                     "status": "sign", "flow": pos["flow"], "step_index": idx,
                     "step_count": len(steps), "kind": built.kind, "title": built.title,
-                    "tx": {"chainId": 196, "to": built.to, "data": built.data,
-                           "value": built.value},
+                    "tx": tx,
                 }
             ctx.update(built or {})  # a skipped step can still set context
             idx += 1
@@ -683,6 +687,37 @@ class ZapEngine:
         self.db.update_zap_position(pos["position_id"], flow_step=idx, flow_ctx=ctx)
         await self._finish(self.db.get_zap_position(pos["position_id"]), pool, ctx, None)
         return {"status": "complete", "state": self.db.get_zap_position(pos["position_id"])["state"]}
+
+    # A taxed token's gas depends on what the token decides to do on the way
+    # past. STARLINK, LAIKA and the rest sell their collected tax into the pair
+    # on some transfers and not others, and the heavy path costs far more than
+    # the light one. A wallet left to estimate on its own measures whichever
+    # path the current state implies and sends exactly that, so a swap that
+    # trips the swap-back runs out of gas and reverts: mainnet
+    # 0xfd0440b5…d175462 died at 99.2% of a 217,077 limit with no logs and no
+    # revert reason, and the retry survived on 227,617 by 6,500 gas. These
+    # steps therefore carry their own limit, estimated and then widened.
+    HEAVY_STEPS = ("swap_in", "add_liquidity", "remove_liquidity", "swap_other_to_rwa",
+                   "swap_rwa_to_park", "swap_park_to_rwa")
+
+    async def _gas_for(self, step: Step, owner: str) -> int | None:
+        """A gas limit for this step, or None to let the wallet decide.
+
+        Unused gas is refunded, so the cost of being generous is nothing and
+        the cost of being exact is a reverted transaction the user paid for.
+        """
+        try:
+            est = await rpc.estimate_gas(from_address=owner, to=step.to, data=step.data,
+                                         value=int(step.value or 0))
+        except Exception:
+            # Estimation can fail for reasons the send will not share (a
+            # transient node, a state that has since moved). The wallet gets
+            # to try rather than the step being blocked here.
+            logging.getLogger("sarf.zap").info(
+                "gas estimate unavailable for %s; leaving it to the wallet", step.kind)
+            return None
+        widen = 1.6 if step.kind in self.HEAVY_STEPS else 1.25
+        return max(int(est * widen), est + 30_000)
 
     async def _approve(self, token: Token, spender: str, amount: int, owner: str,
                        why: str) -> Step | None:
