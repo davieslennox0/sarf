@@ -113,11 +113,17 @@ FLOWS: dict[str, list[str]] = {
              "approve_park_aave", "aave_supply"],
     "reenter": ["aave_withdraw", "approve_park_okx", "swap_park_to_rwa",
                 "approve_rwa_router", "swap_in", "approve_other_router", "add_liquidity"],
-    # Closing is the exit without its last two steps: instead of supplying the
-    # USDT to Aave, it stops once the USDT is in the wallet. From Aave there is
-    # nothing to unwind but the withdrawal itself.
+    # Closing gives back what was put in. The exit converts to USDT because
+    # Aave needs a stablecoin to park in; a close has no such reason, and
+    # handing someone a stablecoin when they deposited a stock token is a
+    # trade they did not ask for — it costs a swap and ends their exposure.
+    # So the close stops at the RWA and unwraps it if that is how it arrived.
+    #
+    # From Aave the position is ALREADY a stablecoin: that is what is sitting
+    # there. Buying the stock back would be a new position, not a withdrawal,
+    # so close_parked hands over the USDT.
     "close": ["approve_lp_router", "remove_liquidity", "approve_other_router_exit",
-              "swap_other_to_rwa", "approve_rwa_okx", "swap_rwa_to_park"],
+              "swap_other_to_rwa", "unwrap"],
     "close_parked": ["aave_withdraw"],
 }
 FLOW_STATE = {"enter": "entering", "exit": "exiting", "reenter": "reentering",
@@ -888,6 +894,24 @@ class ZapEngine:
                                                   ["address", "uint256", "address", "uint16"],
                                                   [park.address, c("park_amount"), owner, 0]))
 
+        if kind == "unwrap":
+            # Only if the deposit arrived as the underlying. Someone who
+            # brought wSPCXx gets wSPCXx back, untouched.
+            amount = int(ctx.get("rwa_to_sell") or 0)
+            # Read from the position, not the context: `deposit_is_underlying`
+            # is set while ENTERING, and a close starts with a fresh context.
+            if pos["deposit_symbol"] != pool.underlying.symbol:
+                return {"closed_amount": str(amount), "closed_symbol": rwa.symbol,
+                        "closed_decimals": rwa.decimals}
+            if amount <= 0:
+                raise ValueError("nothing to unwrap")
+            # ERC-4626 redeem: shares in, assets out, both to the owner.
+            return Step("unwrap", f"Unwrap {_fmt(amount, rwa.decimals)} {rwa.symbol} back into "
+                                  f"{pool.underlying.symbol}",
+                        rwa.address,
+                        _calldata("redeem(uint256,address,address)",
+                                  ["uint256", "address", "address"], [amount, owner, owner]))
+
         if kind == "aave_withdraw":
             aave = await self.aave_state()
             owed = int(pos["parked_amount"]) * aave["income_index"] // int(pos["parked_index"])
@@ -977,6 +1001,10 @@ class ZapEngine:
             ctx["park_amount"] = str(g(self.park))
         elif kind == "swap_park_to_rwa":
             ctx["rwa_amount"] = str(g(pool.rwa))
+        elif kind == "unwrap":
+            ctx["closed_amount"] = str(g(pool.underlying))
+            ctx["closed_symbol"] = pool.underlying.symbol
+            ctx["closed_decimals"] = pool.underlying.decimals
         ctx.setdefault("txs", []).append({"step": kind, "tx_hash": tx_hash})
 
         nxt = pend["step"] + 1
@@ -1011,16 +1039,31 @@ class ZapEngine:
                              f"{_fmt(ctx.get('hold_other'), pool.other.decimals)} {pool.other.symbol}",
                 "note": None if flow == "enter" else "entry price reset to the re-entry price"})
         elif flow in ("close", "close_parked"):
-            park_units = int(ctx.get("park_amount") or 0)
-            proceeds = park_units / 10 ** self.park.decimals
+            if flow == "close_parked":
+                units = int(ctx.get("park_amount") or 0)
+                symbol, decs = self.park.symbol, self.park.decimals
+                unit_usd = 1.0            # the park asset is the dollar
+            else:
+                units = int(ctx.get("closed_amount") or 0)
+                symbol = ctx.get("closed_symbol") or pool.rwa.symbol
+                decs = int(ctx.get("closed_decimals") or pool.rwa.decimals)
+                # Price the RWA, then adjust if what came back is the
+                # underlying rather than the wrapper's share.
+                unit_usd = await self.rwa_usd(pool)
+                if symbol == pool.underlying.symbol:
+                    try:
+                        unit_usd = unit_usd / await self._wrap_rate(pool)
+                    except Exception:
+                        pass
+            proceeds = (units / 10 ** decs) * unit_usd
             deposit_usd = pos.get("deposit_usd")
             self.db.update_zap_position(
                 pid, state="closed", flow=None, flow_step=0, flow_ctx={}, pending_tx=None,
                 lp_amount=None, parked_amount=None, parked_index=None,
-                closed_at=time.time(), realized_amount=str(park_units),
+                closed_at=time.time(), realized_amount=str(units), realized_symbol=symbol,
                 realized_usd=round(proceeds, 2), last_checked_at=time.time())
             self.db.log_zap_event(pid, "closed", {
-                "proceeds": f"{_fmt(park_units, self.park.decimals)} {self.park.symbol} in your wallet",
+                "proceeds": f"{_fmt(units, decs)} {symbol} in your wallet",
                 "realized_usd": round(proceeds, 2),
                 "vs_deposit_usd": (round(proceeds - deposit_usd, 2)
                                    if deposit_usd is not None else None),
@@ -1210,8 +1253,12 @@ class ZapEngine:
         if pos["state"] == "closed":
             back = pos.get("realized_usd")
             dep = pos.get("deposit_usd")
-            headline = (f"Closed. {_fmt(pos.get('realized_amount'), self.park.decimals)} "
-                        f"{self.park.symbol} back in your wallet"
+            sym = pos.get("realized_symbol") or self.park.symbol
+            decs_ = (self.park.decimals if sym == self.park.symbol
+                     else (pool.underlying.decimals if sym == pool.underlying.symbol
+                           else pool.rwa.decimals))
+            headline = (f"Closed. {_fmt(pos.get('realized_amount'), decs_)} "
+                        f"{sym} back in your wallet"
                         + (f" against ${dep:,.2f} deposited" if dep is not None else "")
                         + (f" ({back - dep:+,.2f})" if (back is not None and dep is not None) else ""))
         else:

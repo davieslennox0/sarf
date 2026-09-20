@@ -570,10 +570,15 @@ def test_closing_a_position_puts_the_money_back_in_the_wallet():
         reentry_bps=400, state="in_pool", lp_amount="1000", p_initial=50081.0,
         lp_index_initial=1.0)
 
-    # Closing from the pool is the exit flow WITHOUT its two Aave steps, so it
-    # stops once the USDT is in the wallet.
-    assert FLOWS["close"] == FLOWS["exit"][:-2]
-    assert FLOWS["close"][-1] == "swap_rwa_to_park"
+    # A close gives back what went in. It must NOT carry the exit's conversion
+    # to USDT: that exists so Aave has a stablecoin to hold, and handing
+    # somebody a stablecoin when they deposited a stock token is a trade they
+    # never asked for.
+    assert "swap_rwa_to_park" not in FLOWS["close"]
+    assert "approve_park_aave" not in FLOWS["close"] and "aave_supply" not in FLOWS["close"]
+    assert FLOWS["close"][-1] == "unwrap"
+    # Out of Aave the position is already a stablecoin; buying the stock back
+    # would be a new position rather than a withdrawal.
     assert FLOWS["close_parked"] == ["aave_withdraw"]
 
     eng.request_close(pid, OWNER)
@@ -667,3 +672,62 @@ def test_steps_carry_a_gas_limit_wide_enough_for_the_token_s_heavy_path():
 
     zapmod.rpc.estimate_gas = boom
     assert run(eng._gas_for(zapmod.Step("swap_in", "t", "0x" + "11" * 20, "0xabcd"), OWNER)) is None
+
+
+def _close(env, pid):
+    """Drive a close the way a wallet would, on the fake chain."""
+    ch, p = env.ch, env.pool
+    pos = env.db.get_zap_position(pid)
+
+    def answers(st):
+        if st["kind"] == "remove_liquidity":
+            lp = int(pos["lp_amount"])
+            a, b = lp * ch.r_rwa // ch.ts, lp * ch.r_other // ch.ts
+            ch.r_rwa -= a
+            ch.r_other -= b
+            ch.ts -= lp
+            return [_transfer(p.rwa.address, p.pair, OWNER, a),
+                    _transfer(p.other.address, p.pair, OWNER, b),
+                    _sync(p.pair, ch.r_rwa, ch.r_other)]
+        if st["kind"] == "swap":
+            amt = int.from_bytes(bytes.fromhex(st["tx"]["data"][10:74]), "big")
+            got = _v2_out(amt, ch.r_other, ch.r_rwa)
+            ch.r_other += amt
+            ch.r_rwa -= got
+            return [_transfer(p.rwa.address, p.pair, OWNER, got)]
+        if st["kind"] == "unwrap":
+            shares = int.from_bytes(bytes.fromhex(st["tx"]["data"][10:74]), "big")
+            return [_transfer(p.underlying.address, p.rwa.address, OWNER, shares)]
+        assert st["kind"] == "approve", st["kind"]
+        return []
+
+    return _sign_through(env, pid, answers)
+
+
+def test_close_hands_back_the_asset_that_was_deposited(env):
+    """Someone who brings SPCXx gets SPCXx back. The exit converts to USDT
+    because Aave needs a stablecoin to hold; a close has no such reason, and
+    a stablecoin is not what they deposited."""
+    pid, _, _ = _enter(env)
+    env.e.request_close(pid, OWNER)
+    seen, end = _close(env, pid)
+
+    # No aggregator swap to USDT, and no Aave leg.
+    # The other-token approval survives from the entry, so that step is
+    # skipped rather than paid for again.
+    assert seen == ["approve", "remove_liquidity", "swap", "unwrap"]
+    # The driver asks once more after the last step; by then there is nothing
+    # left to sign because the position is finished.
+    assert end["status"] == "nothing_to_sign" and end["state"] == "closed"
+
+    pos = env.db.get_zap_position(pid)
+    assert pos["state"] == "closed"
+    assert pos["realized_symbol"] == env.pool.underlying.symbol == "SPCXx"
+    assert int(pos["realized_amount"]) > 0
+    assert pos["lp_amount"] is None and pos["parked_amount"] is None
+
+    ev = [x for x in env.db.zap_events(pid) if x["kind"] == "closed"][-1]
+    assert "SPCXx" in ev["proceeds"] and "USDT" not in ev["proceeds"]
+
+    v = run(env.e.view(env.db.get_zap_position(pid)))
+    assert "SPCXx" in v["headline"] and v["state"] == "closed"

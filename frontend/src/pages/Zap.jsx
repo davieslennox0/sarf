@@ -21,6 +21,10 @@ import { Fact, PairMark, num, pct, usd } from '../zapui.jsx';
 
 const EXIT_PRESETS = [5, 8, 12];
 
+/** What a closed position came back with, against what went in. */
+const net = (v) => (v.value.current_usd == null || v.deposit.usd_at_deposit == null
+  ? null : v.value.current_usd - v.deposit.usd_at_deposit);
+
 /** One pool, as a table row: identity, the numbers, and the way in. */
 function PoolRow({ p, chosen, onPick }) {
   return (
@@ -53,15 +57,17 @@ function PoolRow({ p, chosen, onPick }) {
   );
 }
 
-/** Positions you already hold, so the page opens on your own money first. */
-function MyPositions({ rows }) {
+/** Positions you hold, so the page opens on your own money first. Closed
+ *  ones are not holdings and do not belong in this table — they are what
+ *  happened, and they are listed separately underneath. */
+function MyPositions({ rows, done }) {
   return (
     <div className="mkt">
       <div className="mkt-head pos-cols">
         <span>Position</span>
-        <span className="r">Value</span>
-        <span className="r">IL now</span>
-        <span className="r hide-sm">Exit line</span>
+        <span className="r">{done ? 'Came back' : 'Value'}</span>
+        <span className="r">{done ? 'vs deposit' : 'IL now'}</span>
+        <span className="r hide-sm">{done ? 'Deposited' : 'Exit line'}</span>
         <span className="r">State</span>
       </div>
       {rows.map((v) => (
@@ -73,11 +79,19 @@ function MyPositions({ rows }) {
               <span className="name">{v.deposit.amount} {v.deposit.asset} deposited</span>
             </span>
           </span>
-          <span className="r price" data-k="Value">{usd(v.value.current_usd)}</span>
-          <span className={`r price${v.il.current_bps > v.il.exit_threshold_bps ? ' bad' : ''}`} data-k="IL now">
-            {pct(v.il.current_bps)}
+          <span className="r price" data-k={done ? 'Came back' : 'Value'}>{usd(v.value.current_usd)}</span>
+          {done ? (
+            <span className={`r price${net(v) < 0 ? ' bad' : ''}`} data-k="vs deposit">
+              {net(v) == null ? '—' : `${net(v) >= 0 ? '+' : '−'}$${Math.abs(net(v)).toFixed(2)}`}
+            </span>
+          ) : (
+            <span className={`r price${v.il.current_bps > v.il.exit_threshold_bps ? ' bad' : ''}`} data-k="IL now">
+              {pct(v.il.current_bps)}
+            </span>
+          )}
+          <span className="r price hide-sm" data-k={done ? 'Deposited' : 'Exit line'}>
+            {done ? usd(v.deposit.usd_at_deposit) : pct(v.il.exit_threshold_bps)}
           </span>
-          <span className="r price hide-sm" data-k="Exit line">{pct(v.il.exit_threshold_bps)}</span>
           <span className="r" data-k="State">
             <span className={`chip${v.action_needed ? ' accent' : ''}`}>
               {v.action_needed ? 'needs you' : v.state.replace(/_/g, ' ')}
@@ -157,7 +171,9 @@ export default function Zap() {
       + `with an impermanent-loss exit threshold of ${exitBps} bps and re-entry at ${reBps} bps.`
     : 'Using Sarf, show me the zap pools.';
 
-  const mineValue = (mine || []).reduce((s, v) => s + (v.value.current_usd || 0), 0);
+  const live = (mine || []).filter((v) => v.state !== 'closed');
+  const finished = (mine || []).filter((v) => v.state === 'closed');
+  const mineValue = live.reduce((s, v) => s + (v.value.current_usd || 0), 0);
   // The program window reads "2026-09-18 to 2026-09-25 (UTC+8)". A date in a
   // stat tile makes the reader do the subtraction; do it for them.
   const daysLeft = useMemo(() => {
@@ -183,17 +199,17 @@ export default function Zap() {
         <div className="market-stats">
           <div><b>{pools ? pools.length : '—'}</b><span>pools</span></div>
           {daysLeft != null && <div><b>{daysLeft}d</b><span>left in this round</span></div>}
-          {mine?.length ? <div><b>{mine.length}</b><span>your positions</span></div> : null}
-          {mine?.length ? <div><b>{usd(mineValue)}</b><span>your value</span></div> : null}
+          {live.length ? <div><b>{live.length}</b><span>your positions</span></div> : null}
+          {live.length ? <div><b>{usd(mineValue)}</b><span>your value</span></div> : null}
         </div>
       </div>
 
       {err && <p className="error" style={{ marginTop: 16 }}>{err}</p>}
 
-      {mine?.length ? (
+      {live.length ? (
         <>
           <div className="section-label">Your positions</div>
-          <MyPositions rows={mine} />
+          <MyPositions rows={live} />
         </>
       ) : null}
 
@@ -218,6 +234,13 @@ export default function Zap() {
           side; Sarf does not handle them.
         </p>
       )}
+
+      {finished.length ? (
+        <>
+          <div className="section-label">Closed</div>
+          <MyPositions rows={finished} done />
+        </>
+      ) : null}
 
       {/* The deposit panel. One pool at a time, with the consequences of the
           numbers spelled out underneath them rather than in a paragraph

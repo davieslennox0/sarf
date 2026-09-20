@@ -319,6 +319,9 @@ _MIGRATIONS = [
     "ALTER TABLE zap_positions ADD COLUMN closed_at REAL",
     "ALTER TABLE zap_positions ADD COLUMN realized_amount TEXT",
     "ALTER TABLE zap_positions ADD COLUMN realized_usd REAL",
+    # Which asset came back. A close returns what was deposited, so this is
+    # usually the RWA, and only USDT when closing out of Aave.
+    "ALTER TABLE zap_positions ADD COLUMN realized_symbol TEXT",
 ]
 
 # Stop-loss / take-profit levels, one row per (address, symbol).

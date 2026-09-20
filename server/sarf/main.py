@@ -498,8 +498,13 @@ if _FRONTEND_DIST.is_dir():
             headers={"Cache-Control": "no-cache"},
         )
 
+    # GET and HEAD. FastAPI's .get() registers GET alone, so every page
+    # answered 404 to a HEAD — which is what link unfurls, uptime monitors
+    # and the browser's own COOP check use. The page existing should not
+    # depend on which verb asked.
     for _path in _SPA_ROUTES:
-        app.get(_path, include_in_schema=False)(lambda: _index())
+        app.add_api_route(_path, lambda: _index(), methods=["GET", "HEAD"],
+                          include_in_schema=False)
 
     # Sub-paths of the SPA routes, so client-side routes with a parameter
     # (/dashboard/agents) serve index.html instead of redirecting to /. These
@@ -509,7 +514,8 @@ if _FRONTEND_DIST.is_dir():
     for _path in _SPA_ROUTES:
         if _path == "/":
             continue
-        app.get(f"{_path}/{{rest:path}}", include_in_schema=False)(lambda rest="": _index())
+        app.add_api_route(f"{_path}/{{rest:path}}", lambda rest="": _index(),
+                          methods=["GET", "HEAD"], include_in_schema=False)
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def _favicon():

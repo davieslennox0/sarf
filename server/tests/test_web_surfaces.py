@@ -207,3 +207,19 @@ def test_old_dashboard_links_still_land_somewhere(path, target):
     r = _TC(main.app).get(path, follow_redirects=False)
     assert r.status_code in (307, 308), r.status_code
     assert r.headers["location"] == target
+
+
+@pytest.mark.parametrize("path", ["/", "/zap", "/markets", "/zap/zap_abc"])
+def test_pages_answer_head_as_well_as_get(path):
+    """Link unfurls, uptime monitors and the browser's own COOP check send
+    HEAD. A page that exists for GET and 404s for HEAD is a page that looks
+    broken to everything except a browser tab."""
+    from fastapi.testclient import TestClient as _TC
+
+    import sarf.main as main
+
+    if not main._FRONTEND_DIST.is_dir():
+        pytest.skip("frontend not built in this checkout")
+    c = _TC(main.app)
+    assert c.get(path).status_code == 200
+    assert c.head(path).status_code == 200

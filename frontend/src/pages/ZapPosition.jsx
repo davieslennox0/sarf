@@ -24,7 +24,7 @@ const when = (t) => new Date(t * 1000).toLocaleString();
 const EVENT_LABELS = {
   created: 'Position created',
   step_confirmed: 'Step confirmed',
-  step_failed: 'Step reverted, nothing moved',
+  step_failed: 'A transaction reverted, nothing moved',
   entered: 'Entered the pool',
   reentered: 'Re-entered the pool, entry price reset',
   exit_triggered: 'IL crossed the exit line',
@@ -38,6 +38,9 @@ const EVENT_LABELS = {
   reenter_started: 'Re-entry signing started',
   thresholds_changed: 'Thresholds changed',
   cancelled: 'Cancelled',
+  closed: 'Closed, proceeds sent to your wallet',
+  close_requested: 'Close requested',
+  close_started: 'Closing started',
 };
 
 /** The linear view of the same thing the ring shows, with both lines on it. */
@@ -344,11 +347,9 @@ export default function ZapPosition() {
 
           <div className="section-label">History</div>
           <ol className="zap-history">
-            {[...v.history].reverse().map((e, i) => {
-              const step = e.kind === 'step_confirmed';
-              const label = step
-                ? e.step.replace(/_/g, ' ').replace(/^./, (ch) => ch.toUpperCase())
-                : (EVENT_LABELS[e.kind] || e.kind);
+            {[...v.history].reverse().filter((e) => e.kind !== 'step_confirmed').map((e, i) => {
+              const step = false;
+              const label = EVENT_LABELS[e.kind] || e.kind;
               return (
                 <li key={i} className={step ? 'is-step' : 'is-event'}>
                   <span className="when">{when(e.at)}</span>
@@ -376,8 +377,10 @@ export default function ZapPosition() {
               <h3>{v.action_needed.replace(/ on the position page$/, '')}</h3>
               {signing ? (
                 <p>
-                  {signing.count ? `Step ${signing.index + 1} of ${signing.count}: ` : ''}{signing.title}
-                  <br /><span className="muted small">Confirm in your wallet. This page moves on by itself once each step lands.</span>
+                  {signing.count
+                    ? `Confirm transaction ${signing.index + 1} of ${signing.count} in your wallet…`
+                    : 'Waiting for the last transaction to confirm…'}
+                  <br /><span className="muted small">This page moves on by itself once each one lands.</span>
                 </p>
               ) : (
                 <>
@@ -385,12 +388,11 @@ export default function ZapPosition() {
                   <OpenInChat text={ask('show me what is waiting to be signed on my zap position and give me the link')} />
                 </>
               )}
-              {v.flow && (
-                <ol className="zap-steps">
-                  {v.flow.steps.map((s, i) => (
-                    <li key={s} className={i < v.flow.step ? 'done' : i === v.flow.step ? 'now' : ''}>{s.replace(/_/g, ' ')}</li>
-                  ))}
-                </ol>
+              {v.flow && !signing && (
+                <p className="muted small" style={{ marginTop: 10 }}>
+                  {v.flow.steps.length - v.flow.step} transaction
+                  {v.flow.steps.length - v.flow.step === 1 ? '' : 's'} left to sign.
+                </p>
               )}
             </div>
           )}
@@ -431,8 +433,8 @@ export default function ZapPosition() {
                 )}
                 {['in_pool', 'parked'].includes(v.state) && (
                   <button className="danger" onClick={() => act(() => api.zapClose(id),
-                    'Close queued. Sign it above and the proceeds land in your wallet.')}>
-                    Close and withdraw
+                    `Close queued. Sign it above and your ${parked ? 'USDT' : v.deposit.asset} lands in your wallet.`)}>
+                    Close, take {parked ? 'USDT' : v.deposit.asset}
                   </button>
                 )}
               </div>
