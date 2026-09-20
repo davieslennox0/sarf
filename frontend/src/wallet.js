@@ -433,7 +433,10 @@ export async function waitForTx(hash, { timeoutMs = 120000, everyMs = 2500 } = {
   const until = Date.now() + timeoutMs;
   for (;;) {
     const r = await p.request({ method: 'eth_getTransactionReceipt', params: [hash] }).catch(() => null);
-    if (r) return Number(BigInt(r.status)) === 1;
+    // A receipt can arrive before the node fills in `status` (and pre-Byzantium
+    // receipts have none at all). Treat a receipt without one as not-yet-known
+    // rather than as a revert, which would tell the user their trade failed.
+    if (r && r.status != null) return Number(BigInt(r.status)) === 1;
     if (Date.now() > until) return null;
     await new Promise((res) => setTimeout(res, everyMs));
   }

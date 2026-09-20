@@ -259,6 +259,10 @@ async def erc20_allowance(token_address: str, owner: str, spender: str) -> int:
     data = ("0xdd62ed3e" + owner.lower()[2:].rjust(64, "0")
             + spender.lower()[2:].rjust(64, "0"))
     res = await _call("eth_call", [{"to": token_address, "data": data}, "latest"])
+    # Empty return data is how a zero allowance comes back from some tokens,
+    # and zero is the answer, not a failure — see _decode_balance.
+    if not res or res == "0x":
+        return 0
     try:
         return int(res, 16)
     except (ValueError, TypeError):

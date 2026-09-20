@@ -118,7 +118,10 @@ export default function Portfolio() {
       setData(queried ? await api.publicPortfolio(queried) : await api.portfolio());
     } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   };
-  useEffect(() => { if (queried || signedIn) load(); }, [queried, address]);
+  // Clearing first matters: without it, following a shared ?a=… link (or
+  // leaving one) leaves the previous account's holdings on screen, labelled
+  // as the new one's, until the fetch returns.
+  useEffect(() => { setData(null); if (queried || signedIn) load(); }, [queried, address]);
 
   const setQuery = (patch) => {
     const next = new URLSearchParams(params);

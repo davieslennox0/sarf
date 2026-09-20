@@ -163,3 +163,47 @@ def test_swap_gas_limit_uses_the_chain_not_the_aggregators_estimate(monkeypatch)
         raise rpcmod.RpcError("execution reverted: insufficient allowance")
     monkeypatch.setattr(rpcmod, "estimate_gas", boom)
     assert asyncio.run(c._gas_limit(user_address="0xab", to="0xcd", data="0x", value=0, quoted=100000)) == 180000
+
+
+def test_a_broadcast_hash_is_recorded_even_after_the_order_expired(monkeypatch):
+    """The wallet can broadcast and only then cross the order's TTL (approval
+    leg, passkey prompt, slow confirmation). Refusing the hash there loses a
+    swap that is already on-chain and invites the user to send it twice."""
+    import time as _t
+
+    from sarf.xlayer.api import build_xlayer_api
+
+    db = Database(":memory:")
+    app = FastAPI()
+    app.include_router(build_xlayer_api(db, SimpleNamespace(transport="none"), registry(), None))
+    c = TestClient(app)
+    tok, _ = auth.mint_session(db, ADDR)
+    oid = db.create_order(address=ADDR, side="swap", symbol="SPCXx", amount_in=1, quoted_out=1,
+                          est_usd=1.0, tx={"to": "0x"}, ttl_seconds=-5)  # already expired
+    assert db.get_order(oid)["expired"]
+    h = "0x" + "ab" * 32
+    r = c.post(f"/api/order/{oid}/submitted", json={"tx_hash": h},
+               headers={"authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    assert db.get_order(oid)["tx_hash"] == h and db.get_order(oid)["status"] == "submitted"
+
+
+@pytest.mark.parametrize("path,target", [
+    ("/dashboard", "/account"),
+    ("/dashboard/security", "/account#agents"),
+    ("/dashboard/deposit", "/portfolio?fund=1"),
+    ("/dashboard/deposit?amount=50", "/portfolio?fund=1&amount=50"),
+    ("/dashboard/authorize?client_id=abc", "/approve?client_id=abc"),
+])
+def test_old_dashboard_links_still_land_somewhere(path, target):
+    """The site used to live under /dashboard. Those links are in old chat
+    transcripts and bookmarks; none of them may 404 or lose their query."""
+    from fastapi.testclient import TestClient as _TC
+
+    import sarf.main as main
+
+    if not main._FRONTEND_DIST.is_dir():
+        pytest.skip("frontend not built in this checkout")
+    r = _TC(main.app).get(path, follow_redirects=False)
+    assert r.status_code in (307, 308), r.status_code
+    assert r.headers["location"] == target

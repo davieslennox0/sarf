@@ -24,7 +24,9 @@ export default function useAccountData() {
     const grant = await api.grant().catch(() => null);
     setData((d) => ({ ...d, grant }));
   };
-  useEffect(() => { if (session) load(); }, [session?.address]);
+  // Signing out and back in on the same address must refetch: the token is
+  // new, and the old panels were rendered against a session that is gone.
+  useEffect(() => { if (session) load(); else setData({}); }, [session]);
   const clock = useGrantClock(data.grant, loadGrant);
   return { session, ...data, ...clock, err, reload: load, loadGrant };
 }

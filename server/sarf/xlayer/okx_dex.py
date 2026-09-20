@@ -344,7 +344,11 @@ class OkxDexClient:
             measured = 0
         if measured:
             return max(int(measured * 1.25), quoted)
-        return int(quoted * 1.8) or 900_000
+        # Estimation failed. Widen, but only mildly when OKB is the sell leg:
+        # a wallet refuses to sign when value + gas x price exceeds the
+        # balance, so an inflated limit can block a swap the user can afford.
+        widen = 1.25 if value > 0 else 1.8
+        return int(quoted * widen) or 900_000
 
     def supports_fee(self) -> bool:
         """Only the HTTP transport can attach referral fee parameters.

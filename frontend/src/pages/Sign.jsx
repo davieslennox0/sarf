@@ -74,32 +74,63 @@ export default function Sign() {
       // first, or the swap reverts inside transferFrom: signed, paid for, and
       // nothing moved. Approve, wait for it to land, then send the trade.
       if (order._approval) {
-        setStep(`Approving ${order._approval.symbol}…`);
-        const ah = await sendTransaction(addr, order._approval);
-        const ok = await waitForTx(ah);
-        if (ok === false) throw new Error(`The ${order._approval.symbol} approval reverted, so the trade was not sent.`);
-        if (ok === null) throw new Error('The approval has not confirmed yet. Wait a moment and try again.');
+        // The approval on the order is a snapshot from when it was built. On a
+        // retry — or when an approve landed just after this page stopped
+        // waiting — it is already in place, and sending a second one would
+        // cost gas for nothing. Ask the chain, not the snapshot.
+        setStep(`Checking the ${order._approval.symbol} allowance…`);
+        const check = await api.orderApproval(orderId).catch(() => ({ needed: true }));
+        if (check.needed) {
+          setStep(`Approving ${order._approval.symbol}…`);
+          const ah = await sendTransaction(addr, order._approval);
+          const ok = await waitForTx(ah);
+          if (ok === false) throw new Error(`The ${order._approval.symbol} approval reverted, so the trade was not sent.`);
+          if (ok === null) {
+            throw new Error('The approval has not confirmed yet. Wait a moment and press Sign again — '
+              + 'it will pick up the approval rather than send a second one.');
+          }
+        }
       }
 
       setStep('Confirm the trade in your wallet…');
       const hash = await sendTransaction(addr, order.tx);
-      await api.orderSubmitted(orderId, hash);
+
+      // Past this line the transaction is on the network whatever else goes
+      // wrong. Show it as sent BEFORE recording it: if the bookkeeping call
+      // failed and we dropped back to the review screen, the user would be
+      // looking at a Sign button for a trade that was already broadcast.
       setResult({ hash });
       setPhase('done');
-
-      // Broadcast is not settled. Watch it, and say plainly if it reverted.
       setStep(null);
-      for (let i = 0; i < 40; i += 1) {
-        const s2 = await api.orderStatus(orderId).catch(() => null);
-        if (s2?.state === 'confirmed') { setSettled(true); return; }
-        if (s2?.state === 'failed') { setSettled(false); return; }
-        await new Promise((r) => setTimeout(r, 3000));
-      }
+      let recorded = true;
+      try { await api.orderSubmitted(orderId, hash); } catch { recorded = false; }
+      setResult({ hash, recorded });
+      await watch(hash, recorded);
     } catch (e) {
       setErr(e.message || String(e));
       setPhase('review');
       setStep(null);
     }
+  };
+
+  /** Follow a broadcast to its end. Normally through the server, which reads
+   *  the receipt; if it never took the hash, through the wallet's own node. */
+  const watch = async (hash, recorded) => {
+    setSettled(null);
+    for (let i = 0; i < 40; i += 1) {
+      if (recorded) {
+        const s2 = await api.orderStatus(orderId).catch(() => null);
+        if (s2?.state === 'confirmed') { setSettled(true); return; }
+        if (s2?.state === 'failed') { setSettled(false); return; }
+      } else {
+        const ok = await waitForTx(hash, { timeoutMs: 2500, everyMs: 1200 });
+        if (ok !== null) { setSettled(ok); return; }
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    // Two minutes without a receipt is unusual on X Layer, but "still
+    // spinning" is not an answer. Say so and leave a way to look again.
+    setSettled('slow');
   };
 
   if (phase === 'done' && result) {
@@ -108,6 +139,7 @@ export default function Sign() {
         <h1>
           {settled === true ? 'Settled on X Layer ✓'
             : settled === false ? 'The transaction reverted'
+            : settled === 'slow' ? 'Still pending on X Layer'
             : 'Broadcast to X Layer'}
         </h1>
         <p>
@@ -115,6 +147,21 @@ export default function Sign() {
           <a href={txUrl(result.hash)} target="_blank" rel="noreferrer">view on explorer ↗</a>
         </p>
         {settled === null && <p className="muted">Waiting for it to be mined…</p>}
+        {settled === 'slow' && (
+          <p className="muted">
+            It has not been mined after two minutes. The transaction is out there — nothing
+            was lost and it has not been sent twice. Check the explorer, or look again.{' '}
+            <button className="btn small" onClick={() => watch(result.hash, result.recorded)}>
+              Check again
+            </button>
+          </p>
+        )}
+        {result.recorded === false && (
+          <p className="muted small">
+            Sarf could not file this against the order, so it may not show in your activity
+            list. The transaction itself is unaffected.
+          </p>
+        )}
         {settled === false && (
           <p className="error">
             Nothing moved: your balances are unchanged and you paid only the gas. This

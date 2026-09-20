@@ -916,7 +916,11 @@ class XLayerRwaProvider:
         try:
             allowed = await rpc.erc20_allowance(asset.address, address, spender)
         except rpc.RpcError:
-            return None  # unreadable: let the wallet's own simulation decide
+            # Fail toward asking for the approval. An approve on an allowance
+            # that turns out to be sufficient is a no-op the user pays a few
+            # cents of gas for; the other direction is the reverted swap this
+            # exists to prevent.
+            allowed = 0
         if allowed >= amount:
             return None
         return {

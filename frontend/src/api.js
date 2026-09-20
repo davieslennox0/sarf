@@ -90,6 +90,7 @@ export const api = {
 
   order: (id) => req(`/api/order/${encodeURIComponent(id)}`),
   orderStatus: (id) => req(`/api/order/${encodeURIComponent(id)}/status`),
+  orderApproval: (id) => req(`/api/order/${encodeURIComponent(id)}/approval`),
   orderSubmitted: (id, txHash) =>
     req(`/api/order/${encodeURIComponent(id)}/submitted`, {
       method: 'POST',

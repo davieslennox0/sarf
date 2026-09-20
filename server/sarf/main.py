@@ -448,7 +448,7 @@ _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 # two edits, and this is the one that is easy to forget.
 _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
-    "/settings", "/activity", "/send", "/sign", "/approve", "/dashboard",
+    "/settings", "/activity", "/send", "/sign", "/approve",
     "/deposit", "/admin", "/zap", "/swap", "/account",
 ]
 
@@ -517,6 +517,9 @@ if _FRONTEND_DIST.is_dir():
     @app.get("/dashboard{rest:path}", include_in_schema=False)
     async def _legacy_dashboard(rest: str, request: Request):
         target = (rest or "/").rstrip("/") or "/"
+        # `/dashboard` is kept out of _SPA_ROUTES on purpose: the catch-all
+        # registered for each SPA prefix would match first and hand back
+        # index.html, leaving this redirect unreachable.
         # The dashboard itself was split up: its sections now live on the
         # account page and in the portfolio. Everything else under /dashboard
         # is a page from when the whole site lived there, and loses the prefix.
@@ -530,7 +533,11 @@ if _FRONTEND_DIST.is_dir():
             "/authorize": "/approve",
         }.get(target, target)
         qs = request.url.query
-        return RedirectResponse(f"{target}{'?' + qs if qs else ''}", status_code=308)
+        if qs:
+            path, _, frag = target.partition("#")
+            sep = "&" if "?" in path else "?"
+            target = f"{path}{sep}{qs}" + (f"#{frag}" if frag else "")
+        return RedirectResponse(target, status_code=308)
 
 
 app.mount("/", mcp.streamable_http_app())

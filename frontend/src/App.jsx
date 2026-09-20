@@ -199,16 +199,28 @@ function RequirePasskey({ onDone, otherDomains = [] }) {
 }
 
 /** Old /dashboard/<section> links, mapped to where each section lives now. */
+/** Links that predate the /account restructure — in old chat transcripts, in
+ *  bookmarks, in emails — must still land somewhere sensible, carrying any
+ *  query the old URL had (an OAuth `authorize` hands over a whole query
+ *  string, and dropping it would break the consent flow). */
 function DashboardRedirect() {
   const { section } = useParams();
+  const { search, hash } = useLocation();
   const to = {
     deposit: '/portfolio?fund=1',
     activity: '/portfolio?tab=activity',
     agents: '/account#agents',
     security: '/account#agents',
     credentials: '/account#credentials',
+    authorize: '/approve',
   }[section] || '/account';
-  return <Navigate to={to} replace />;
+  // Splice rather than concatenate: the target may already carry a query or a
+  // fragment of its own, and `?fund=1?amount=50` is not a URL.
+  const [path, ownHash] = to.split('#');
+  const [base, ownQuery] = path.split('?');
+  const query = [ownQuery, search.replace(/^\?/, '')].filter(Boolean).join('&');
+  const frag = hash.replace(/^#/, '') || ownHash;
+  return <Navigate to={base + (query ? `?${query}` : '') + (frag ? `#${frag}` : '')} replace />;
 }
 
 /** Admin is guarded twice: the server refuses non-admins on every call, and

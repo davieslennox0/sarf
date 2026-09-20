@@ -924,9 +924,13 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             raise HTTPException(403, "this order belongs to a different account")
         if o["status"] not in ("proposed", "awaiting_signature"):
             raise HTTPException(400, f"order is not awaiting a signature (status: {o['status']})")
-        if o["expired"]:
-            db.mark_order(order_id, "expired")
-            raise HTTPException(400, "order expired before it was signed; request a fresh quote")
+        # Expiry is deliberately NOT checked here. This is called after the
+        # wallet has broadcast, and the approval leg, the passkey prompt and a
+        # slow confirmation can all push that past the order's TTL. Refusing
+        # then threw away the hash of a swap that was already on-chain: chat
+        # and the activity list still called it unsigned, and the button came
+        # back, inviting the user to send it twice. The chain is the truth
+        # about what happened; the TTL governs what may be BUILT and signed.
         try:
             tx_hash = validate_tx_hash(body.get("tx_hash"))
         except ValidationError as e:
@@ -936,6 +940,31 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
             "order_id": order_id, "tx_hash": tx_hash, "status": "submitted",
             "explorer_url": EXPLORER_TX.format(tx_hash),
         }
+
+    @r.get("/order/{order_id}/approval")
+    async def order_approval(order_id: str,
+                             authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Is this order's token approval still needed, right now?
+
+        The approval stored on an order is a snapshot from build time. A retry,
+        or an approve that landed after the page gave up waiting, must not pay
+        for a second one, so the allowance is read again before signing.
+        """
+        addr = _session_addr(authorization)
+        o = db.get_order(order_id.strip())
+        if not o:
+            raise HTTPException(404, "unknown order")
+        if o["address"] != addr:
+            raise HTTPException(403, "this order belongs to a different account")
+        ap = o.get("_approval")
+        if not ap:
+            return {"needed": False}
+        try:
+            amount = int(str(ap["data"])[-64:], 16)
+            allowed = await rpc.erc20_allowance(str(ap["to"]), addr, reg.dex_approve_address)
+        except (ValueError, KeyError, rpc.RpcError):
+            return {"needed": True, "note": "allowance could not be read; approving again is safe"}
+        return {"needed": allowed < amount, "allowance": str(allowed), "needs": str(amount)}
 
     @r.get("/order/{order_id}/status")
     async def order_status(order_id: str) -> dict[str, Any]:
