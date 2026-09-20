@@ -1091,3 +1091,12 @@ html, body { overflow-x: hidden; }
   .kv-figures > div { gap: 12px; }
   .kv-figures b { min-width: 0; }
 }
+
+/* The reward that has to be collected somewhere else. Set apart from the
+   fees and interest above it, which need no collecting at all. */
+.reward-panel { margin-top: 18px; padding: 16px 18px; background: var(--s1); border: 1px solid var(--line); border-radius: var(--r); }
+.reward-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.reward-head h4 { font-size: 15px; font-weight: 600; color: var(--paper); }
+.reward-head p { margin-top: 4px; max-width: 46ch; }
+.reward-panel .kv { margin: 14px 0 10px; }
+.claim-steps { margin: 10px 0 0 18px; font-size: 13px; color: var(--paper-dim); line-height: 1.8; }

@@ -133,6 +133,12 @@ def build_zap_api(db: Database, engine: ZapEngine) -> APIRouter:
         addr = _addr(authorization)
         return await _owner_view(await _run(lambda: engine.request_reentry(position_id, addr)))
 
+    @r.post("/{position_id}/close")
+    async def close_now(position_id: str,
+                        authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        addr = _addr(authorization)
+        return await _owner_view(await _run(lambda: engine.request_close(position_id, addr)))
+
     @r.post("/{position_id}/cancel")
     async def cancel(position_id: str,
                      authorization: str | None = Header(default=None)) -> dict[str, Any]:

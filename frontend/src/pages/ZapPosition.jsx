@@ -162,6 +162,10 @@ export default function ZapPosition() {
   const roundTrip = c.estimated_exit_and_reentry_cost_bps;
   const band = il.exit_threshold_bps - il.reentry_threshold_bps;
   const roundTripBites = roundTrip != null && band != null && roundTrip >= band;
+  const e = v.earnings || {};
+  const acc = e.accrues_into_the_position || {};
+  const paid = e.paid_separately;
+  const closed = v.state === 'closed';
   // Yield never appears without the IL beside it. That is a rule about this
   // feature, not a layout preference: a yield figure on its own is the half
   // of the story that sells.
@@ -228,6 +232,58 @@ export default function ZapPosition() {
               <Fact label="Deposited" value={`${v.deposit.amount} ${v.deposit.asset}`}
                     sub={v.deposit.usd_at_deposit != null ? usd(v.deposit.usd_at_deposit) : undefined} />
             </div>
+          </div>
+
+          {/* What it has earned, split by whether it needs collecting. Fees and
+              Aave interest accrue into the position and need no claim; the X
+              Layer incentive is paid by OKX and does not. */}
+          <div className="card" style={{ display: paid ? undefined : 'none' }}>
+            <h3>What this is earning</h3>
+            <div className="dp-facts" style={{ marginTop: 4 }}>
+              <Fact label="Pool fees since entry"
+                    value={acc.pool_fees_usd != null ? usd(acc.pool_fees_usd) : (acc.pool_fee_return_pct != null ? `${acc.pool_fee_return_pct}%` : '—')}
+                    sub={acc.pool_fee_apr_pct_measured != null
+                      ? `${acc.pool_fee_apr_pct_measured}% APR measured · IL ${pct(il.current_bps)}`
+                      : `IL ${pct(il.current_bps)}`} />
+              {parked && (
+                <Fact label="Aave interest"
+                      value={acc.aave_interest_usd != null ? usd(acc.aave_interest_usd) : '—'}
+                      sub={`${acc.aave_supply_apy_pct ?? '—'}% APY · IL ${pct(il.current_bps)}`} />
+              )}
+              <Fact label={closed ? 'Realised' : 'Accrued so far'}
+                    value={closed ? usd(e.realized_usd) : (e.total_accrued_usd != null ? usd(e.total_accrued_usd) : '—')}
+                    sub={closed ? 'in your wallet' : 'already inside the position value'} />
+            </div>
+            <p className="small">{acc.note}.</p>
+
+            {paid && <div className="reward-panel">
+              <div className="reward-head">
+                <div>
+                  <h4>{paid.programme}</h4>
+                  <p className="muted small">{paid.pot}</p>
+                </div>
+                <a className="btn primary" href={paid.claim.url} target="_blank" rel="noreferrer">
+                  Claim at OKX ↗
+                </a>
+              </div>
+              <div className="kv tight">
+                <div><span>Window</span><b>{paid.window}</b></div>
+                <div><span>Your share of this pool</span>
+                  <b>{paid.your_pool_share_pct != null ? `${paid.your_pool_share_pct}%` : '—'}</b></div>
+                <div><span>Paid by</span><b>X Layer, in USDG, on OKX's side</b></div>
+              </div>
+              <p className="small">
+                {paid.why_no_amount}. {paid.claim.note}.
+              </p>
+              <ol className="claim-steps">
+                {paid.claim.steps.map((st) => <li key={st}>{st}</li>)}
+              </ol>
+              <p className="muted small">
+                <a href={paid.claim.instructions_url} target="_blank" rel="noreferrer">OKX's instructions ↗</a>
+                {' · '}
+                <a href={paid.claim.programme_url} target="_blank" rel="noreferrer">programme terms ↗</a>
+              </p>
+            </div>}
           </div>
 
           <div className="card">
@@ -344,6 +400,12 @@ export default function ZapPosition() {
                 )}
                 {v.state === 'entering' && v.flow?.step === 0 && (
                   <button className="danger" onClick={() => act(() => api.zapCancel(id), 'Cancelled.')}>Cancel</button>
+                )}
+                {['in_pool', 'parked'].includes(v.state) && (
+                  <button className="danger" onClick={() => act(() => api.zapClose(id),
+                    'Close queued. Sign it above and the proceeds land in your wallet.')}>
+                    Close and withdraw
+                  </button>
                 )}
               </div>
               <OpenInChat text={v.state === 'in_pool'

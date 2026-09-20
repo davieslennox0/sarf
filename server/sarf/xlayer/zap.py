@@ -98,6 +98,9 @@ STATE_LABELS = {
     "parked": "Parked in Aave V3, earning supply yield",
     "reentry_pending": "Price has normalised. Re-entry is ready to sign",
     "reentering": "Re-entering the pool",
+    "close_pending": "Closing: the way out is ready to sign",
+    "closing": "Closing: moving the position back to your wallet",
+    "closed": "Closed. The proceeds are in your wallet",
     "cancelled": "Cancelled before anything was signed",
 }
 
@@ -110,8 +113,15 @@ FLOWS: dict[str, list[str]] = {
              "approve_park_aave", "aave_supply"],
     "reenter": ["aave_withdraw", "approve_park_okx", "swap_park_to_rwa",
                 "approve_rwa_router", "swap_in", "approve_other_router", "add_liquidity"],
+    # Closing is the exit without its last two steps: instead of supplying the
+    # USDT to Aave, it stops once the USDT is in the wallet. From Aave there is
+    # nothing to unwind but the withdrawal itself.
+    "close": ["approve_lp_router", "remove_liquidity", "approve_other_router_exit",
+              "swap_other_to_rwa", "approve_rwa_okx", "swap_rwa_to_park"],
+    "close_parked": ["aave_withdraw"],
 }
-FLOW_STATE = {"enter": "entering", "exit": "exiting", "reenter": "reentering"}
+FLOW_STATE = {"enter": "entering", "exit": "exiting", "reenter": "reentering",
+              "close": "closing", "close_parked": "closing"}
 
 
 # --------------------------------------------------------------------- math
@@ -529,6 +539,25 @@ class ZapEngine:
                 "reason": "manual", "il_bps": pos["last_il_bps"]})
         return self.db.get_zap_position(pos["position_id"])
 
+    def request_close(self, position_id: str, address: str) -> dict[str, Any]:
+        """Take the whole position back to the wallet and stop watching it.
+
+        Allowed from the pool and from Aave, because those are the two places
+        the money can actually be sitting. A position mid-flow has a half-built
+        transaction outstanding and has to finish or fail first.
+        """
+        pos = self._owned(position_id, address)
+        if pos["state"] not in ("in_pool", "parked"):
+            raise ValueError(
+                "a position can only be closed from the pool or from Aave "
+                f"(state: {pos['state']})")
+        if self.db.update_zap_position(pos["position_id"], expect_state=pos["state"],
+                                       state="close_pending",
+                                       flow_ctx={"close_from": pos["state"]}):
+            self.db.log_zap_event(pos["position_id"], "close_requested", {
+                "from": pos["state"], "il_bps": pos["last_il_bps"]})
+        return self.db.get_zap_position(pos["position_id"])
+
     def cancel(self, position_id: str, address: str) -> dict[str, Any]:
         pos = self._owned(position_id, address)
         if pos["state"] != "entering" or pos["flow_step"] > 0 or self._pending(pos).get("tx_hash"):
@@ -611,9 +640,15 @@ class ZapEngine:
         """The next transaction for the owner's wallet to sign, built from
         live state, or a note that nothing is waiting."""
         pos = self._owned(position_id, address)
-        if pos["state"] in ("exit_pending", "reentry_pending"):
-            flow = "exit" if pos["state"] == "exit_pending" else "reenter"
+        if pos["state"] in ("exit_pending", "reentry_pending", "close_pending"):
+            if pos["state"] == "close_pending":
+                # Where the money is decides which way out it takes.
+                flow = "close_parked" if pos["flow_ctx"].get("close_from") == "parked" else "close"
+            else:
+                flow = "exit" if pos["state"] == "exit_pending" else "reenter"
             ctx = {"trigger_il_bps": pos["last_il_bps"], "trigger_price": pos["last_price"]}
+            if flow.startswith("close"):
+                ctx["close_from"] = pos["flow_ctx"].get("close_from")
             if not self.db.update_zap_position(
                     pos["position_id"], expect_state=pos["state"], state=FLOW_STATE[flow],
                     flow=flow, flow_step=0, flow_ctx=ctx, pending_tx=None):
@@ -940,6 +975,23 @@ class ZapEngine:
                 "deposited": f"{_fmt(ctx.get('hold_rwa'), pool.rwa.decimals)} {pool.rwa.symbol} + "
                              f"{_fmt(ctx.get('hold_other'), pool.other.decimals)} {pool.other.symbol}",
                 "note": None if flow == "enter" else "entry price reset to the re-entry price"})
+        elif flow in ("close", "close_parked"):
+            park_units = int(ctx.get("park_amount") or 0)
+            proceeds = park_units / 10 ** self.park.decimals
+            deposit_usd = pos.get("deposit_usd")
+            self.db.update_zap_position(
+                pid, state="closed", flow=None, flow_step=0, flow_ctx={}, pending_tx=None,
+                lp_amount=None, parked_amount=None, parked_index=None,
+                closed_at=time.time(), realized_amount=str(park_units),
+                realized_usd=round(proceeds, 2), last_checked_at=time.time())
+            self.db.log_zap_event(pid, "closed", {
+                "proceeds": f"{_fmt(park_units, self.park.decimals)} {self.park.symbol} in your wallet",
+                "realized_usd": round(proceeds, 2),
+                "vs_deposit_usd": (round(proceeds - deposit_usd, 2)
+                                   if deposit_usd is not None else None),
+                "from": ctx.get("close_from"),
+                "note": ("the position is closed; Sarf has stopped watching it and will not "
+                         "re-enter")})
         else:
             aave = await self.aave_state()
             sync = ctx.get("exit_sync")
@@ -992,6 +1044,8 @@ class ZapEngine:
                 days = (time.time() - (pos.get("entered_at") or time.time())) / 86400
                 if days >= 1 / 24:
                     lp_fee_apr = lp_fee_pct * 365 / days
+        elif pos["state"] == "closed":
+            value = pos.get("realized_usd")
         elif pos["state"] in ("parked", "reentry_pending") and pos.get("parked_amount"):
             owed = int(pos["parked_amount"])
             if aave and pos.get("parked_index"):
@@ -1033,14 +1087,88 @@ class ZapEngine:
             # Never shown without the IL beside it. See the headline.
             "il_bps_now": r2(il_now),
         }
+
+        # --- what this position has actually earned -------------------------
+        #
+        # Three sources, and they behave differently. Pool fees and Aave
+        # interest accrue INTO the position: they need no claim and they are
+        # already inside the value above. The X Layer incentive does not — it
+        # is paid by OKX, off this chain, and has to be collected there.
+        #
+        # There is deliberately no estimate of the USDG amount. Rewards are a
+        # share of a pot split across the pools X Layer selects, and we do not
+        # know how many that is; a number derived from a guess at the divisor
+        # would look like a measurement. What IS knowable is the share of the
+        # pool you hold, which is what the reward is proportional to, so that
+        # is what gets reported.
+        pool_fees_usd = None
+        if value is not None and lp_fee_pct:
+            g = lp_fee_pct / 100
+            pool_fees_usd = value * g / (1 + g)
+        aave_interest_usd = None
+        if pos["state"] in ("parked", "reentry_pending") and value is not None and pos.get("parked_amount"):
+            aave_interest_usd = value - int(pos["parked_amount"]) / 10 ** self.park.decimals
+        pool_share_pct = None
+        if st and st.get("total_supply") and pos.get("lp_amount"):
+            pool_share_pct = 100 * int(pos["lp_amount"]) / st["total_supply"]
+        realized_usd = pos.get("realized_usd")
+        earned = [x for x in (pool_fees_usd, aave_interest_usd) if x is not None]
+        earnings = {
+            "accrues_into_the_position": {
+                "pool_fees_usd": r2(pool_fees_usd),
+                "pool_fee_return_pct": r2(lp_fee_pct),
+                "pool_fee_apr_pct_measured": r2(lp_fee_apr),
+                "aave_interest_usd": r2(aave_interest_usd),
+                "aave_supply_apy_pct": aave["supply_apy_pct"] if aave else None,
+                "note": ("Both are already inside the position value and need no claim. "
+                         "Uniswap fees compound into the pool position itself"),
+            },
+            "paid_separately": {
+                "programme": self.incentive["name"],
+                "window": self.incentive["window"],
+                "pot": self.incentive.get("rewards"),
+                "your_pool_share_pct": round(pool_share_pct, 4) if pool_share_pct is not None else None,
+                "amount_usdg": None,
+                "why_no_amount": ("The pot is split across the pools X Layer selects and paid on "
+                                  "OKX's side, so Sarf cannot read what you are owed without "
+                                  "guessing the divisor. Your share of the pool above is what the "
+                                  "reward is proportional to"),
+                "claimable_here": False,
+                "claim": {
+                    "where": "OKX Wallet",
+                    "steps": ["Hold USDG on X Layer via OKX Wallet",
+                              "Connect your wallet to the exchange to activate the rewards programme",
+                              "Claim under the USDG token page in OKX Wallet"],
+                    "url": "https://web3.okx.com/portfolio",
+                    "instructions_url": "https://www.okx.com/en-us/help/usdg-on-x-layer-faq",
+                    "programme_url": "https://www.okx.com/en-us/learn/xlayer-blog-incentive-programm-2",
+                    "note": ("Rewards are credited by OKX, not by a contract Sarf can call, so "
+                             "there is nothing here to sign. Verified 2026-09-20: no on-chain "
+                             "distributor and no claim contract is published"),
+                },
+            },
+            "realized_usd": realized_usd,
+            "total_accrued_usd": r2(sum(earned)) if earned else None,
+            # The rule for this feature: no yield figure without the IL that
+            # paid for it standing next to it.
+            "il_bps_now": r2(il_now),
+        }
         earning = ("Aave supply APY " + (f"{aave['supply_apy_pct']:.2f}%" if aave else "unavailable")
                    if pos["state"] in ("parked", "reentry_pending")
                    else "pool fees " + (f"{lp_fee_pct:+.3f}% since entry" if lp_fee_pct is not None
                                         else "not measured yet"))
-        headline = (f"IL {il_now / 100:.2f}% (exit above {pos['il_threshold_bps'] / 100:.2f}%, "
-                    f"re-enter below {pos['reentry_bps'] / 100:.2f}%) · {earning}"
-                    if il_now is not None else
-                    f"IL not measured yet: no entry price until the deposit is signed · {earning}")
+        if pos["state"] == "closed":
+            back = pos.get("realized_usd")
+            dep = pos.get("deposit_usd")
+            headline = (f"Closed. {_fmt(pos.get('realized_amount'), self.park.decimals)} "
+                        f"{self.park.symbol} back in your wallet"
+                        + (f" against ${dep:,.2f} deposited" if dep is not None else "")
+                        + (f" ({back - dep:+,.2f})" if (back is not None and dep is not None) else ""))
+        else:
+            headline = (f"IL {il_now / 100:.2f}% (exit above {pos['il_threshold_bps'] / 100:.2f}%, "
+                        f"re-enter below {pos['reentry_bps'] / 100:.2f}%) · {earning}"
+                        if il_now is not None else
+                        f"IL not measured yet: no entry price until the deposit is signed · {earning}")
         pend = self._pending(pos)
         out = {
             "position_id": pos["position_id"],
@@ -1056,6 +1184,7 @@ class ZapEngine:
                         "usd_at_deposit": r2(pos.get("deposit_usd"))},
             "il": il_block,
             "yield": yield_block,
+            "earnings": earnings,
             "costs": self.costs(pool, pos["il_threshold_bps"], st, flt),
             "value": {
                 "current_usd": r2(value),
@@ -1089,6 +1218,8 @@ class ZapEngine:
             "exiting": "Finish signing the exit steps on the position page",
             "reentry_pending": "Sign the re-entry on the position page: withdraw from Aave, re-split, re-deposit",
             "reentering": "Finish signing the re-entry steps on the position page",
+            "close_pending": "Sign the close on the position page: unwind, convert to USDT, into your wallet",
+            "closing": "Finish signing the close on the position page",
         }.get(pos["state"])
 
     # --------------------------------------------------------------- watcher

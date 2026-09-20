@@ -150,6 +150,22 @@ def register_zap_tools(mcp: FastMCP, engine: ZapEngine) -> None:
         return await _view(pos)
 
     @mcp.tool()
+    async def zap_close(
+        position_id: Annotated[str, Field(description="A zap_... id in the pool or parked in Aave")],
+    ) -> dict[str, Any]:
+        """Close a zap position for good: unwind it and send the proceeds back
+        to the user's own wallet as USDT, instead of parking them in Aave.
+
+        This is how a position is REALISED. zap_exit only moves the money to
+        Aave and keeps watching; this ends the position, and Sarf stops
+        watching it and will not re-enter. Works from the pool or from Aave.
+        Returns the sign_url for the closing steps.
+        """
+        address = require_address()
+        pos = _owned_errors(lambda: engine.request_close(position_id, address))
+        return await _view(pos)
+
+    @mcp.tool()
     async def zap_reenter(
         position_id: Annotated[str, Field(description="A zap_... id that is parked in Aave")],
     ) -> dict[str, Any]:

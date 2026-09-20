@@ -25,8 +25,8 @@ from sarf.validation import ValidationError
 from sarf.xlayer import zap as zapmod
 from sarf.xlayer.registry import registry
 from sarf.xlayer.zap import (
-    SYNC_TOPIC, TRANSFER_TOPIC, ZapEngine, il_bps, last_sync, optimal_swap_in,
-    transfers_between, transfers_in,
+    FLOWS, LIVE_STATES, SYNC_TOPIC, TRANSFER_TOPIC, WATCHED_STATES, ZapEngine, il_bps,
+    last_sync, optimal_swap_in, transfers_between, transfers_in,
 )
 from sarf.xlayer.zap_api import build_zap_api
 
@@ -555,4 +555,66 @@ def test_mcp_tools_register():
     register_zap_tools(m, ZapEngine(Database(":memory:"), None, registry()))
     names = {t.name for t in run(m.list_tools())}
     assert names == {"get_zap_pools", "zap_deposit", "get_zap_position", "set_zap_threshold",
-                     "zap_exit", "zap_reenter"}
+                     "zap_exit", "zap_reenter", "zap_close"}
+
+
+def test_closing_a_position_puts_the_money_back_in_the_wallet():
+    """zap_exit parks in Aave and keeps watching; closing is the only way a
+    position is ever realised. It must end terminal: proceeds recorded, the
+    watcher off it, and no way back in."""
+    db = Database(":memory:")
+    eng = ZapEngine(db, None, registry())
+    pid = db.create_zap_position(
+        address=OWNER, pool_key="LAIKA-wSPCXx", deposit_symbol="SPCXx",
+        deposit_amount=str(E18 // 2), deposit_usd=92.4, il_threshold_bps=800,
+        reentry_bps=400, state="in_pool", lp_amount="1000", p_initial=50081.0,
+        lp_index_initial=1.0)
+
+    # Closing from the pool is the exit flow WITHOUT its two Aave steps, so it
+    # stops once the USDT is in the wallet.
+    assert FLOWS["close"] == FLOWS["exit"][:-2]
+    assert FLOWS["close"][-1] == "swap_rwa_to_park"
+    assert FLOWS["close_parked"] == ["aave_withdraw"]
+
+    eng.request_close(pid, OWNER)
+    assert db.get_zap_position(pid)["state"] == "close_pending"
+
+    db.update_zap_position(pid, state="closed", realized_usd=90.15,
+                           realized_amount="90150000", closed_at=1.0)
+    assert "closed" not in LIVE_STATES and "closed" not in WATCHED_STATES
+    for fn in (eng.request_exit, eng.request_reentry, eng.request_close):
+        with pytest.raises(ValueError):
+            fn(pid, OWNER)
+
+
+def test_a_closed_position_reports_what_was_banked_not_a_live_mark():
+    db = Database(":memory:")
+    eng = ZapEngine(db, None, registry())
+    pid = db.create_zap_position(
+        address=OWNER, pool_key="LAIKA-wSPCXx", deposit_symbol="SPCXx",
+        deposit_amount=str(E18 // 2), deposit_usd=92.4, il_threshold_bps=800,
+        reentry_bps=400, state="closed", realized_usd=90.15,
+        realized_amount="90150000", closed_at=1.0)
+    v = run(eng.view(db.get_zap_position(pid)))
+    assert v["value"]["current_usd"] == 90.15
+    assert v["earnings"]["realized_usd"] == 90.15
+    assert "Closed" in v["headline"] and "90.15" in v["headline"]
+
+
+def test_rewards_sarf_cannot_pay_are_never_given_an_amount():
+    """The X Layer incentive is paid by OKX off-chain, from a pot split across
+    pools we cannot enumerate. A number there would be a guess in the clothes
+    of a measurement."""
+    db = Database(":memory:")
+    eng = ZapEngine(db, None, registry())
+    pid = db.create_zap_position(
+        address=OWNER, pool_key="LAIKA-wSPCXx", deposit_symbol="SPCXx",
+        deposit_amount=str(E18 // 2), deposit_usd=92.4, il_threshold_bps=800,
+        reentry_bps=400, state="in_pool")
+    v = run(eng.view(db.get_zap_position(pid)))
+    paid = v["earnings"]["paid_separately"]
+    assert paid["amount_usdg"] is None
+    assert paid["claimable_here"] is False
+    assert paid["claim"]["url"].startswith("https://")
+    # No yield figure ever travels without the IL that paid for it.
+    assert "il_bps_now" in v["earnings"]

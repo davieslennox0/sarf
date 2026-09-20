@@ -312,6 +312,13 @@ _MIGRATIONS = [
     # re-fires the same breach every poll interval.
     "ALTER TABLE risk_params ADD COLUMN last_triggered_at REAL",
     "ALTER TABLE risk_params ADD COLUMN last_trigger_status TEXT",
+    # Closing a zap position: what came back to the wallet, and when. Until
+    # this existed a position could only ever cycle between the pool and
+    # Aave — every figure on it was an unrealised mark and there was no way
+    # to bank one.
+    "ALTER TABLE zap_positions ADD COLUMN closed_at REAL",
+    "ALTER TABLE zap_positions ADD COLUMN realized_amount TEXT",
+    "ALTER TABLE zap_positions ADD COLUMN realized_usd REAL",
 ]
 
 # Stop-loss / take-profit levels, one row per (address, symbol).

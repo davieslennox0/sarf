@@ -176,6 +176,7 @@ export const api = {
   zapExit: (id) => req(`/api/zap/${encodeURIComponent(id)}/exit`, { method: 'POST' }),
   zapReenter: (id) => req(`/api/zap/${encodeURIComponent(id)}/reenter`, { method: 'POST' }),
   zapCancel: (id) => req(`/api/zap/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  zapClose: (id) => req(`/api/zap/${encodeURIComponent(id)}/close`, { method: 'POST' }),
   zapStep: (id) => req(`/api/zap/${encodeURIComponent(id)}/step`, { method: 'POST' }),
   zapStepSubmitted: (id, txHash) =>
     req(`/api/zap/${encodeURIComponent(id)}/step/submitted`, {
