@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api, ensureSession, getSession } from '../api.js';
 import { connect, currentAccount, sendTransaction, txUrl } from '../wallet.js';
 import { OpenInChat } from '../handoff.jsx';
+import { Fact, IlRing, PairMark, num, pct, usd } from '../zapui.jsx';
 
 /**
  * One zap position. Public and bookmarkable: anyone with the link sees IL,
@@ -10,12 +11,14 @@ import { OpenInChat } from '../handoff.jsx';
  * on-chain anyway. Acting on it (signing steps, moving thresholds, exiting)
  * needs the owner's wallet session, and every action also offers the same
  * request as a prefilled chat.
+ *
+ * Laid out like a lending reserve page: what the position IS on the left,
+ * ranked with the one number that matters made graphic, and what you can DO
+ * about it in a panel that stays with you on the right.
  */
 
 const REFRESH_MS = 15000;
-const usd = (x) => (x == null ? '—' : `$${Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const signed = (x) => (x == null ? '—' : `${x >= 0 ? '+' : '−'}$${Math.abs(x).toFixed(2)}`);
-const pctBps = (b) => (b == null ? '—' : `${(Number(b) / 100).toFixed(2)}%`);
 const when = (t) => new Date(t * 1000).toLocaleString();
 
 const EVENT_LABELS = {
@@ -37,17 +40,23 @@ const EVENT_LABELS = {
   cancelled: 'Cancelled',
 };
 
+/** The linear view of the same thing the ring shows, with both lines on it. */
 function IlMeter({ il }) {
-  // Scale to 1.5x the exit line so both markers and the current value fit.
   const max = Math.max(il.exit_threshold_bps * 1.5, (il.current_bps || 0) * 1.1, 1);
   const at = (v) => `${Math.min(100, (v / max) * 100)}%`;
   const over = il.current_bps != null && il.current_bps > il.exit_threshold_bps;
   return (
-    <div className="il-meter" aria-label="Impermanent loss against thresholds">
-      <div className={`il-fill${over ? ' over' : ''}`} style={{ width: at(il.current_bps || 0) }} />
-      <div className="il-mark re" style={{ left: at(il.reentry_threshold_bps) }} title="re-entry line" />
-      <div className="il-mark ex" style={{ left: at(il.exit_threshold_bps) }} title="exit line" />
-    </div>
+    <>
+      <div className="il-meter" aria-label="Impermanent loss against thresholds">
+        <div className={`il-fill${over ? ' over' : ''}`} style={{ width: at(il.current_bps || 0) }} />
+        <div className="il-mark re" style={{ left: at(il.reentry_threshold_bps) }} title="re-entry line" />
+        <div className="il-mark ex" style={{ left: at(il.exit_threshold_bps) }} title="exit line" />
+      </div>
+      <div className="il-legend">
+        <span><i className="dot re" /> re-enter under {pct(il.reentry_threshold_bps)}</span>
+        <span><i className="dot ex" /> exit past {pct(il.exit_threshold_bps)}</span>
+      </div>
+    </>
   );
 }
 
@@ -145,163 +154,201 @@ export default function ZapPosition() {
     setTimeout(() => setCopied(false), 1500);
   };
   const ask = (s) => `Using Sarf, ${s} (zap position ${v.position_id}).`;
+  // Yield never appears without the IL beside it. That is a rule about this
+  // feature, not a layout preference: a yield figure on its own is the half
+  // of the story that sells.
+  const yieldValue = parked
+    ? (y.aave_usdt_supply_apy_pct != null ? `${y.aave_usdt_supply_apy_pct}%` : '—')
+    : (y.pool_fee_return_since_entry_pct != null ? `${y.pool_fee_return_since_entry_pct}%` : '—');
 
   return (
     <section className="zap">
-      <div className="eyebrow tick"><Link to="/zap">Zap</Link> · {pool.pair} · Uniswap V2 on X Layer</div>
-      <h1 style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-        {pool.pair}
-        <span className={`chip${pending ? ' accent' : ''}`}>{v.state.replace('_', ' ')}</span>
-      </h1>
-      <p className="sub">{v.state_label}</p>
-      <p className="zap-headline">{v.headline}</p>
+      <Link className="backlink" to="/zap">← All zap pools</Link>
+
+      <div className="market-head">
+        <div className="pos-id">
+          <PairMark a={pool.other.symbol} b={pool.rwa.symbol} />
+          <div>
+            <h1>
+              {pool.pair}
+              <span className={`chip${pending ? ' accent' : ''}`}>{v.state.replace(/_/g, ' ')}</span>
+            </h1>
+            <p className="sub">{v.state_label}</p>
+          </div>
+        </div>
+        <div className="market-stats">
+          <div><b>{usd(value.current_usd)}</b><span>{parked ? 'parked in Aave' : 'position value'}</span></div>
+          <div><b className={il.current_bps > il.exit_threshold_bps ? 'bad' : ''}>{pct(il.current_bps)}</b><span>impermanent loss</span></div>
+          <div><b>{yieldValue}</b><span>{parked ? 'Aave USDT APY' : 'pool fees since entry'}</span></div>
+        </div>
+      </div>
 
       {err && <p className="error" style={{ marginTop: 14 }}>{err}</p>}
       {note && <p className="ok" style={{ marginTop: 14 }}>{note}</p>}
 
-      <div className="stats zap-stats">
-        <div><b>{pctBps(il.current_bps)}</b><span>impermanent loss now</span></div>
-        <div><b>{pctBps(il.exit_threshold_bps)}</b><span>exit line · re-enter under {pctBps(il.reentry_threshold_bps)}</span></div>
-        <div><b>{usd(value.current_usd)}</b><span>{parked ? 'parked in Aave' : 'position value'}</span></div>
-        {/* Yield is never shown without the IL beside it: this tile sits in
-            the same row as the IL tile on purpose. */}
-        <div>
-          <b>{parked ? `${y.aave_usdt_supply_apy_pct ?? '—'}%` : (y.pool_fee_return_since_entry_pct != null ? `${y.pool_fee_return_since_entry_pct}%` : '—')}</b>
-          <span>{parked ? 'Aave USDT APY' : 'pool fees since entry'} · IL {pctBps(il.current_bps)}</span>
-        </div>
-      </div>
-      <IlMeter il={il} />
+      <div className="pos-grid">
+        <div className="pos-main">
+          <div className="card">
+            <h3>Where this position stands</h3>
+            <div className="il-block">
+              <IlRing currentBps={il.current_bps} exitBps={il.exit_threshold_bps} />
+              <div className="il-said">
+                <p className="zap-headline">{v.headline}</p>
+                <div className="kv tight">
+                  <div><span>Entry price</span><b>{num(il.p_initial, 2)} {il.price_unit}</b></div>
+                  <div><span>Pool price now</span><b>{num(il.p_current, 2)} {il.price_unit}</b></div>
+                </div>
+              </div>
+            </div>
+            <IlMeter il={il} />
+            <div className="dp-facts" style={{ marginTop: 20 }}>
+              <Fact label="Exit line" value={pct(il.exit_threshold_bps)} sub="moves you to Aave" />
+              <Fact label="Re-entry line" value={pct(il.reentry_threshold_bps)} sub="brings you back in" />
+              <Fact label="Round trip" value={pct(c.estimated_exit_and_reentry_cost_bps)} sub="out and back, in fees and tax" />
+              <Fact label="Deposited" value={`${v.deposit.amount} ${v.deposit.asset}`}
+                    sub={v.deposit.usd_at_deposit != null ? usd(v.deposit.usd_at_deposit) : undefined} />
+            </div>
+          </div>
 
-      {isOwner && pending && (
-        <div className="card accent" style={{ marginTop: 24 }}>
-          <h3>{v.action_needed}</h3>
-          {signing ? (
-            <p>
-              {signing.count ? `Step ${signing.index + 1} of ${signing.count}: ` : ''}{signing.title}
-              <br /><span className="muted small">Confirm in your wallet. This page moves on by itself once each step lands.</span>
+          <div className="card">
+            <h3>Against simply holding</h3>
+            <div className="kv">
+              <div><span>This position now</span><b>{usd(value.current_usd)}</b></div>
+              <div><span>Same two amounts, held (the IL benchmark)</span><b>{usd(value.hold_50_50_usd)}</b></div>
+              <div><span>Difference</span><b className={value.vs_hold_50_50_usd < 0 ? 'error' : 'ok'}>{signed(value.vs_hold_50_50_usd)}</b></div>
+              <div><span>Original {v.deposit.asset}, never zapped</span><b>{usd(value.hold_single_asset_usd)}</b></div>
+              <div><span>Difference</span><b className={value.vs_hold_single_asset_usd < 0 ? 'error' : 'ok'}>{signed(value.vs_hold_single_asset_usd)}</b></div>
+            </div>
+            <p className="small">
+              The first comparison is the impermanent-loss benchmark; the second is what you
+              would have by never zapping at all. Pool value includes fees earned; incentive
+              rewards are paid separately by X Layer.
             </p>
-          ) : (
-            <>
-              <button className="primary big" style={{ marginTop: 10 }} onClick={runFlow}>Sign next steps in wallet</button>
-              <OpenInChat text={ask('show me what is waiting to be signed on my zap position and give me the link')} />
-            </>
-          )}
-          {v.flow && (
-            <ol className="zap-steps">
-              {v.flow.steps.map((s, i) => (
-                <li key={s} className={i < v.flow.step ? 'done' : i === v.flow.step ? 'now' : ''}>{s.replace(/_/g, ' ')}</li>
-              ))}
-            </ol>
-          )}
-        </div>
-      )}
-      {!isOwner && pending && (
-        <p className="muted small" style={{ marginTop: 18 }}>
-          This position has steps waiting for its owner's signature. Sign in with the owning wallet to continue.
-          <button className="linkish" style={{ marginLeft: 8 }} onClick={() => load()}>I'm the owner, reload</button>
-        </p>
-      )}
+          </div>
 
-      <div className="grid g2" style={{ marginTop: 24 }}>
-        <div className="card">
-          <h3>Against holding</h3>
-          <div className="kv">
-            <div><span>Now</span><b>{usd(value.current_usd)}</b></div>
-            <div><span>Same two amounts, held (IL benchmark)</span><b>{usd(value.hold_50_50_usd)}</b></div>
-            <div><span>Difference</span><b className={value.vs_hold_50_50_usd < 0 ? 'error' : 'ok'}>{signed(value.vs_hold_50_50_usd)}</b></div>
-            <div><span>Original {v.deposit.asset}, untouched</span><b>{usd(value.hold_single_asset_usd)}</b></div>
-            <div><span>Difference</span><b className={value.vs_hold_single_asset_usd < 0 ? 'error' : 'ok'}>{signed(value.vs_hold_single_asset_usd)}</b></div>
+          <div className="card">
+            <h3>Costs of this pool</h3>
+            <p className="small" style={{ marginTop: 0 }}>
+              {c.paired_token_tax}.{' '}
+              {c.swap_back_float_pct_of_reserve != null && (
+                <>Pending swap-back float: {c.swap_back_float_pct_of_reserve}% of the pool's{' '}
+                  {pool.other.symbol}. {c.swap_back_note}.</>
+              )}
+            </p>
+            {c.warning && <p className="disclosure" style={{ marginTop: 10 }}>{c.warning}</p>}
           </div>
-          <p className="small">
-            The first comparison is the impermanent-loss benchmark; the second is what
-            you'd have by never zapping. Pool value includes fees earned; incentive
-            rewards are paid separately by X Layer.
-          </p>
+
+          <div className="section-label">History</div>
+          <ol className="zap-history">
+            {[...v.history].reverse().map((e, i) => {
+              const step = e.kind === 'step_confirmed';
+              const label = step
+                ? e.step.replace(/_/g, ' ').replace(/^./, (ch) => ch.toUpperCase())
+                : (EVENT_LABELS[e.kind] || e.kind);
+              return (
+                <li key={i} className={step ? 'is-step' : 'is-event'}>
+                  <span className="when">{when(e.at)}</span>
+                  <span className="what">
+                    <b>{step ? '✓ ' : ''}{label}</b>
+                    <span className="muted">
+                      {e.tx_hash && <a href={txUrl(e.tx_hash)} target="_blank" rel="noreferrer">tx ↗</a>}
+                      {e.il_bps != null && <> IL {pct(e.il_bps)}</>}
+                      {e.il_bps_at_exit != null && <> IL at exit {pct(e.il_bps_at_exit)} · entry {Number(e.p_initial).toFixed(2)} → exit {Number(e.p_at_exit).toFixed(2)} · {e.parked}</>}
+                      {e.deposited && <> {e.deposited}</>}
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
         </div>
-        <div className="card">
-          <h3>Entry and costs</h3>
-          <div className="kv">
-            <div><span>Deposited</span><b>{v.deposit.amount} {v.deposit.asset}{v.deposit.usd_at_deposit != null ? ` (${usd(v.deposit.usd_at_deposit)})` : ''}</b></div>
-            <div><span>Entry price</span><b>{il.p_initial != null ? `${Number(il.p_initial).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</b></div>
-            <div><span>Current price</span><b>{il.p_current != null ? `${Number(il.p_current).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</b></div>
-            <div><span>Price unit</span><b>{il.price_unit}</b></div>
-            <div><span>Exit + re-entry cost</span><b>≈ {pctBps(c.estimated_exit_and_reentry_cost_bps)}</b></div>
+
+        {/* Everything you can do, in one place that follows you down the page. */}
+        <aside className="pos-side">
+          {isOwner && pending && (
+            <div className="card accent">
+              {/* The server phrases this for chat, where "on the position
+                  page" is the whole point. Here it is where you already are. */}
+              <h3>{v.action_needed.replace(/ on the position page$/, '')}</h3>
+              {signing ? (
+                <p>
+                  {signing.count ? `Step ${signing.index + 1} of ${signing.count}: ` : ''}{signing.title}
+                  <br /><span className="muted small">Confirm in your wallet. This page moves on by itself once each step lands.</span>
+                </p>
+              ) : (
+                <>
+                  <button className="primary big" style={{ marginTop: 10 }} onClick={runFlow}>Sign next steps in wallet</button>
+                  <OpenInChat text={ask('show me what is waiting to be signed on my zap position and give me the link')} />
+                </>
+              )}
+              {v.flow && (
+                <ol className="zap-steps">
+                  {v.flow.steps.map((s, i) => (
+                    <li key={s} className={i < v.flow.step ? 'done' : i === v.flow.step ? 'now' : ''}>{s.replace(/_/g, ' ')}</li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
+          {!isOwner && pending && (
+            <div className="card">
+              <h3>Waiting on its owner</h3>
+              <p>This position has steps waiting for a signature. Sign in with the owning wallet to continue.</p>
+              <button style={{ marginTop: 10 }} onClick={() => load()}>I'm the owner, reload</button>
+            </div>
+          )}
+
+          {isOwner && (
+            <div className="card">
+              <h3>Your lines</h3>
+              <div className="zap-fields">
+                <label>Exit when IL exceeds (%)
+                  <input inputMode="decimal" placeholder={(il.exit_threshold_bps / 100).toString()} value={th.exit}
+                         onChange={(e) => setTh({ ...th, exit: e.target.value })} />
+                </label>
+                <label>Re-enter under (%)
+                  <input inputMode="decimal" placeholder={(il.reentry_threshold_bps / 100).toString()} value={th.re}
+                         onChange={(e) => setTh({ ...th, re: e.target.value })} />
+                </label>
+              </div>
+              <div className="side-actions">
+                <button disabled={!th.exit} onClick={() => act(() => api.zapThreshold(id, {
+                  il_threshold_bps: Math.round(Number(th.exit) * 100),
+                  reentry_threshold_bps: th.re === '' ? null : Math.round(Number(th.re) * 100),
+                }), 'Thresholds updated.')}>Save lines</button>
+                {v.state === 'in_pool' && (
+                  <button className="danger" onClick={() => act(() => api.zapExit(id), 'Exit queued. Sign it above.')}>Exit to Aave now</button>
+                )}
+                {v.state === 'parked' && (
+                  <button onClick={() => act(() => api.zapReenter(id), 'Re-entry queued. Sign it above.')}>Re-enter now</button>
+                )}
+                {v.state === 'entering' && v.flow?.step === 0 && (
+                  <button className="danger" onClick={() => act(() => api.zapCancel(id), 'Cancelled.')}>Cancel</button>
+                )}
+              </div>
+              <OpenInChat text={v.state === 'in_pool'
+                ? ask(`set my IL exit threshold to ${th.exit ? Math.round(Number(th.exit) * 100) : '<bps>'} bps, or exit it to Aave now if I say so`)
+                : ask('change my IL thresholds')} />
+            </div>
+          )}
+
+          <div className="card">
+            <h3>This position</h3>
+            <div className="side-actions">
+              <button className="btn ghost" onClick={share}>{copied ? 'Link copied' : 'Copy share link'}</button>
+              <a className="btn ghost" href={pool.explorer} target="_blank" rel="noreferrer">Pool on explorer ↗</a>
+            </div>
+            <OpenInChat text={ask('show me my zap position')} label="check it in chat" />
+            <p className="muted small" style={{ marginTop: 12 }}>
+              {v.auto_watch
+                ? 'Sarf checks this against the pool about once a minute and queues exits and re-entries on its own. Your wallet signs them.'
+                : 'Automatic IL watching is off on this server right now; IL shown here is live, and exits can be started by hand.'}
+            </p>
           </div>
-          <p className="small">{c.paired_token_tax}. {c.swap_back_float_pct_of_reserve != null && <>Pending swap-back float: {c.swap_back_float_pct_of_reserve}% of the pool's {pool.other.symbol}. {c.swap_back_note}.</>}</p>
-          {c.warning && <p className="disclosure" style={{ marginTop: 10 }}>{c.warning}</p>}
-        </div>
+        </aside>
       </div>
 
-      {isOwner && (
-        <div className="card" style={{ marginTop: 18 }}>
-          <h3>Control</h3>
-          <div className="zap-fields">
-            <label>Exit when IL exceeds (%)
-              <input inputMode="decimal" placeholder={(il.exit_threshold_bps / 100).toString()} value={th.exit}
-                     onChange={(e) => setTh({ ...th, exit: e.target.value })} />
-            </label>
-            <label>Re-enter under (%)
-              <input inputMode="decimal" placeholder={(il.reentry_threshold_bps / 100).toString()} value={th.re}
-                     onChange={(e) => setTh({ ...th, re: e.target.value })} />
-            </label>
-          </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
-            <button disabled={!th.exit} onClick={() => act(() => api.zapThreshold(id, {
-              il_threshold_bps: Math.round(Number(th.exit) * 100),
-              reentry_threshold_bps: th.re === '' ? null : Math.round(Number(th.re) * 100),
-            }), 'Thresholds updated.')}>Save thresholds</button>
-            {v.state === 'in_pool' && (
-              <button className="danger" onClick={() => act(() => api.zapExit(id), 'Exit queued. Sign it above.')}>Exit to Aave now</button>
-            )}
-            {v.state === 'parked' && (
-              <button onClick={() => act(() => api.zapReenter(id), 'Re-entry queued. Sign it above.')}>Re-enter now</button>
-            )}
-            {v.state === 'entering' && v.flow?.step === 0 && (
-              <button className="danger" onClick={() => act(() => api.zapCancel(id), 'Cancelled.')}>Cancel</button>
-            )}
-          </div>
-          <OpenInChat text={v.state === 'in_pool'
-            ? ask(`set my IL exit threshold to ${th.exit ? Math.round(Number(th.exit) * 100) : '<bps>'} bps, or exit it to Aave now if I say so`)
-            : ask('change my IL thresholds')} />
-        </div>
-      )}
-
-      <div className="section-label" style={{ marginTop: 32 }}>History</div>
-      <ol className="zap-history">
-        {[...v.history].reverse().map((e, i) => {
-          const step = e.kind === 'step_confirmed';
-          const label = step
-            ? e.step.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
-            : (EVENT_LABELS[e.kind] || e.kind);
-          return (
-            <li key={i} className={step ? 'is-step' : 'is-event'}>
-              <span className="when">{when(e.at)}</span>
-              <span className="what">
-                <b>{step ? '\u2713 ' : ''}{label}</b>
-                <span className="muted">
-                  {e.tx_hash && <a href={txUrl(e.tx_hash)} target="_blank" rel="noreferrer">tx ↗</a>}
-                  {e.il_bps != null && <> IL {pctBps(e.il_bps)}</>}
-                  {e.il_bps_at_exit != null && <> IL at exit {pctBps(e.il_bps_at_exit)} · entry {Number(e.p_initial).toFixed(2)} → exit {Number(e.p_at_exit).toFixed(2)} · {e.parked}</>}
-                  {e.deposited && <> {e.deposited}</>}
-                </span>
-              </span>
-            </li>
-          );
-        })}
-      </ol>
-
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 28 }}>
-        <button className="btn ghost" onClick={share}>{copied ? 'Link copied' : 'Copy share link'}</button>
-        <a className="btn ghost" href={pool.explorer} target="_blank" rel="noreferrer">Pool on explorer ↗</a>
-        <OpenInChat text={ask('show me my zap position')} label="check it in chat" />
-      </div>
-      <p className="muted small" style={{ marginTop: 10 }}>
-        {v.auto_watch
-          ? 'Sarf checks this position against the pool about once a minute and queues exits and re-entries on its own. Your wallet signs them.'
-          : 'Automatic IL watching is switched off on this server right now; IL shown here is live, and exits can be started by hand.'}
-        {' '}Owner {v.owner}.
-      </p>
-      <p className="disclosure" style={{ marginTop: 18 }}>{v.disclosure}</p>
+      <p className="disclosure" style={{ marginTop: 22 }}>{v.disclosure}</p>
     </section>
   );
 }

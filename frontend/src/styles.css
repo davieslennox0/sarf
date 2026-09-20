@@ -897,3 +897,141 @@ html, body { overflow-x: hidden; }
 .panel-head p { flex: 1; min-width: 0; }
 .empty-state { text-align: center; padding: 36px 24px; }
 .empty-state .cta { justify-content: center; }
+
+/* ---- zap, laid out as a lending market ------------------------------------------------ */
+/* The market/reserve shape: identity on the left, the numbers that describe
+   it on the right, then a body that ranks one fact above the others instead
+   of printing twenty key/value rows at the same weight. */
+
+.backlink { display: inline-block; margin-bottom: 14px; font-size: 14px; color: var(--paper-dim); }
+.backlink:hover { color: var(--accent); text-decoration: none; }
+
+.market-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 24px 40px; flex-wrap: wrap; padding-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+}
+.market-head > div { min-width: 0; }
+.market-head .sub { margin-top: 8px; max-width: 52ch; }
+.market-stats { display: flex; gap: 12px 34px; flex-wrap: wrap; }
+.market-stats > div { display: flex; flex-direction: column; gap: 3px; }
+.market-stats b { font-size: 21px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.market-stats b.bad { color: var(--red); }
+.market-stats span { font-size: 13px; color: var(--paper-dim); }
+
+.pos-id { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.pos-id h1 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* Two token marks, overlapped. */
+.pairmark { display: inline-flex; align-items: center; flex-shrink: 0; }
+.pairmark .tokenmark:last-child { margin-left: -12px; box-shadow: 0 0 0 2px var(--bg); }
+.pairmark.sm .tokenmark:last-child { margin-left: -9px; }
+
+.row-id.mark { flex-direction: row; align-items: center; gap: 11px; }
+.row-id-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+/* The Aave column shape: a number, and under it the unit it is in. */
+.mkt-row .sub { display: block; font-size: 12px; font-weight: 400; color: var(--paper-dim); }
+.mkt-row.on { background: var(--s1); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.mkt-row .price.bad, .fact-v.bad { color: var(--red); }
+.mkt-head.pos-cols, .mkt-row.pos-cols { grid-template-columns: minmax(180px, 1.6fr) 1fr .8fr .8fr 120px; }
+@media (max-width: 980px) { .mkt-head.pos-cols, .mkt-row.pos-cols { grid-template-columns: minmax(150px, 1.4fr) 1fr .9fr 110px; } }
+@media (max-width: 640px) { .mkt-head.pos-cols, .mkt-row.pos-cols { grid-template-columns: minmax(0, 1fr) auto auto; } }
+
+/* Position page: the body beside a panel that stays put while you read. */
+.pos-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; margin-top: 22px; align-items: start; }
+.pos-main { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.pos-side { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 90px; }
+.pos-side .card { padding: 20px; }
+.side-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.side-actions .btn, .side-actions button { flex: 1 1 auto; justify-content: center; text-align: center; }
+@media (max-width: 900px) {
+  .pos-grid { grid-template-columns: minmax(0, 1fr); }
+  /* On a phone the panel stops being a sidebar and becomes the first thing
+     you meet. Anything you can DO with the position belongs above the
+     reading material, not after three cards and a history. */
+  .pos-side { position: static; order: -1; }
+}
+
+/* The ring. Scaled to the user's own exit line, so "full" means "exiting". */
+.il-block { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin: 6px 0 20px; }
+.il-said { flex: 1 1 260px; min-width: 0; }
+.il-said .zap-headline { margin-top: 0; }
+.il-ring { position: relative; flex-shrink: 0; }
+.il-ring .track { stroke: var(--s2); }
+.il-ring .arc { stroke: var(--green); transition: stroke-dasharray .5s ease, stroke .3s; }
+.il-ring.near .arc { stroke: #C99A4E; }
+.il-ring.over .arc { stroke: var(--red); }
+.il-ring-mid {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px; text-align: center;
+}
+.il-ring-mid b { font-size: 22px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.il-ring-mid span { font-size: 12px; color: var(--paper-dim); }
+.il-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--paper-dim); }
+.il-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.il-legend .dot.re { background: var(--accent-dim); }
+.il-legend .dot.ex { background: var(--red); }
+
+/* Labelled facts, the way a reserve page lays out its configuration. */
+.dp-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 18px; }
+.fact { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; background: var(--s1); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.fact-k { font-size: 12px; color: var(--paper-dim); }
+.fact-v { font-size: 15px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.fact-v.warn { color: #C99A4E; }
+.fact-s { font-size: 12px; color: var(--paper-dim); line-height: 1.45; }
+
+/* Deposit panel: one pool, an amount, a line, and what those two do. */
+.deposit-panel { margin-top: 22px; padding: 24px; }
+.dp-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.dp-head h3 { margin: 0; }
+.dp-pool { display: inline-flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 500; color: var(--paper); }
+.dp-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin-top: 18px; }
+.dp-amount { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dp-k { font-size: 13px; color: var(--paper-dim); }
+.dp-input {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  background: var(--s2); border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.dp-input:focus-within { outline: 2px solid rgba(244, 246, 249, .3); outline-offset: 1px; }
+.dp-input input {
+  flex: 1 1 auto; min-width: 0; background: none; border: 0; padding: 0;
+  color: var(--paper); font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums;
+}
+.dp-input input:focus { outline: none; }
+.dp-unit { font-size: 16px; color: var(--paper-dim); }
+.dp-s { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--paper-dim); }
+.dp-s .linkish { font-size: 12px; padding: 0; }
+.seg.tiny { padding: 3px; flex-shrink: 0; }
+.seg.tiny button { padding: 6px 11px; font-size: 13px; }
+.chip.pickable { cursor: pointer; border: 0; font-size: 12px; padding: 5px 11px; }
+.chip.pickable.on { color: var(--accent); background: var(--s3); }
+.kv.tight > div { padding: 7px 2px; }
+
+/* Pool and position rows on a phone. A five-column grid squeezed into 390px
+   stops being a table and starts being a collision — the numbers landed on
+   top of the pool name. Every lending UI worth copying stacks the row into a
+   card at this width, so each number keeps the label that explains it. */
+@media (max-width: 640px) {
+  .mkt-head.zap-cols, .mkt-head.pos-cols { display: none; }
+  .mkt-row.zap-cols, .mkt-row.pos-cols {
+    grid-template-columns: minmax(0, 1fr); gap: 9px;
+    padding: 16px 14px; border: 1px solid var(--line); margin-bottom: 10px;
+  }
+  /* The sub-line is the label here, so it leads and the number follows. */
+  .mkt-row.zap-cols .r, .mkt-row.pos-cols .r {
+    display: flex; flex-direction: row-reverse; justify-content: space-between;
+    align-items: baseline; gap: 12px; text-align: left;
+  }
+  .mkt-row.zap-cols .hide-sm, .mkt-row.zap-cols .hide-md,
+  .mkt-row.pos-cols .hide-sm { display: flex; }
+  .mkt-row.zap-cols .sub, .mkt-row.pos-cols .sub { font-size: 13px; }
+  .mkt-row .name { white-space: normal; }
+  .mkt-row.zap-cols .mkt-actions, .mkt-row.pos-cols .mkt-actions { display: block; }
+  .mkt-row.zap-cols .mkt-actions .btn { display: block; width: 100%; text-align: center; padding: 11px; }
+  /* Rows that carry no sub-label still need one on a phone. */
+  .mkt-row.pos-cols .r::after { content: attr(data-k); font-size: 13px; color: var(--paper-dim); }
+}
+/* Cards carry a 22px vertical margin for pages that stack them directly.
+   Inside the position grid the columns already space them, and the two
+   together left a hole between every card. */
+.pos-main > .card, .pos-side > .card { margin: 0; }
