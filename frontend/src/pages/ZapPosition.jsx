@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api, ensureSession, getSession } from '../api.js';
 import { connect, currentAccount, sendTransaction, txUrl } from '../wallet.js';
 import { OpenInChat } from '../handoff.jsx';
-import { Fact, IlRing, PairMark, num, pct, usd } from '../zapui.jsx';
+import { Fact, IL_TONE_LABEL, IlRing, PairMark, ilTone, num, pct, usd } from '../zapui.jsx';
 
 /**
  * One zap position. Public and bookmarkable: anyone with the link sees IL,
@@ -44,11 +44,11 @@ const EVENT_LABELS = {
 function IlMeter({ il }) {
   const max = Math.max(il.exit_threshold_bps * 1.5, (il.current_bps || 0) * 1.1, 1);
   const at = (v) => `${Math.min(100, (v / max) * 100)}%`;
-  const over = il.current_bps != null && il.current_bps > il.exit_threshold_bps;
+  const tone = ilTone(il.current_bps, il.exit_threshold_bps);
   return (
     <>
       <div className="il-meter" aria-label="Impermanent loss against thresholds">
-        <div className={`il-fill${over ? ' over' : ''}`} style={{ width: at(il.current_bps || 0) }} />
+        <div className={`il-fill ${tone}`} style={{ width: at(il.current_bps || 0) }} />
         <div className="il-mark re" style={{ left: at(il.reentry_threshold_bps) }} title="re-entry line" />
         <div className="il-mark ex" style={{ left: at(il.exit_threshold_bps) }} title="exit line" />
       </div>
@@ -154,6 +154,14 @@ export default function ZapPosition() {
     setTimeout(() => setCopied(false), 1500);
   };
   const ask = (s) => `Using Sarf, ${s} (zap position ${v.position_id}).`;
+  const tone = ilTone(il.current_bps, il.exit_threshold_bps);
+  // A round trip is only worth flagging when it could eat the loss it exists
+  // to avoid: the band between the two lines is what one exit-and-re-entry
+  // cycle is meant to save, so a cycle costing more than that band is the
+  // number that decides whether acting now makes any sense.
+  const roundTrip = c.estimated_exit_and_reentry_cost_bps;
+  const band = il.exit_threshold_bps - il.reentry_threshold_bps;
+  const roundTripBites = roundTrip != null && band != null && roundTrip >= band;
   // Yield never appears without the IL beside it. That is a rule about this
   // feature, not a layout preference: a yield figure on its own is the half
   // of the story that sells.
@@ -172,6 +180,9 @@ export default function ZapPosition() {
             <h1>
               {pool.pair}
               <span className={`chip${pending ? ' accent' : ''}`}>{v.state.replace(/_/g, ' ')}</span>
+              {il.current_bps != null && (
+                <span className={`status-pill ${tone}`}>{IL_TONE_LABEL[tone]}</span>
+              )}
             </h1>
             <p className="sub">{v.state_label}</p>
           </div>
@@ -201,10 +212,19 @@ export default function ZapPosition() {
               </div>
             </div>
             <IlMeter il={il} />
-            <div className="dp-facts" style={{ marginTop: 20 }}>
+            {roundTripBites && (
+              <div className="callout warning" style={{ marginTop: 20 }}>
+                <span className="callout-k">Round trip</span>
+                <b className="callout-v">{pct(roundTrip)}</b>
+                <span className="callout-s">out and back, in fees and tax</span>
+              </div>
+            )}
+            <div className="dp-facts" style={{ marginTop: roundTripBites ? 10 : 20 }}>
               <Fact label="Exit line" value={pct(il.exit_threshold_bps)} sub="moves you to Aave" />
               <Fact label="Re-entry line" value={pct(il.reentry_threshold_bps)} sub="brings you back in" />
-              <Fact label="Round trip" value={pct(c.estimated_exit_and_reentry_cost_bps)} sub="out and back, in fees and tax" />
+              {!roundTripBites && (
+                <Fact label="Round trip" value={pct(roundTrip)} sub="out and back, in fees and tax" />
+              )}
               <Fact label="Deposited" value={`${v.deposit.amount} ${v.deposit.asset}`}
                     sub={v.deposit.usd_at_deposit != null ? usd(v.deposit.usd_at_deposit) : undefined} />
             </div>
@@ -212,7 +232,7 @@ export default function ZapPosition() {
 
           <div className="card">
             <h3>Against simply holding</h3>
-            <div className="kv">
+            <div className="kv kv-figures">
               <div><span>This position now</span><b>{usd(value.current_usd)}</b></div>
               <div><span>Same two amounts, held (the IL benchmark)</span><b>{usd(value.hold_50_50_usd)}</b></div>
               <div><span>Difference</span><b className={value.vs_hold_50_50_usd < 0 ? 'error' : 'ok'}>{signed(value.vs_hold_50_50_usd)}</b></div>

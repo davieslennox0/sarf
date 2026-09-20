@@ -35,6 +35,24 @@
   --red: #C2635A;
   --green-soft: rgba(107, 158, 125, .14);
   --red-soft: rgba(194, 99, 90, .14);
+  --amber: #C99A4E;
+  --amber-soft: rgba(201, 154, 78, .14);
+
+  /* Status semantics. Everything that signals "how worried should I be"
+     reads from these, never from the palette above, so the three states
+     stay consistent across the ring, the pill and the callouts. */
+  --text-success: var(--green);
+  --text-warning: var(--amber);
+  --text-danger: var(--red);
+  --fill-success: var(--green);
+  --fill-warning: var(--amber);
+  --fill-danger: var(--red);
+  --bg-success: var(--green-soft);
+  --bg-warning: var(--amber-soft);
+  --bg-danger: var(--red-soft);
+  --border-success: rgba(107, 158, 125, .45);
+  --border-warning: rgba(201, 154, 78, .45);
+  --border-danger: rgba(194, 99, 90, .45);
 
   --sans: 'Switzer', 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -725,8 +743,9 @@ pre, code { overflow-x: auto; max-width: 100%; }
 .zap-fields input:focus, .zap-fields select:focus { outline: 2px solid rgba(244, 246, 249, .3); outline-offset: 1px; }
 .zap-stats { margin-top: 26px; }
 .il-meter { position: relative; height: 8px; margin-top: 16px; background: var(--s2); border-radius: var(--pill); }
-.il-fill { position: absolute; inset: 0 auto 0 0; background: var(--green); border-radius: var(--pill); transition: width .4s; }
-.il-fill.over { background: var(--red); }
+.il-fill { position: absolute; inset: 0 auto 0 0; background: var(--fill-success); border-radius: var(--pill); transition: width .4s, background .3s; }
+.il-fill.approaching { background: var(--fill-warning); }
+.il-fill.near { background: var(--fill-danger); }
 .il-mark { position: absolute; top: -4px; width: 2px; height: 16px; border-radius: 1px; }
 .il-mark.re { background: var(--accent-dim); }
 .il-mark.ex { background: var(--red); }
@@ -958,9 +977,12 @@ html, body { overflow-x: hidden; }
 .il-said .zap-headline { margin-top: 0; }
 .il-ring { position: relative; flex-shrink: 0; }
 .il-ring .track { stroke: var(--s2); }
-.il-ring .arc { stroke: var(--green); transition: stroke-dasharray .5s ease, stroke .3s; }
-.il-ring.near .arc { stroke: #C99A4E; }
-.il-ring.over .arc { stroke: var(--red); }
+.il-ring .arc { stroke: var(--fill-success); transition: stroke-dasharray .5s ease, stroke .3s; }
+.il-ring.approaching .arc { stroke: var(--fill-warning); }
+.il-ring.near .arc { stroke: var(--fill-danger); }
+.il-ring.safe .il-ring-mid b { color: var(--text-success); }
+.il-ring.approaching .il-ring-mid b { color: var(--text-warning); }
+.il-ring.near .il-ring-mid b { color: var(--text-danger); }
 .il-ring-mid {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 2px; text-align: center;
@@ -977,7 +999,7 @@ html, body { overflow-x: hidden; }
 .fact { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; background: var(--s1); border: 1px solid var(--line); border-radius: var(--r-sm); }
 .fact-k { font-size: 12px; color: var(--paper-dim); }
 .fact-v { font-size: 15px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
-.fact-v.warn { color: #C99A4E; }
+.fact-v.warn { color: var(--text-warning); }
 .fact-s { font-size: 12px; color: var(--paper-dim); line-height: 1.45; }
 
 /* Deposit panel: one pool, an amount, a line, and what those two do. */
@@ -1035,3 +1057,37 @@ html, body { overflow-x: hidden; }
    Inside the position grid the columns already space them, and the two
    together left a hole between every card. */
 .pos-main > .card, .pos-side > .card { margin: 0; }
+
+/* Status: one pill, three states, the same bands the ring uses. */
+.status-pill {
+  display: inline-flex; align-items: center; padding: 6px 12px;
+  border-radius: var(--pill); font-size: 13px; font-weight: 500; letter-spacing: 0;
+  vertical-align: middle; white-space: nowrap;
+}
+.status-pill.safe { color: var(--text-success); background: var(--bg-success); }
+.status-pill.approaching { color: var(--text-warning); background: var(--bg-warning); }
+.status-pill.near { color: var(--text-danger); background: var(--bg-danger); }
+
+/* A number that decides something, pulled out of the row of numbers that
+   merely describe things. */
+.callout {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 14px 16px; border-radius: var(--r-sm);
+}
+.callout.warning { background: var(--bg-warning); border: 1px solid var(--border-warning); }
+.callout-k { font-size: 13px; color: var(--text-warning); }
+.callout-v { font-size: 19px; font-weight: 600; color: var(--text-warning); font-variant-numeric: tabular-nums; }
+.callout-s { font-size: 13px; color: var(--paper-dim); }
+
+/* Figures in a column of their own: same width, same digit widths, so the
+   eye compares magnitudes instead of reading each one. */
+.kv-figures > div { gap: 24px; }
+.kv-figures b { flex: 0 0 auto; min-width: 11ch; text-align: right; font-variant-numeric: tabular-nums; }
+.kv-figures span { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 640px) {
+  /* A fixed figures column needs width to be worth having. At phone size it
+     only pushes the value onto its own line, floating mid-row; the ordinary
+     label-left value-right row reads better. Tabular digits stay. */
+  .kv-figures > div { gap: 12px; }
+  .kv-figures b { min-width: 0; }
+}

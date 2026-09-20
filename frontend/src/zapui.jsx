@@ -16,6 +16,24 @@ export const pct = (bps) => (bps == null ? '—' : `${(Number(bps) / 100).toFixe
 export const usd = (x) => (x == null ? '—' : `$${Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 export const num = (x, d = 0) => (x == null ? '—' : Number(x).toLocaleString(undefined, { maximumFractionDigits: d }));
 
+/**
+ * How far along the exit line we are, and what to call that.
+ *
+ * One function so the ring, the status pill and anything added later cannot
+ * drift apart on where "approaching" starts. The bands are proportions of
+ * the user's OWN threshold, not absolute IL: 8% is alarming against a 10%
+ * line and unremarkable against a 40% one.
+ */
+export const ilFraction = (currentBps, exitBps) => (
+  exitBps > 0 ? Math.min(1, Math.max(0, (currentBps || 0) / exitBps)) : 0);
+
+export function ilTone(currentBps, exitBps) {
+  const f = ilFraction(currentBps, exitBps);
+  return f >= 0.9 ? 'near' : f >= 0.6 ? 'approaching' : 'safe';
+}
+
+export const IL_TONE_LABEL = { safe: 'Safe', approaching: 'Approaching exit', near: 'Near exit line' };
+
 /** Two token marks, overlapped, the way every DEX draws a pair. */
 export function PairMark({ a, b, small }) {
   const one = (sym, i) => (
@@ -35,10 +53,10 @@ export function PairMark({ a, b, small }) {
  * with it well before that.
  */
 export function IlRing({ currentBps, exitBps, size = 132 }) {
-  const frac = exitBps > 0 ? Math.min(1, Math.max(0, (currentBps || 0) / exitBps)) : 0;
+  const frac = ilFraction(currentBps, exitBps);
   const r = (size - 14) / 2;
   const circ = 2 * Math.PI * r;
-  const tone = frac >= 1 ? 'over' : frac >= 0.75 ? 'near' : 'fine';
+  const tone = ilTone(currentBps, exitBps);
   return (
     <div className={`il-ring ${tone}`} style={{ width: size, height: size }}>
       <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} aria-hidden="true">
