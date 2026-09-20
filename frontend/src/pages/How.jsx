@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { CLIENTS, MCP_URL, STEPS, openClient } from '../guide.jsx';
+import { ASSET_COUNT } from '../market.jsx';
 
 /**
  * How it works — which is, in practice, how you connect.
@@ -84,7 +85,7 @@ export default function How() {
         <span className="k">MCP endpoint:</span>{'\n'}
         {MCP_URL}{'\n\n'}
         <span className="k">Chain:</span> X Layer (chain id 196){'\n'}
-        <span className="k">Assets:</span> {count ?? 43} tokenized stocks and ETFs
+        <span className="k">Assets:</span> {count ?? ASSET_COUNT} tokenized stocks and ETFs
       </div>
 
       <div className="card accent">

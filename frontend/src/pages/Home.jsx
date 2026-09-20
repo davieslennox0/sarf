@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { CLIENTS, MCP_URL, openClient } from '../guide.jsx';
 import {
-  MarketTable, SearchIcon, SparkDefs, TopCards, byVolume, compactUsd, useMemoFilter, useOverview,
+  ASSET_COUNT, MarketTable, SearchIcon, SparkDefs, TopCards, byVolume, compactUsd,
+  useMemoFilter, useOverview,
 } from '../market.jsx';
 
 export { markBg } from '../market.jsx';
@@ -151,7 +152,7 @@ export default function Home() {
     <>
       <SparkDefs />
       <section className="hero">
-        <div className="eyebrow tick">Live on X Layer · {assets.length || 43} tokenized stocks and ETFs</div>
+        <div className="eyebrow tick">Live on X Layer · {assets.length || ASSET_COUNT} tokenized stocks and ETFs</div>
         <h1>Sarf, your AI-RWA Portfolio <Rotator words={ROLES} /></h1>
         <p className="sub">
           Trade tokenized stocks on X Layer two ways: ask in Claude or ChatGPT, or do it
@@ -184,7 +185,7 @@ export default function Home() {
         {tab === 'markets' && (
           <label className="search">
             <SearchIcon />
-            <input placeholder="Search 43 assets" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input placeholder={`Search ${assets.length || ASSET_COUNT} assets`} value={q} onChange={(e) => setQ(e.target.value)} />
           </label>
         )}
       </div>
@@ -192,7 +193,7 @@ export default function Home() {
         <>
           <MarketTable assets={rows} prices={prices} overview={overview} />
           {!q && (
-            <Link className="see-all" to="/markets">View all {assets.length || 43} assets →</Link>
+            <Link className="see-all" to="/markets">View all {assets.length || ASSET_COUNT} assets →</Link>
           )}
         </>
       ) : (

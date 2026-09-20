@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ensureSession, getSession } from '../api.js';
 import { connect, currentAccount } from '../wallet.js';
 import { OpenInChat } from '../handoff.jsx';
-import { SearchIcon, TokenMark } from '../market.jsx';
+import { ASSET_COUNT, SearchIcon, TokenMark } from '../market.jsx';
 
 /**
  * Swap on the website, for anyone who would rather not go through a chat.
@@ -140,7 +140,7 @@ export default function Swap() {
       <div className="eyebrow tick">Swap on X Layer · signed in your wallet</div>
       <h1>Swap</h1>
       <p className="sub">
-        Trade any of the 43 tokenized stocks and ETFs against USDT, USDC or OKB, or one
+        Trade any of the {ASSET_COUNT} tokenized stocks and ETFs against USDT, USDC or OKB, or one
         stock straight into another. Same prices, checks and fee as asking Sarf in chat.
       </p>
 

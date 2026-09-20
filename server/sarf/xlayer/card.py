@@ -114,8 +114,6 @@ def _render_text(o: dict[str, Any]) -> str:
     side = str(o.get("side", "")).upper()
     symbol = str(o.get("symbol", ""))
     name = (o.get("name") or "").replace(" xStock", "")
-    fee = o.get("platform_fee") or {}
-    charged = bool(fee.get("charged"))
     usd = o.get("estimated_usd")
 
     lines = [

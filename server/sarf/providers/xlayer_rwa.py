@@ -35,7 +35,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
 from pydantic import Field
 
-from .. import auth, nota_client, passkey
+from .. import nota_client, passkey
 from ..auth import require_address
 from ..config import settings
 from ..db import Database
@@ -451,6 +451,7 @@ class XLayerRwaProvider:
         from .. import auth  # local import: avoids a cycle at module load time
 
         log = logging.getLogger("sarf.risk_watch")
+        unresolved: set[str] = set()  # symbols already reported; see below
         while True:
             try:
                 for row in self.db.all_risk_params():
@@ -459,6 +460,15 @@ class XLayerRwaProvider:
                     try:
                         asset = self.reg.resolve(row["symbol"])
                     except Exception:
+                        # Logged once per symbol, not once per pass: this loop
+                        # runs forever and would otherwise fill the log with
+                        # the same line. Silence was the real bug — a level
+                        # that can never fire has to be visible somewhere.
+                        if row["symbol"] not in unresolved:
+                            unresolved.add(row["symbol"])
+                            log.warning(
+                                "risk level on %s cannot be watched: symbol does not "
+                                "resolve in the registry", row["symbol"])
                         continue
                     price = await self._unit_price_usd(asset)
                     if price is None:
@@ -1889,7 +1899,7 @@ class XLayerRwaProvider:
             under the same rules as any other order); a leg that fails to price
             does not block the others.
             """
-            address = require_address()
+            require_address()  # the call IS the auth gate; the value is unused here
             if not assets:
                 raise ValidationError("assets must be a non-empty list of {ticker, weight}")
             total_units = validate_amount(total_amount, reg.quote.decimals,

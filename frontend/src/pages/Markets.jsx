@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { usePrices } from './Home.jsx';
 import {
-  MarketTable, SearchIcon, SparkDefs, TopCards, byVolume, compactUsd, useMemoFilter, useOverview,
+  ASSET_COUNT, MarketTable, SearchIcon, SparkDefs, TopCards, byVolume, compactUsd,
+  useMemoFilter, useOverview,
 } from '../market.jsx';
 
 // The table shows this many rows, then a Load more. Search and sort always
@@ -54,7 +55,7 @@ export default function Markets() {
   return (
     <section>
       <SparkDefs />
-      <div className="eyebrow tick">{assets.length || 43} tokenized assets on X Layer</div>
+      <div className="eyebrow tick">{assets.length || ASSET_COUNT} tokenized assets on X Layer</div>
       <div className="page-head">
         <h1>Markets</h1>
         <Link className="btn small ghost" to="/how">How it works</Link>
@@ -83,7 +84,7 @@ export default function Markets() {
         </div>
         <label className="search">
           <SearchIcon />
-          <input placeholder={`Search ${assets.length || 43} assets`} value={q} onChange={(e) => setQ(e.target.value)} />
+          <input placeholder={`Search ${assets.length || ASSET_COUNT} assets`} value={q} onChange={(e) => setQ(e.target.value)} />
         </label>
       </div>
       {!assets.length && !err

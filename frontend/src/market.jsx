@@ -95,6 +95,11 @@ export function Sparkline({ points, change, className = '' }) {
  * The server answers what it has cached and names the rest `pending`; those
  * are asked for again a few times, then left as unknown rather than zero.
  */
+// Fallback for the "N assets" copy, used only until /api/rwa/list answers.
+// It is a floor, not a fact: the registry grows, and a number typed into the
+// copy goes stale silently — this one was 43 for two registry refreshes.
+export const ASSET_COUNT = 57;
+
 export function useOverview(symbols) {
   const [data, setData] = useState({});
   const key = symbols.join(',');
