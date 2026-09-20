@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { shortAddr } from '../wallet.js';
+import { Fact } from '../zapui.jsx';
 import { useWallet } from '../walletctx.jsx';
 import { TokenMark } from '../market.jsx';
 import Sheet from '../Sheet.jsx';
@@ -149,10 +150,27 @@ export default function Portfolio() {
       {busy && !data && <p className="muted small" style={{ marginTop: 18 }}>Reading X Layer…</p>}
 
       {data && (
-        <div className="stats">
-          <div><b>{data.total_value_usd != null ? `$${Number(data.total_value_usd).toLocaleString()}` : '—'}</b><span>total value</span></div>
-          <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>tokenized stocks</span></div>
-          {mine && xp && <div><b>{Number(xp.xpoints).toLocaleString()}</b><span>xPoints</span></div>}
+        <div className="dp-facts" style={{ marginTop: 22 }}>
+          <Fact label="Total value"
+                value={data.total_value_usd != null
+                  ? `$${Number(data.total_value_usd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : '—'}
+                sub="everything this wallet holds" />
+          <Fact label="Tokenized stocks"
+                value={`$${Number(data.positions_value_usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                sub={`${(data.positions || []).length} position${(data.positions || []).length === 1 ? '' : 's'}`} />
+          <Fact label="Cash"
+                value={`$${(Number(data.usdt?.quantity || 0) + Number(data.usdc?.quantity || 0))
+                  .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                sub="USDT and USDC, ready to trade" />
+          <Fact label="Gas"
+                value={`${Number(data.gas_balance_okb || 0).toFixed(4)} OKB`}
+                tone={lowGas ? 'warn' : undefined}
+                sub={lowGas ? 'too low to sign much' : 'pays for your own signatures'} />
+          {mine && xp && (
+            <Fact label="xPoints" value={Number(xp.xpoints).toLocaleString()}
+                  sub="from confirmed trades" />
+          )}
         </div>
       )}
 

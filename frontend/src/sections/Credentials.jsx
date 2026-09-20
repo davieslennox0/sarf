@@ -4,6 +4,7 @@ import { shortAddr } from '../wallet.js';
 import { formatLeft } from '../grant.js';
 import { onPrivyChange, privyContext, privyEnabled } from '../privy.jsx';
 import useAccountData from './useAccountData.js';
+import { Fact } from '../zapui.jsx';
 
 /**
  * Export the embedded wallet's private key. Only shown for a Privy embedded
@@ -82,6 +83,23 @@ export default function Credentials() {
   const previous = grant?.previous_grant;
   return (
     <>
+      {/* Passkey and session key: the two things that decide whether anything
+          can happen without you watching. */}
+      <div className="dp-facts">
+        <Fact label="Passkey"
+              value={passkey?.registered ? 'Registered' : 'Missing'}
+              tone={passkey?.registered ? undefined : 'warn'}
+              sub={passkey?.registered
+                ? (passkey?.last_verified_at
+                  ? `last used ${new Date(passkey.last_verified_at * 1000).toLocaleDateString()}`
+                  : 'not used yet')
+                : 'required before a trade settles in chat'} />
+        <Fact label="Session key" value={live ? 'Live' : 'Not set up'}
+              tone={live ? undefined : 'warn'}
+              sub={live ? `${formatLeft(left)} left` : 'in-chat trades need one'} />
+        <Fact label="Network" value="X Layer" sub="chain 196" />
+      </div>
+
       <div className="kv">
         <div><span>Wallet</span><b className="addr">{session?.address || '—'}</b></div>
         <div><span>Network</span><b>X Layer · 196</b></div>

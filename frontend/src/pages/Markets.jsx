@@ -55,20 +55,24 @@ export default function Markets() {
   return (
     <section>
       <SparkDefs />
-      <div className="eyebrow tick">{assets.length || ASSET_COUNT} tokenized assets on X Layer</div>
-      <div className="page-head">
-        <h1>Markets</h1>
-        <Link className="btn small ghost" to="/how">How it works</Link>
-      </div>
-      <p className="sub">
-        Trade by the on-chain symbol, the x-suffix form (AAPLx). OKX's centralized order
-        book lists the same underlying as XAAPL; that is a different venue and is not
-        tradable here.
-      </p>
-      <div className="stats">
-        <div><b>{volume ? compactUsd(volume) : '—'}</b><span>24h volume</span></div>
-        <div><b>{vals.length ? `${up}/${vals.length}` : '—'}</b><span>up in 24h</span></div>
-        <div><b>$0.01</b><span>per swap</span></div>
+      {/* The market shape: what this is on the left, what it is doing on the
+          right. Same header as the zap market, so the two read as one site. */}
+      <div className="market-head">
+        <div>
+          <div className="eyebrow tick">{assets.length || ASSET_COUNT} tokenized assets on X Layer</div>
+          <h1>Markets</h1>
+          <p className="sub">
+            Trade by the on-chain symbol, the x-suffix form (AAPLx). OKX's centralized
+            order book lists the same underlying as XAAPL; that is a different venue and
+            is not tradable here.
+          </p>
+        </div>
+        <div className="market-stats">
+          <div><b>{volume ? compactUsd(volume) : '—'}</b><span>24h volume</span></div>
+          <div><b>{vals.length ? `${up}/${vals.length}` : '—'}</b><span>up in 24h</span></div>
+          <div><b>$0.01</b><span>per swap</span></div>
+          <div><Link className="btn small ghost" to="/how">How it works</Link></div>
+        </div>
       </div>
 
       {err && <p className="error" style={{ marginTop: 18 }}>{err}</p>}

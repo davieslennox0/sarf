@@ -4,6 +4,7 @@ import { currentAccount, sendTransaction, shortAddr } from '../wallet.js';
 import { formatLeft } from '../grant.js';
 import SessionGrant from '../SessionGrant.jsx';
 import useAccountData from './useAccountData.js';
+import { Fact } from '../zapui.jsx';
 
 const initials = (name) =>
   String(name || '?').replace(/[^A-Za-z0-9 ]/g, '').trim().slice(0, 2).toUpperCase() || '?';
@@ -75,20 +76,36 @@ export default function AgentsSession() {
       {msg && <p className="ok">{msg}</p>}
       {error && <p className="error">{error}</p>}
 
+      {/* What the key can do, and for how long. These are limits somebody
+          agreed to, not reference detail — they belong where they can be
+          read at a glance rather than three rows into a list. */}
+      <div className="dp-facts" style={{ marginTop: 14 }}>
+        <Fact label="Session key"
+              value={live ? 'Live' : grant?.previous_grant ? 'Ended' : 'Not set up'}
+              tone={live ? undefined : 'warn'}
+              sub={live ? `${formatLeft(left)} left`
+                : grant?.previous_grant ? 'set one up again below' : 'in-chat trades need one'} />
+        {live && (
+          <Fact label="Per trade"
+                value={`$${Number(grant.grant.per_trade_cap_usd).toLocaleString()}`}
+                sub="the contract's own ceiling" />
+        )}
+        {live && (
+          <Fact label="Per day"
+                value={`$${Number(grant.grant.daily_cap_usd).toLocaleString()}`}
+                sub="across every in-chat trade" />
+        )}
+        {live && (
+          <Fact label="Without a prompt"
+                value={autonomous
+                  ? `$${Number(grant?.autonomous_limit_usd || grant?.auto_execute_under_usd || 0).toLocaleString()}`
+                  : 'Never'}
+                sub={autonomous ? 'settles in chat up to this' : 'every trade asks you first'} />
+        )}
+      </div>
+
       <div className="kv">
         <div><span>Signed in as</span><b>{shortAddr(session?.address)}</b></div>
-        <div><span>Session key</span>
-          <b className={live ? 'ok' : ''}>
-            {live ? `live · ${formatLeft(left)} left` : grant?.previous_grant ? 'ended, set up again below' : 'not set up'}
-          </b></div>
-        {live && (
-          <>
-            <div><span>Spend limits</span>
-              <b>${Number(grant.grant.per_trade_cap_usd).toLocaleString()} per trade · ${Number(grant.grant.daily_cap_usd).toLocaleString()} per day</b></div>
-            <div><span>Settles in chat without a prompt</span>
-              <b>{autonomous ? `up to $${Number(grant?.autonomous_limit_usd || grant?.auto_execute_under_usd || 0).toLocaleString()}` : 'no'}</b></div>
-          </>
-        )}
       </div>
 
       <div className="section-label" style={{ marginTop: 24 }}>Connected agents</div>
