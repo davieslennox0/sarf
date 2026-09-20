@@ -17,6 +17,7 @@ const Markets = lazy(() => import('./pages/Markets.jsx'));
 const Portfolio = lazy(() => import('./pages/Portfolio.jsx'));
 const Zap = lazy(() => import('./pages/Zap.jsx'));
 const ZapPosition = lazy(() => import('./pages/ZapPosition.jsx'));
+const Receipt = lazy(() => import('./pages/Receipt.jsx'));
 const Swap = lazy(() => import('./pages/Swap.jsx'));
 const How = lazy(() => import('./pages/How.jsx'));
 const Account = lazy(() => import('./pages/Account.jsx'));
@@ -368,6 +369,7 @@ export default function App() {
               <Route path="/admin" element={gate('The operator console', <AdminRoute isAdmin={isAdmin}><Admin /></AdminRoute>)} />
               <Route path="/admin/:section" element={gate('The operator console', <AdminRoute isAdmin={isAdmin}><Admin /></AdminRoute>)} />
               <Route path="/sign" element={gate('This transaction', <Sign />)} />
+              <Route path="/receipt/:id" element={<Receipt />} />
               <Route path="/approve" element={gate('This connection request', <Authorize />)} />
 
               {/* Old addresses. They are printed in chat histories, setup

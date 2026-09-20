@@ -25,7 +25,7 @@ from eth_account.messages import encode_defunct
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from .. import auth, passkey
+from .. import auth, passkey, receipts
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError
@@ -974,13 +974,56 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         if not o["tx_hash"]:
             return {"order_id": order_id, "status": o["status"], "state": "unsigned"}
         st = await rpc.tx_status(o["tx_hash"])
+        rec = None
         if st.mined:
             db.mark_order(order_id, "confirmed" if st.success else "failed")
+            if st.success:
+                # A settled trade gets its receipt here, once. Issuing is
+                # best-effort by design: it must never turn a settled trade
+                # into an error on the page that is reporting the settlement.
+                try:
+                    rec = await receipts.issue(db, db.get_order(order_id),
+                                               block_number=st.block_number,
+                                               settled_at=time.time())
+                except Exception:
+                    logging.getLogger("sarf").warning(
+                        "receipt issue failed for %s", order_id, exc_info=True)
         return {
             "order_id": order_id, "tx_hash": o["tx_hash"],
             "state": "confirmed" if st.success else ("pending" if not st.mined else "failed"),
             "block_number": st.block_number,
             "explorer_url": EXPLORER_TX.format(o["tx_hash"]),
+            "receipt_url": (f"{settings.public_url}/receipt/{order_id}"
+                            if rec and settings.public_url else None),
+        }
+
+    @r.get("/receipt/{order_id}")
+    async def trade_receipt(order_id: str) -> dict[str, Any]:
+        """The signed, anchored record of a settled trade.
+
+        Public, like the order it describes: an order id is already a
+        capability to view, and a receipt nobody can fetch proves nothing to
+        anybody. It carries everything needed to check it WITHOUT trusting
+        this server — the typed-data domain, the message, the signature and
+        the anchor — so the natural response to "prove it" is a link.
+        """
+        rec = db.get_receipt(order_id.strip())
+        if not rec:
+            o = db.get_order(order_id.strip())
+            if not o:
+                raise HTTPException(404, "unknown order")
+            raise HTTPException(404, "no receipt yet: this order has not settled")
+        return {
+            "order_id": rec["order_id"],
+            "receipt": rec["payload"],
+            "digest": rec["digest"],
+            "signature": rec["signature"],
+            "issued_at": rec["created_at"],
+            "anchored_at": rec["anchored_at"],
+            "anchor_explorer_url": (EXPLORER_TX.format(rec["anchor_tx"])
+                                    if rec["anchor_tx"] else None),
+            "verify": receipts.verification_note(rec["signer"], rec["anchor_tx"]),
+            "canonical_json": receipts.canonical_json(rec["payload"]),
         }
 
     @r.get("/me/portfolio")

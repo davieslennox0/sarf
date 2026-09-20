@@ -452,7 +452,7 @@ _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 # two edits, and this is the one that is easy to forget.
 _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
-    "/settings", "/activity", "/send", "/sign", "/approve",
+    "/settings", "/activity", "/send", "/sign", "/approve", "/receipt",
     "/deposit", "/admin", "/zap", "/swap", "/account",
 ]
 

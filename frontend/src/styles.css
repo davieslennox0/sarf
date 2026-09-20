@@ -1120,3 +1120,5 @@ html, body { overflow-x: hidden; }
 }
 .passkey-note span { flex: 1 1 260px; min-width: 0; }
 .passkey-note .linkish { font-size: 13px; padding: 0; color: var(--paper-dim); }
+.mono-ish { font-family: var(--mono); font-size: 13px; letter-spacing: .01em; }
+.mono-ish.break { word-break: break-all; }

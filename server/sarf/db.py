@@ -399,6 +399,25 @@ CREATE INDEX IF NOT EXISTS idx_zap_addr ON zap_positions(address, created_at);
 -- known is what landed: this table is filled by reading the token's own
 -- Transfer logs, so every figure shown to a user is a transaction they can
 -- open in an explorer.
+-- Signed, anchored trade receipts. One per settled order, never rewritten:
+-- the point of the thing is that it cannot change after the fact.
+--
+-- Named apart from `trade_receipts`, which belongs to the earlier Nota
+-- integration. That one is dormant (NOTA_ENABLED is false) and its rows, if
+-- any, are history; this is the native replacement and does not disturb it.
+CREATE TABLE IF NOT EXISTS sarf_receipts (
+  order_id    TEXT PRIMARY KEY,
+  address     TEXT NOT NULL,
+  payload     TEXT NOT NULL,      -- the exact signed message, canonical JSON
+  digest      TEXT NOT NULL,
+  signature   TEXT NOT NULL,
+  signer      TEXT NOT NULL,
+  anchor_tx   TEXT,
+  anchored_at REAL,
+  created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sarf_receipts_addr ON sarf_receipts(address, created_at);
+
 CREATE TABLE IF NOT EXISTS zap_rewards (
   tx_hash    TEXT NOT NULL,
   log_index  INTEGER NOT NULL,
@@ -1154,6 +1173,43 @@ class Database:
             args += (expect_state,)
         with self._lock, self._conn:
             return self._conn.execute(sql, args).rowcount == 1
+
+    # ------------------------------------------------------- trade receipts
+
+    def put_receipt(self, *, order_id: str, address: str, payload: dict[str, Any],
+                    digest: str, signature: str, signer: str) -> None:
+        """Write one, once. A second attempt is ignored rather than allowed to
+        overwrite a signature somebody may already hold."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO sarf_receipts
+                   (order_id,address,payload,digest,signature,signer,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (order_id, address.lower(), json.dumps(payload, sort_keys=True,
+                                                       separators=(",", ":")),
+                 digest, signature, signer, time.time()))
+
+    def set_receipt_anchor(self, order_id: str, tx_hash: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE sarf_receipts SET anchor_tx=?, anchored_at=? WHERE order_id=?",
+                (tx_hash, time.time(), order_id))
+
+    def get_receipt(self, order_id: str) -> dict[str, Any] | None:
+        cur = self._conn.execute("SELECT * FROM sarf_receipts WHERE order_id=?", (order_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        out = dict(zip([c[0] for c in cur.description], r))
+        out["payload"] = json.loads(out["payload"])
+        return out
+
+    def receipts_for(self, address: str, limit: int = 25) -> list[dict[str, Any]]:
+        cur = self._conn.execute(
+            "SELECT order_id,digest,anchor_tx,created_at FROM sarf_receipts "
+            "WHERE address=? ORDER BY created_at DESC LIMIT ?", (address.lower(), int(limit)))
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
 
     def record_zap_rewards(self, rows: list[dict[str, Any]]) -> int:
         """Insert reward arrivals, ignoring ones already seen.

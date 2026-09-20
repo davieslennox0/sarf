@@ -177,7 +177,10 @@ export default function Sign() {
           </p>
         )}
         <div className="cta">
-          <Link className="btn primary" to="/portfolio">View portfolio</Link>
+          {settled === true && (
+            <Link className="btn primary" to={`/receipt/${orderId}`}>Receipt</Link>
+          )}
+          <Link className={`btn${settled === true ? '' : ' primary'}`} to="/portfolio">View portfolio</Link>
           <Link className="btn" to="/swap">{settled === false ? 'Try again' : 'Another swap'}</Link>
         </div>
       </section>
