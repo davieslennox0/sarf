@@ -1,7 +1,7 @@
 {
-  "_comment": "xStocks tokenized-equity registry for X Layer (chain 196). Every address was verified against X Layer RPC: eth_getCode non-empty, ERC-20 symbol() and decimals() matched the indexed values, at generation time. NOTE: on-chain symbols use an x SUFFIX (AAPLx); OKX's centralized order book uses an X PREFIX (XAAPL) for the same underlying. They are different identifiers - never resolve one against the other. 2026-09-18: SPCXx, CSPCx, RSGx added after the same RPC checks (code, symbol(), decimals()). cex_ticker is left empty where OKX's spot instrument list has no matching ticker (CSPCx, RSGx) rather than guessing one.",
+  "_comment": "xStocks tokenized-equity registry for X Layer (chain 196). Every address was verified against X Layer RPC: eth_getCode non-empty, ERC-20 symbol() and decimals() matched the indexed values, at generation time. NOTE: on-chain symbols use an x SUFFIX (AAPLx); OKX's centralized order book uses an X PREFIX (XAAPL) for the same underlying. They are different identifiers - never resolve one against the other. 2026-09-18: SPCXx, CSPCx, RSGx added after the same RPC checks (code, symbol(), decimals()). cex_ticker is left empty where OKX's spot instrument list has no matching ticker (CSPCx, RSGx) rather than guessing one. 2026-09-20: added 14 assets that OKX's aggregator routes on X Layer but this registry did not list (verified the same way: code, symbol(), decimals()). OKX lists 639 xStock contracts on chain 196, of which 44 could be routed for $100 on 2026-09-20; the rest are deployed without liquidity. cex_ticker is empty where OKX's spot instrument list has no matching ticker.",
   "chain_id": 196,
-  "generated_at": 1789758295,
+  "generated_at": 1789878551,
   "quote_asset": {
     "symbol": "USDT",
     "onchain_symbol": "USD₮0",
@@ -353,6 +353,118 @@
       "decimals": 18,
       "cex_ticker": "",
       "logo_url": "https://static.oklink.com/cdn/web3/currency/token/large/196-0x24ddc68f76b8ffe95dd1f4763aed201a44a846d9-900/type=default_90_0"
+    },
+    {
+      "symbol": "BRK.Bx",
+      "name": "Berkshire Hathaway xStock",
+      "address": "0x12992613fdd35abe95dec5a4964331b1ee23b50d",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x12992613fdd35abe95dec5a4964331b1ee23b50d-900/type=default_90_0"
+    },
+    {
+      "symbol": "GEVx",
+      "name": "GE Vernova Inc. xStock",
+      "address": "0x5fb4184f8b515b1c54d1bac839dcf81276d6b73e",
+      "decimals": 18,
+      "cex_ticker": "XGEV",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x5fb4184f8b515b1c54d1bac839dcf81276d6b73e-900/type=default_90_0"
+    },
+    {
+      "symbol": "ICEx",
+      "name": "Intercontinental Exchange xStock",
+      "address": "0xde916b8089cbd5e52551bd933c3ea2ea5c903465",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0xde916b8089cbd5e52551bd933c3ea2ea5c903465-900/type=default_90_0"
+    },
+    {
+      "symbol": "KOx",
+      "name": "Coca-Cola xStock",
+      "address": "0xdcc1a2699441079da889b1f49e12b69cc791129b",
+      "decimals": 18,
+      "cex_ticker": "XKO",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0xdcc1a2699441079da889b1f49e12b69cc791129b-900/type=default_90_0"
+    },
+    {
+      "symbol": "MCDx",
+      "name": "McDonald's xStock",
+      "address": "0x80a77a372c1e12accda84299492f404902e2da67",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x80a77a372c1e12accda84299492f404902e2da67-900/type=default_90_0"
+    },
+    {
+      "symbol": "MRKx",
+      "name": "Merck xStock",
+      "address": "0x17d8186ed8f68059124190d147174d0f6697dc40",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x17d8186ed8f68059124190d147174d0f6697dc40-900/type=default_90_0"
+    },
+    {
+      "symbol": "MRNAx",
+      "name": "Moderna xStock",
+      "address": "0xefd30445a4ec1f4b3e0a6f4d9bdbd215f805047f",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0xefd30445a4ec1f4b3e0a6f4d9bdbd215f805047f-900/type=default_90_0"
+    },
+    {
+      "symbol": "NKEx",
+      "name": "Nike xStock",
+      "address": "0x7c5e9e93ea0f8fe94ea94eb6283f200ba0b72be0",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x7c5e9e93ea0f8fe94ea94eb6283f200ba0b72be0-900/type=default_90_0"
+    },
+    {
+      "symbol": "RDDTx",
+      "name": "Reddit xStock",
+      "address": "0x52ce422d81e62a2c4bb87653d66f2235c73b152e",
+      "decimals": 18,
+      "cex_ticker": "XRDDT",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x52ce422d81e62a2c4bb87653d66f2235c73b152e-900/type=default_90_0"
+    },
+    {
+      "symbol": "RKLBx",
+      "name": "Rocket Lab xStock",
+      "address": "0xe17ce7dd2afb6da3488fd9ef2558523d569e17b4",
+      "decimals": 18,
+      "cex_ticker": "XRKLB",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0xe17ce7dd2afb6da3488fd9ef2558523d569e17b4-900/type=default_90_0"
+    },
+    {
+      "symbol": "SKHYx",
+      "name": "SK hynix xStock",
+      "address": "0x58100046a4afcd4ee4fadbd4244f3f895a341c56",
+      "decimals": 18,
+      "cex_ticker": "XSKHY",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x58100046a4afcd4ee4fadbd4244f3f895a341c56-900/type=default_90_0"
+    },
+    {
+      "symbol": "SLVx",
+      "name": "iShares Silver Trust xStock",
+      "address": "0x4833e7f4f0460f4b72a3a5879a6c9841bcc5b58b",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x4833e7f4f0460f4b72a3a5879a6c9841bcc5b58b-900/type=default_90_0"
+    },
+    {
+      "symbol": "SMCIx",
+      "name": "Super Micro Computer, Inc. xStock",
+      "address": "0x39c31fc6038490ea4bf8a21ca18cd18f33b8d3fb",
+      "decimals": 18,
+      "cex_ticker": "XSMCI",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x39c31fc6038490ea4bf8a21ca18cd18f33b8d3fb-900/type=default_90_0"
+    },
+    {
+      "symbol": "WMTx",
+      "name": "Walmart xStock",
+      "address": "0x7aefc9965699fbea943e03264d96e50cd4a97b21",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x7aefc9965699fbea943e03264d96e50cd4a97b21-900/type=default_90_0"
     }
   ],
   "dex_router_address": "0x722db4f285F8bD91ef7AF6DA397e83f7fA4E80a7"

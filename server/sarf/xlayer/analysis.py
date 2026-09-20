@@ -147,6 +147,26 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     # Industrials
     "SPCXx": (_NAME, "Aerospace & defense"),
     "RSGx":  (_NAME, "Industrials"),
+    # Consumer staples and restaurants
+    "KOx":   (_NAME, "Consumer staples"),
+    "MCDx":  (_NAME, "Consumer discretionary"),
+    "NKEx":  (_NAME, "Consumer discretionary"),
+    "WMTx":  (_NAME, "Consumer staples"),
+    # Health care
+    "MRKx":  (_NAME, "Health care"),
+    "MRNAx": (_NAME, "Health care"),
+    # Industrials and aerospace
+    "GEVx":  (_NAME, "Industrials"),
+    "RKLBx": (_NAME, "Aerospace & defense"),
+    # Financials and exchanges
+    "BRK.Bx": (_NAME, "Financials"),
+    "ICEx":  (_NAME, "Financials"),
+    # Technology
+    "SKHYx": (_NAME, "Semiconductors"),
+    "SMCIx": (_NAME, "Technology hardware"),
+    "RDDTx": (_NAME, "Communication services"),
+    # Commodity funds
+    "SLVx":  (_ETF,  "Silver (commodity)"),
     # Crypto infrastructure
     "BMNRx": (_NAME, "Crypto mining & infrastructure"),
     "IRENx": (_NAME, "Crypto mining & infrastructure"),
