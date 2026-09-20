@@ -155,7 +155,7 @@ function SignInRequired({ what, onDone }) {
   );
 }
 
-function RequirePasskey({ onDone, onLater, otherDomains = [] }) {
+function RequirePasskey({ onDone, onSignOut, otherDomains = [] }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const supported = typeof window !== 'undefined' && window.PublicKeyCredential;
@@ -192,15 +192,15 @@ function RequirePasskey({ onDone, onLater, otherDomains = [] }) {
           <button className="primary" disabled={busy || !supported} onClick={add}>
             {busy ? 'Waiting for your device…' : 'Add passkey'}
           </button>
-          {onLater && (
-            <button className="ghost" onClick={onLater}>
-              {supported ? 'Not now' : 'Continue without one'}
-            </button>
-          )}
+          {/* Not a way to skip the passkey — a way to stop being signed in.
+              Without it, a device that cannot register one would have no
+              route back to the site at all. */}
+          <button className="ghost" onClick={onSignOut}>Sign out</button>
         </div>
         <p className="muted small" style={{ marginTop: 10 }}>
-          You can browse without it. Adding one is needed before a trade can settle in
-          chat or a transfer leaves your wallet, and you can add it later under Account.
+          Every account has one. It is what stands behind a trade settling in chat and
+          every transfer out of your wallet, and it takes one touch. Signed out, the
+          markets are open to read.
         </p>
       </div>
     </div>
@@ -266,6 +266,13 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
   const signedIn = Boolean(session);
+  // The only door out of the passkey prompt. Revoking server-side is
+  // best-effort; the local session goes either way.
+  const signOut = async () => {
+    try { await api.logout(); } catch { /* revoke best-effort */ }
+    clearSession();
+    setSession(null);
+  };
   const refresh = () => setSession(getSession());
 
   // Operator or not. null until the server has answered, so the admin route
@@ -302,29 +309,18 @@ export default function App() {
   // second factor means something.
   const [needsPasskey, setNeedsPasskey] = useState(false);
   const [otherDomains, setOtherDomains] = useState([]);
-  const [promptPasskey, setPromptPasskey] = useState(false);
-  const [hidPasskeyNote, setHidPasskeyNote] = useState(false);
-  const wasSignedIn = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    if (!signedIn) {
-      setNeedsPasskey(false);
-      setHidPasskeyNote(false);
-      wasSignedIn.current = false;
-      return undefined;
-    }
-    const fresh = !wasSignedIn.current;   // signed in during this visit = signup
-    wasSignedIn.current = true;
+    if (!signedIn) { setNeedsPasskey(false); return undefined; }
     (async () => {
       try {
         const pk = await api.passkeyStatus();
         if (cancelled) return;
-        const missing = !pk?.registered;
-        setNeedsPasskey(missing);
+        setNeedsPasskey(!pk?.registered);
         setOtherDomains(pk?.other_domains || []);
-        if (missing && fresh) setPromptPasskey(true);
       } catch {
-        // A status we cannot read is not a reason to block the site.
+        // Unreadable status is not proof one is missing, and guessing "yes"
+        // would lock somebody out over a failed request.
         if (!cancelled) setNeedsPasskey(false);
       }
     })();
@@ -336,19 +332,12 @@ export default function App() {
   return (
     <WalletCtx value={ctx}>
       <div className="app">
-        {promptPasskey && (
+        {needsPasskey && (
           <RequirePasskey
             otherDomains={otherDomains}
-            onDone={() => { setPromptPasskey(false); setNeedsPasskey(false); }}
-            onLater={() => setPromptPasskey(false)}
+            onDone={() => setNeedsPasskey(false)}
+            onSignOut={signOut}
           />
-        )}
-        {needsPasskey && !promptPasskey && !hidPasskeyNote && (
-          <div className="passkey-note">
-            <span>No passkey on this device yet — needed before a trade settles in chat or a transfer leaves your wallet.</span>
-            <button className="btn small primary" onClick={() => setPromptPasskey(true)}>Add passkey</button>
-            <button className="linkish" onClick={() => setHidPasskeyNote(true)}>Dismiss</button>
-          </div>
         )}
         <nav>
           <Link className="brand" to="/">
