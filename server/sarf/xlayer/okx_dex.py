@@ -320,6 +320,32 @@ class OkxDexClient:
         out.sort(key=lambda r: r["ts"])
         return out
 
+    async def _gas_limit(self, *, user_address: str, to: str, data: str,
+                         value: int, quoted: int) -> int:
+        """The gas limit to hand the wallet.
+
+        The aggregator's own estimate is routinely too small: a native-OKB
+        multi-hop swap it quoted at 550,258 needed 804,299 on-chain, and a
+        wallet that signs the quoted figure runs out of gas mid-route. That is
+        a reverted transaction the user paid for, and it looks like the site
+        did nothing. So the chain is asked, and the answer gets a quarter more
+        headroom for a route whose cost moves between building and signing.
+
+        Estimation reverts for an ERC-20 that has not been approved yet, which
+        is an ordinary state on the way to a first sell, so a failure widens
+        the quoted figure instead of refusing to build the order.
+        """
+        from . import rpc  # here, not at import time: rpc imports the registry
+
+        try:
+            measured = await rpc.estimate_gas(
+                from_address=user_address, to=to, data=data, value=value)
+        except Exception:
+            measured = 0
+        if measured:
+            return max(int(measured * 1.25), quoted)
+        return int(quoted * 1.8) or 900_000
+
     def supports_fee(self) -> bool:
         """Only the HTTP transport can attach referral fee parameters.
 
@@ -397,11 +423,15 @@ class OkxDexClient:
             raise DexError("quote backend built a transaction for a different wallet")
 
         min_recv = tx.get("minReceiveAmount")
+        gas = await self._gas_limit(
+            user_address=user_address, to=str(tx["to"]), data=str(tx["data"]),
+            value=int(tx.get("value") or 0), quoted=int(tx.get("gas") or 0),
+        )
         unsigned = UnsignedTx(
             to=str(tx["to"]),
             data=str(tx["data"]),
             value=str(tx.get("value", "0")),
-            gas=int(tx.get("gas") or 0),
+            gas=gas,
             gas_price=str(tx.get("gasPrice") or "0"),
             min_receive=int(min_recv) if str(min_recv or "").isdigit() else None,
         )

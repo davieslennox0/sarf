@@ -134,3 +134,32 @@ def test_passkeys_count_only_on_the_domain_they_were_made_for():
     assert [c["credential_id"] for c in db.passkeys_for_address(ADDR)] == ["new"]
     db.passkey_rp_id = None  # unset: no filtering, as before
     assert len(db.passkeys_for_address(ADDR)) == 2
+
+
+def test_swap_gas_limit_uses_the_chain_not_the_aggregators_estimate(monkeypatch):
+    """The aggregator under-quotes gas (550,258 quoted against 804,299 needed
+    on a real native swap), and a wallet signing the quoted figure runs out of
+    gas: the user pays for a reverted trade that looks like nothing happened."""
+    import asyncio
+
+    from sarf.xlayer import okx_dex, rpc as rpcmod
+
+    c = okx_dex.OkxDexClient()
+
+    async def estimate(**kw):
+        return 804299
+    monkeypatch.setattr(rpcmod, "estimate_gas", estimate)
+    got = asyncio.run(c._gas_limit(user_address="0xab", to="0xcd", data="0x", value=0, quoted=550258))
+    assert got == int(804299 * 1.25)
+
+    # Never below what the aggregator asked for.
+    async def small(**kw):
+        return 21000
+    monkeypatch.setattr(rpcmod, "estimate_gas", small)
+    assert asyncio.run(c._gas_limit(user_address="0xab", to="0xcd", data="0x", value=0, quoted=550258)) == 550258
+
+    # Un-estimatable (an unapproved ERC-20, say): widen, do not refuse.
+    async def boom(**kw):
+        raise rpcmod.RpcError("execution reverted: insufficient allowance")
+    monkeypatch.setattr(rpcmod, "estimate_gas", boom)
+    assert asyncio.run(c._gas_limit(user_address="0xab", to="0xcd", data="0x", value=0, quoted=100000)) == 180000

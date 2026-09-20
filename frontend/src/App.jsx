@@ -1,211 +1,110 @@
-import React, { useEffect, useState } from 'react';
-import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import Home from './pages/Home.jsx';
-import Activity from './pages/Activity.jsx';
-import Portfolio from './pages/Portfolio.jsx';
-import Markets from './pages/Markets.jsx';
-import How from './pages/How.jsx';
-import Dashboard from './pages/Dashboard.jsx';
-import Admin from './pages/Admin.jsx';
-import Sign from './pages/Sign.jsx';
-import Zap from './pages/Zap.jsx';
-import Swap from './pages/Swap.jsx';
-import ZapPosition from './pages/ZapPosition.jsx';
-import Authorize from './pages/Authorize.jsx';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api, clearSession, getSession, registerPasskey } from './api.js';
 import Onboarding from './Onboarding.jsx';
+import Sheet from './Sheet.jsx';
+import { WalletCtx } from './walletctx.jsx';
 import {
   CHAIN_ID, currentAccount, chainId as getChainId,
-  ensureXLayer, hasWallet, onAccountsChanged, onChainChanged, short,
+  ensureXLayer, hasWallet, onAccountsChanged, onChainChanged, shortAddr,
 } from './wallet.js';
 import { onPrivyChange, privyContext, privyEnabled } from './privy.jsx';
-import { CLIENTS, MCP_URL, STEPS, openClient } from './guide.jsx';
+
+// Every page is its own chunk, fetched on first visit. Admin in particular is
+// only ever requested by an operator, so its code never reaches anyone else.
+const Home = lazy(() => import('./pages/Home.jsx'));
+const Markets = lazy(() => import('./pages/Markets.jsx'));
+const Portfolio = lazy(() => import('./pages/Portfolio.jsx'));
+const Zap = lazy(() => import('./pages/Zap.jsx'));
+const ZapPosition = lazy(() => import('./pages/ZapPosition.jsx'));
+const Swap = lazy(() => import('./pages/Swap.jsx'));
+const How = lazy(() => import('./pages/How.jsx'));
+const Account = lazy(() => import('./pages/Account.jsx'));
+const Admin = lazy(() => import('./pages/Admin.jsx'));
+const Sign = lazy(() => import('./pages/Sign.jsx'));
+const Authorize = lazy(() => import('./pages/Authorize.jsx'));
+const AgentsSession = lazy(() => import('./sections/AgentsSession.jsx'));
+const Credentials = lazy(() => import('./sections/Credentials.jsx'));
+
+const NAV = [
+  { to: '/markets', label: 'Markets', on: (p) => p === '/markets' },
+  { to: '/portfolio', label: 'Portfolio', on: (p) => p === '/portfolio' },
+  { to: '/zap', label: 'Zap', on: (p) => p.startsWith('/zap') },
+];
+
+const isPhone = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
 
 /**
- * "How it works", as a menu, for people who are already signed in.
- *
- * Signed out it stays a plain link and this component is not used: setting up
- * is the whole job, and putting a dropdown in front of the page that explains
- * how to set up is friction in the one place there should be none.
- *
- * Signed in, the page has mostly done its work — but the thing people come back
- * to it for is a single line, the MCP endpoint, and they were loading a
- * five-step guide to reach it. So the menu leads with the endpoint and a copy
- * button, offers the two client shortcuts, and then lists the steps as jump
- * links. The full page is still one click away and unchanged; this is a faster
- * door onto it, not a replacement.
- *
- * It also buys back a slot in the header, which mattered: signed in, the bar
- * was Home, Markets, How it works, Deposit, Portfolio, Dashboard, Activity —
- * seven flat links that ran past the page width, with the reference material at
- * equal weight to the pages you use daily. Three of those seven are gone now.
- * Home was what the wordmark already does, Deposit is a dashboard fold, and
- * this is the third.
+ * The wallet pill. Signed out it is the Connect button; signed in it is a
+ * status dot, the address and a chevron, and opens the account menu. Both
+ * occupy the same reserved width, so signing in never moves the header.
+ * The sign-in countdown lives inside the menu, not on the pill, so the pill's
+ * width never changes as it ticks.
  */
-function GuideMenu({ pathname }) {
+function WalletMenu({ session, setSession, isAdmin }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [sent, setSent] = useState(null);
+  const [sheet, setSheet] = useState(null); // 'agents' | 'credentials' on phones
+  const [now, setNow] = useState(Date.now());
+  const ref = useRef(null);
 
   useEffect(() => {
     if (!open) return undefined;
-    const away = (e) => { if (!e.target.closest('.navmenu')) setOpen(false); };
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    const away = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
     const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('click', away);
     document.addEventListener('keydown', esc);
-    return () => {
-      document.removeEventListener('click', away);
-      document.removeEventListener('keydown', esc);
-    };
+    return () => { clearInterval(t); document.removeEventListener('click', away); document.removeEventListener('keydown', esc); };
   }, [open]);
 
-  // Close when the route changes, so a jump link does not leave the panel
-  // hanging over the section it just scrolled to.
-  useEffect(() => { setOpen(false); }, [pathname]);
+  if (!session) {
+    return <div className="wallet-slot"><Onboarding onDone={() => setSession(getSession())} /></div>;
+  }
 
-  const copy = () => {
-    navigator.clipboard?.writeText(MCP_URL);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const left = Math.max(0, Math.floor((session.expiresAt - now) / 1000));
+  const soon = session.expiresAt - Date.now() < 300000;
+  const go = (to) => { setOpen(false); navigate(to); };
+  const account = (id) => {
+    setOpen(false);
+    if (isPhone()) setSheet(id); else navigate(`/account#${id}`);
   };
-
-  const go = async (c) => {
-    if (await openClient(c)) {
-      setSent(c.id);
-      setTimeout(() => setSent((s) => (s === c.id ? null : s)), 6000);
-    }
-  };
-
-  return (
-    // stopPropagation because the link row closes the mobile nav on any click
-    // inside it — without this, opening the menu collapses the nav it lives in.
-    <div className="navmenu" onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        className={`navmenu-trigger${pathname === '/how' ? ' on' : ''}${open ? ' open' : ''}`}
-        aria-expanded={open}
-        aria-haspopup="true"
-        onClick={() => setOpen((v) => !v)}
-      >
-        How it works
-        <span className="caret" aria-hidden="true">▾</span>
-      </button>
-
-      {open && (
-        <div className="navmenu-panel" role="menu">
-          <div className="navmenu-head">
-            <div className="label">Your MCP endpoint</div>
-            <div className="navmenu-endpoint">
-              <code>{MCP_URL}</code>
-              <button type="button" onClick={copy}>{copied ? 'copied' : 'copy'}</button>
-            </div>
-            <div className="navmenu-clients">
-              {CLIENTS.map((c) => (
-                <button type="button" key={c.id} onClick={() => go(c)}>
-                  {sent === c.id ? 'copied — paste it' : c.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="navmenu-list">
-            {STEPS.map((s) => (
-              <Link key={s.id} to={`/how#${s.id}`} role="menuitem" onClick={() => setOpen(false)}>
-                <span className="n">{s.num}</span>
-                <span className="t">
-                  {s.title}
-                  <em>{s.hint}</em>
-                </span>
-              </Link>
-            ))}
-          </div>
-
-          <div className="navmenu-foot">
-            <Link to="/how" onClick={() => setOpen(false)}>Full guide</Link>
-            <Link to="/dashboard/security" onClick={() => setOpen(false)}>Security &amp; limits</Link>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Session banner. Visible whenever a session is live, because a signing
- * surface should never leave you guessing whether something is still
- * authenticated. "End session" revokes server-side, which also disconnects
- * the MCP connector — ending it here ends it in Claude.
- */
-/**
- * The account control in the header's right slot: a "Connect" button when there
- * is no session, and an address chip with a live expiry countdown when there
- * is. The countdown is on the chip rather than tucked in the menu because a
- * session that has quietly lapsed is the thing people are surprised by.
- */
-function AccountControl({ session, setSession }) {
-  const [now, setNow] = useState(Date.now());
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // Close on any click outside the menu, which is what a dropdown is expected
-  // to do; without it the panel survives navigation and looks stuck.
-  useEffect(() => {
-    if (!open) return;
-    const close = (e) => { if (!e.target.closest('.account')) setOpen(false); };
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [open]);
-
   const end = async () => {
     try { await api.logout(); } catch { /* revoke best-effort; clear locally regardless */ }
     clearSession();
     setSession(null);
     setOpen(false);
   };
+  const Section = sheet === 'agents' ? AgentsSession : Credentials;
 
-  if (!session) return <Onboarding onDone={() => setSession(getSession())} />;
-
-  const left = Math.max(0, Math.floor((session.expiresAt - now) / 1000));
-  const mm = Math.floor(left / 60);
   return (
-    <div className="account">
-      <button className="account-chip" onClick={() => setOpen((v) => !v)}>
-        <span className={`dot${mm < 5 ? ' soon' : ''}`} />
-        {short(session.address)}
-        {/*
-          Two different clocks used to run on this site with nothing to tell
-          them apart: this one, the browser sign-in, counting down from 30
-          minutes, and the trading key's, counting down from an hour — so the
-          obvious reading was that one of the two screens was lying. This one
-          says what it is. It is only how long you stay signed in HERE; it
-          grants nothing and expiring costs you a reload, not a key.
-        */}
-        <span className="ttl" title="Time left on this browser sign-in">
-          signed in {mm}m {String(left % 60).padStart(2, '0')}s
-        </span>
+    <div className="wallet-slot account" ref={ref}>
+      <button className="wallet-pill" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className={`dot${soon ? ' soon' : ''}`} />
+        <span className="wallet-addr">{shortAddr(session.address)}</span>
+        <span className="caret" aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div className="account-menu">
-          <div className="label">Signed in as</div>
-          <div className="addr">{session.address}</div>
-          <hr />
-          <p className="muted small">
-            Ending the session revokes it server-side, which also disconnects the
-            MCP connector — ending it here ends it in Claude.
-          </p>
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <Link className="cta-btn" to="/dashboard/security" style={{ padding: '9px 14px', fontSize: 11 }}
-                  onClick={() => setOpen(false)}>
-              Security
-            </Link>
-            <button className="danger" onClick={end}>End session</button>
+        <div className="account-menu" role="menu">
+          <div className="menu-id">
+            <b className="wallet-addr">{shortAddr(session.address)}</b>
+            <span className="muted small">Session: {Math.floor(left / 60)}m {String(left % 60).padStart(2, '0')}s</span>
           </div>
+          <button role="menuitem" className="menu-item" onClick={() => go('/portfolio?fund=1')}>Fund</button>
+          <button role="menuitem" className="menu-item" onClick={() => account('agents')}>Agents &amp; session</button>
+          <button role="menuitem" className="menu-item" onClick={() => account('credentials')}>Credentials</button>
+          {isAdmin && <button role="menuitem" className="menu-item" onClick={() => go('/admin')}>Admin</button>}
+          <hr />
+          <button role="menuitem" className="menu-item danger-text" onClick={end}>Sign out</button>
+          <p className="muted small" style={{ padding: '6px 10px 2px' }}>
+            Signing out also disconnects Claude and ChatGPT.
+          </p>
         </div>
       )}
+      <Sheet open={Boolean(sheet)} title={sheet === 'agents' ? 'Agents & session' : 'Credentials'} onClose={() => setSheet(null)}>
+        <Suspense fallback={<p className="muted small">Loading…</p>}><Section /></Suspense>
+      </Sheet>
     </div>
   );
 }
@@ -226,93 +125,66 @@ function WarningBar({ setSession }) {
   if (!hasWallet()) {
     return (
       <div className="bar warn">
-        No EVM wallet detected —{' '}
-        <a href="https://www.okx.com/web3" target="_blank" rel="noreferrer">install OKX Wallet</a>{' '}
+        No EVM wallet detected.{' '}
+        <a href="https://www.okx.com/web3" target="_blank" rel="noreferrer">Install OKX Wallet</a>{' '}
         to trade on X Layer.
       </div>
     );
   }
-
-  // Chain mismatch cannot happen on the embedded wallet — it is pinned to
-  // X Layer — so this only ever fires for an injected provider.
   if (account && chain != null && chain !== CHAIN_ID) {
     return (
       <div className="bar warn">
-        Wrong network — Sarf trades on X Layer (196).{' '}
-        <button onClick={() => ensureXLayer().then(() => getChainId().then(setChain))}>
-          Switch to X Layer
-        </button>
+        Wrong network: Sarf trades on X Layer (196).{' '}
+        <button onClick={() => ensureXLayer().then(() => getChainId().then(setChain))}>Switch to X Layer</button>
       </div>
     );
   }
   return null;
 }
 
-/**
- * Stands in for a page that needs an account.
- *
- * It renders in place rather than redirecting home, because the URL is often
- * the payload: /sign?o=... is the link Claude hands the user from chat, and
- * /approve carries the OAuth request. Bouncing to / would sign them in and
- * then leave them staring at the markets page with the order id gone.
- */
 function SignInRequired({ what, onDone }) {
   return (
     <section>
       <h1>Sign in</h1>
       <p className="muted">
         {what} belongs to your account, so it needs you signed in first. Sign in
-        with Google and Sarf provisions a wallet for you — nothing to install.
+        with Google and Sarf provisions a wallet for you, nothing to install.
       </p>
       <div className="cta"><Onboarding onDone={onDone} /></div>
     </section>
   );
 }
 
-/**
- * Blocking passkey registration. No dismiss, and deliberately so.
- *
- * Registering is now mandatory rather than offered: the passkey gates every
- * transaction, so an account without one is an account that cannot do
- * anything. Letting it be skipped only deferred that discovery to the first
- * trade, and — before the check moved to session level — stranded people with
- * no route back.
- *
- * This is the ONLY place a passkey is created. Onboarding's "Later" and the
- * settings register button are both gone, which is safe precisely because this
- * renders above every authenticated route, not just the sign-in flow.
- */
-function RequirePasskey({ onDone }) {
+function RequirePasskey({ onDone, otherDomains = [] }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const supported = typeof window !== 'undefined' && window.PublicKeyCredential;
-
   const add = async () => {
     setBusy(true); setErr(null);
-    try {
-      await registerPasskey();
-      onDone();
-    } catch (e) {
-      setErr(e.message || String(e));
-    } finally { setBusy(false); }
+    try { await registerPasskey(); onDone(); } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   };
-
   return (
     <div className="modal-backdrop">
       <div className="modal">
         <h2>Add a passkey</h2>
+        {otherDomains.length > 0 && (
+          <p className="disclosure" style={{ margin: '0 0 12px' }}>
+            Sarf moved to getsarf.xyz. Passkeys are tied to the website address they were
+            made on, so the one you made on {otherDomains.join(', ')} can't be used here.
+            Add one for getsarf.xyz: it takes one touch.
+          </p>
+        )}
         <p className="muted small">
-          One touch of Face ID, Touch ID, or your device PIN. It is what approves
-          every transaction on your account — nothing can be signed without it.
+          One touch of Face ID, Touch ID, or your device PIN. It confirms it is really you
+          when a trade settles in chat and for every transfer to another address.
         </p>
         <p className="muted small">
-          Your passkey never leaves your device, and it is not your wallet key —
-          it approves actions, it cannot sign transactions on its own.
+          Your passkey never leaves your device, and it is not your wallet key: it approves
+          actions, it cannot sign transactions on its own.
         </p>
         {!supported && (
           <p className="error">
-            This browser does not support passkeys (WebAuthn). Open Sarf in a
-            browser that does — there is no way to transact without one.
+            This browser does not support passkeys (WebAuthn). Open Sarf in a browser that does.
           </p>
         )}
         {err && <p className="error">{err}</p>}
@@ -326,19 +198,32 @@ function RequirePasskey({ onDone }) {
   );
 }
 
+/** Old /dashboard/<section> links, mapped to where each section lives now. */
+function DashboardRedirect() {
+  const { section } = useParams();
+  const to = {
+    deposit: '/portfolio?fund=1',
+    activity: '/portfolio?tab=activity',
+    agents: '/account#agents',
+    security: '/account#agents',
+    credentials: '/account#credentials',
+  }[section] || '/account';
+  return <Navigate to={to} replace />;
+}
+
+/** Admin is guarded twice: the server refuses non-admins on every call, and
+ *  here a non-admin is sent to Markets before the admin chunk is ever loaded. */
+function AdminRoute({ isAdmin, children }) {
+  if (isAdmin === null) return <section><p className="muted small" style={{ marginTop: 24 }}>Checking access…</p></section>;
+  if (!isAdmin) return <Navigate to="/markets" replace />;
+  return children;
+}
+
 export default function App() {
   const { pathname, hash } = useLocation();
 
-  // Scroll to #anchor on navigation.
-  //
-  // React Router does not do this — it changes the URL without a document load,
-  // so the browser's own fragment handling never runs. The guide menu links to
-  // /how#step-passkey and friends, and without this they would land at the top
-  // of the page with the fragment sitting in the address bar doing nothing,
-  // which reads as a broken link rather than a missing feature.
-  //
-  // Deferred a frame because the target may not be mounted yet when the route
-  // has only just changed.
+  // A #fragment in a client-side link does nothing on its own, since React
+  // Router changes the URL without a document load. Scroll to it by hand.
   useEffect(() => {
     if (!hash) return undefined;
     const id = hash.slice(1);
@@ -348,51 +233,34 @@ export default function App() {
     return () => cancelAnimationFrame(raf);
   }, [pathname, hash]);
 
-  // Session state lives here so the nav, the bar and the route guards all read
-  // the same thing. sessionStorage is the source of truth; this is a mirror of
-  // it that re-renders, and it also expires on its own (getSession drops a
-  // token past expiresAt), so the UI locks itself without anything to notify.
   const [session, setSession] = useState(getSession());
+  // Picks up sign-in, sign-out and expiry from other tabs and flows. Returns
+  // the same object while nothing changed, so the whole app does not
+  // re-render every second.
   useEffect(() => {
-    const t = setInterval(() => setSession(getSession()), 1000);
+    const t = setInterval(() => setSession((s) => {
+      const n = getSession();
+      return n?.token === s?.token ? s : n;
+    }), 1000);
     return () => clearInterval(t);
   }, []);
-
   const signedIn = Boolean(session);
   const refresh = () => setSession(getSession());
 
-  // Whether to show the Admin tab.
-  //
-  // Asked of the server rather than decided here, and asked once per session
-  // rather than per render: /api/admin/whoami is the same check every admin
-  // route makes, so the tab cannot disagree with what the routes will do.
-  //
-  // This is presentation only. Hiding the tab keeps the header clean for the
-  // people it does not concern; it protects nothing, because /admin itself
-  // renders from data those routes independently refuse to anyone else. A
-  // failure here is therefore "no tab", never a broken header — which is also
-  // why it swallows its error: for every ordinary user the honest answer to
-  // "are you an admin" arrives as a refusal, and that is not a fault to show.
-  const [isAdmin, setIsAdmin] = useState(false);
+  // Operator or not. null until the server has answered, so the admin route
+  // waits rather than bouncing an operator who is still being checked.
+  const [isAdmin, setIsAdmin] = useState(null);
   useEffect(() => {
     if (!signedIn) { setIsAdmin(false); return undefined; }
     let cancelled = false;
+    setIsAdmin(null);
     api.adminWhoami()
       .then((r) => { if (!cancelled) setIsAdmin(Boolean(r?.is_admin)); })
       .catch(() => { if (!cancelled) setIsAdmin(false); });
     return () => { cancelled = true; };
   }, [signedIn, session?.address]);
 
-  // Whether the wallet layer can answer questions yet.
-  //
-  // Privy rehydrates asynchronously, and account pages open by asking it who
-  // you are. Every page used to ask immediately and deal with "not yet" on its
-  // own — badly, in two cases, where the answer arrived as an error the page
-  // never retried. Holding the route for one render instead is both simpler
-  // and faster to read: the page mounts once, with an answer, rather than
-  // mounting into a race and recovering from it.
-  const [walletReady, setWalletReady] = useState(
-    !privyEnabled() || privyContext().ready);
+  const [walletReady, setWalletReady] = useState(!privyEnabled() || privyContext().ready);
   useEffect(() => {
     if (walletReady) return undefined;
     return onPrivyChange((c) => { if (c.ready) setWalletReady(true); });
@@ -400,203 +268,98 @@ export default function App() {
 
   const gate = (what, element) => {
     if (!signedIn) return <SignInRequired what={what} onDone={refresh} />;
-    if (!walletReady) {
-      return (
-        <section>
-          <p className="muted small" style={{ marginTop: 24 }}>Restoring your session…</p>
-        </section>
-      );
-    }
+    if (!walletReady) return <section><p className="muted small" style={{ marginTop: 24 }}>Restoring your session…</p></section>;
     return element;
   };
 
-  // A session without a passkey cannot be reached, from any route.
-  //
-  // The prompt used to live only in Onboarding, but Portfolio, Activity, Sign,
-  // Transfer and Settings each call ensureSession() themselves — so a new
-  // account landing on any of them got a working session and never saw the
-  // prompt, then found every transaction blocked by a gate it had no way to
-  // satisfy. Checking here instead of in one component covers every path that
-  // can ever mint a session, including ones added later.
-  //
-  // This is what makes registration genuinely mandatory, and it is the
-  // precondition for removing the onboarding skip and the settings register
-  // button: those were the escape hatches, and they are only safe to delete
-  // once no one can end up needing them.
   const [needsPasskey, setNeedsPasskey] = useState(false);
-  // Mobile nav. Collapsed by default and closed on navigation, so the menu
-  // never sits open over the page the user just chose.
-  const [navOpen, setNavOpen] = useState(false);
+  const [otherDomains, setOtherDomains] = useState([]);
   useEffect(() => {
     let cancelled = false;
     if (!signedIn) { setNeedsPasskey(false); return undefined; }
     (async () => {
       try {
         const pk = await api.passkeyStatus();
-        if (!cancelled) setNeedsPasskey(!pk?.registered);
-      } catch {
-        // Unknown state is not a reason to wave someone through: the check
-        // fails toward the prompt, same as in Onboarding.
-        if (!cancelled) setNeedsPasskey(true);
-      }
+        if (!cancelled) { setNeedsPasskey(!pk?.registered); setOtherDomains(pk?.other_domains || []); }
+      } catch { if (!cancelled) setNeedsPasskey(true); }
     })();
     return () => { cancelled = true; };
   }, [signedIn, session?.address]);
 
-  if (needsPasskey) return <RequirePasskey onDone={() => setNeedsPasskey(false)} />;
+  if (needsPasskey) return <RequirePasskey otherDomains={otherDomains} onDone={() => setNeedsPasskey(false)} />;
+
+  const ctx = { session, address: session?.address || null, signedIn, isAdmin, refresh };
 
   return (
-    <div className="app">
-      <nav>
-        <Link className="brand" to="/">
-          Sarf <em className="tagline">Your X Layer RWA assistant</em>
-        </Link>
-        <button className="nav-toggle" aria-label="Menu" aria-expanded={navOpen}
-                onClick={() => setNavOpen((v) => !v)}>
-          {navOpen ? '\u2715' : '\u2630'}
-        </button>
-        <div className={`links${navOpen ? ' open' : ''}`} onClick={() => setNavOpen(false)}>
-          {/* Public first. The account-only pages are appended once there is a
-              session rather than shown and then refused — each of them opens by
-              asking the wallet who you are.
-
-              Security is not in the list at all any more: it was one control
-              and three paragraphs about it, and it now unfolds inside the
-              dashboard beside the agent it applies to. */}
-          {/* No Home link. The brand at the left IS the way home — that is what
-              a wordmark in the top-left means on every site anyone has used, so
-              a second control saying the same thing spent a slot to teach
-              nobody anything. Removing it and folding Deposit into the
-              dashboard is what brings the signed-in header back inside the page
-              width instead of overflowing it. */}
-          <Link className={pathname === '/markets' ? 'on' : ''} to="/markets">Markets</Link>
-          <Link className={pathname === '/swap' ? 'on' : ''} to="/swap">Swap</Link>
-          <Link className={pathname.startsWith('/zap') ? 'on' : ''} to="/zap">Zap</Link>
-          {signedIn ? (
-            <>
-              <Link className={pathname === '/portfolio' ? 'on' : ''} to="/portfolio">Portfolio</Link>
-              {/* startsWith, not equality: the sections are their own URLs, so
-                  /dashboard/deposit must still light the tab it is part of. */}
-              <Link className={pathname.startsWith('/dashboard') ? 'on' : ''}
-                    to="/dashboard">Dashboard</Link>
-              <Link className={pathname === '/activity' ? 'on' : ''} to="/activity">Activity</Link>
-              {/* Only for the operator, and only as a convenience — see the
-                  isAdmin hook above for why this is not the gate. */}
-              {isAdmin && (
-                <Link className={pathname.startsWith('/admin') ? 'on' : ''}
-                      to="/admin">Admin</Link>
-              )}
-              {/* Last, and a menu rather than a link — see GuideMenu. Once you
-                  are connected the guide is reference material, and the one
-                  line in it you actually come back for is the endpoint. */}
-              <GuideMenu pathname={pathname} />
-            </>
-          ) : (
-            <Link className={pathname === '/how' ? 'on' : ''} to="/how">How it works</Link>
-          )}
-        </div>
-        <div className="header-right">
-          <AccountControl session={session} setSession={setSession} />
-        </div>
-      </nav>
-      <WarningBar setSession={setSession} />
-      <main>
-        <Routes>
-          {/* Public. Portfolio is public on purpose: reading an address needs
-              no account, and it degrades to a prompt only for "my holdings". */}
-          <Route path="/" element={<Home />} />
-          {/* Portfolio is account-only. It used to read any pasted address,
-              which made a wallet-shaped page look public. */}
-          {/* Depositing now lives as a dashboard fold. The URL is kept as a
-              redirect and must stay: the MCP `deposit` tool hands out
-              `{public_url}/deposit` to the assistant, so it is a link already
-              printed in other people's chat histories. */}
-          <Route path="/deposit" element={<Navigate to="/dashboard/deposit" replace />} />
-          <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
-          <Route path="/markets" element={<Markets />} />
-          {/* Public on purpose: a position page is shared and bookmarked, and
-              acting on it asks for the owner's wallet at the moment of acting. */}
-          <Route path="/swap" element={<Swap />} />
-          <Route path="/zap" element={<Zap />} />
-          <Route path="/zap/:id" element={<ZapPosition />} />
-          <Route path="/how" element={<How />} />
-          {/* /security is now a section of the dashboard. Kept as a redirect
-              because the URL is printed in server error messages ("verify at
-              …/security"), in the README, and in links already handed out. */}
-          <Route path="/security" element={<Navigate to="/dashboard/security" replace />} />
-          {/* /connect was the setup page; its content is now the whole of
-              "How it works", since how it works and how you set it up were
-              never two questions. Redirected rather than removed: the URL was
-              printed in setup instructions and is out in the wild. */}
-          <Route path="/connect" element={<Navigate to="/how" replace />} />
-
-          {/* Account-only. */}
-          {/* /settings folded into /security: same subject, two URLs, and the
-              half with the controls was not the half users were sent to. */}
-          <Route path="/settings" element={<Navigate to="/dashboard/security" replace />} />
-          <Route path="/dashboard" element={gate('Your dashboard', <Dashboard />)} />
-          {/* The dashboard's Activity fold is gone — orders already had their
-              own page, and the fold was a second door onto the same list. The
-              URL is kept as a redirect because it was linked from the fold's
-              own deep links and from anything that bookmarked it. */}
-          <Route path="/dashboard/activity" element={<Navigate to="/activity" replace />} />
-          {/* Same component: no :section renders the index, a section renders
-              its own page. One data fetch, two layouts. */}
-          <Route path="/dashboard/:section" element={gate('Your dashboard', <Dashboard />)} />
-          <Route path="/activity" element={gate('Your activity', <Activity />)} />
-          {/* Operator console. Behind the ordinary session gate like any other
-              account page — the admin check itself is the server's, and the
-              page renders whichever of its three states applies (not
-              configured / not an admin / the console). Two routes for the
-              same reason the dashboard has two: the tab is the URL. */}
-          <Route path="/admin" element={gate('The operator console', <Admin />)} />
-          <Route path="/admin/:section" element={gate('The operator console', <Admin />)} />
-          {/* /send removed — transfers belong in chat, where the passkey
-              prompt is already the approval step. */}
-          <Route path="/send" element={<Navigate to="/portfolio" replace />} />
-          <Route path="/sign" element={gate('This transaction', <Sign />)} />
-          {/* OAuth consent. /authorize is the server endpoint, which validates
-              and hands off here; it lives on /approve rather than /connect,
-              which used to be the public setup page. */}
-          <Route path="/approve" element={gate('This connection request', <Authorize />)} />
-        </Routes>
-      </main>
-      {/*
-        One footer for the whole site.
-
-        The synthetic-exposure sentence that used to open this line is gone, at
-        the owner's instruction, and with it every other copy of it on the site.
-        What is left is the fee and the two things Sarf is not — the facts about
-        THIS service rather than about the instrument. The disclosure still
-        rides on every priced tool response to the assistant (see
-        SYNTHETIC_DISCLOSURE in providers/xlayer_rwa.py), which is a separate
-        surface and a separate decision.
-
-        Year is derived, so it never goes stale.
-      */}
-      <footer className="site-foot">
-        <div className="footrow">
-          <span className="brandmark">
-            Sarf
-            <em className="tagline">Your X Layer RWA assistant</em>
-          </span>
-          <div className="footlinks">
-            <Link to="/markets">Markets</Link>
-            <Link to="/how">How it works</Link>
-            <a href="https://web3.okx.com/explorer/x-layer" target="_blank" rel="noreferrer">
-              Explorer
-            </a>
+    <WalletCtx value={ctx}>
+      <div className="app">
+        <nav>
+          <Link className="brand" to="/">
+            Sarf <em className="tagline">Your X Layer RWA assistant</em>
+          </Link>
+          <div className="links">
+            {NAV.map((n) => (
+              <Link key={n.to} className={n.on(pathname) ? 'on' : ''} to={n.to}>{n.label}</Link>
+            ))}
           </div>
-        </div>
-        <p className="fine" style={{ margin: 0, textAlign: 'left' }}>
-          Sarf is not a broker and is not a licensed adviser. A flat $0.01
-          platform fee is charged per swap in the stablecoin leg, inside the same
-          transaction you sign; network gas is separate and paid in OKB.
-        </p>
-        <div className="copyright" style={{ margin: 0, padding: 0, border: 0, textAlign: 'left' }}>
-          © {new Date().getFullYear()} Syketex Technologies. All rights reserved.
-        </div>
-      </footer>
-    </div>
+          <div className="header-right">
+            <WalletMenu session={session} setSession={setSession} isAdmin={isAdmin} />
+          </div>
+        </nav>
+        <WarningBar setSession={setSession} />
+        <main>
+          <Suspense fallback={<p className="muted small" style={{ marginTop: 32 }}>Loading…</p>}>
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/markets" element={<Markets />} />
+              <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
+              <Route path="/zap" element={<Zap />} />
+              <Route path="/zap/:id" element={<ZapPosition />} />
+              <Route path="/swap" element={<Swap />} />
+              <Route path="/how" element={<How />} />
+              <Route path="/account" element={gate('Your account', <Account />)} />
+              <Route path="/admin" element={gate('The operator console', <AdminRoute isAdmin={isAdmin}><Admin /></AdminRoute>)} />
+              <Route path="/admin/:section" element={gate('The operator console', <AdminRoute isAdmin={isAdmin}><Admin /></AdminRoute>)} />
+              <Route path="/sign" element={gate('This transaction', <Sign />)} />
+              <Route path="/approve" element={gate('This connection request', <Authorize />)} />
+
+              {/* Old addresses. They are printed in chat histories, setup
+                  instructions and error messages, so they redirect rather
+                  than 404. The MCP deposit tool hands out /deposit. */}
+              <Route path="/dashboard" element={<Navigate to="/account" replace />} />
+              <Route path="/dashboard/:section" element={<DashboardRedirect />} />
+              <Route path="/activity" element={<Navigate to="/portfolio?tab=activity" replace />} />
+              <Route path="/deposit" element={<Navigate to="/portfolio?fund=1" replace />} />
+              <Route path="/security" element={<Navigate to="/account#agents" replace />} />
+              <Route path="/settings" element={<Navigate to="/account#agents" replace />} />
+              <Route path="/send" element={<Navigate to="/portfolio" replace />} />
+              <Route path="/connect" element={<Navigate to="/how" replace />} />
+            </Routes>
+          </Suspense>
+        </main>
+        {/* One footer for the whole site. The year is derived so it never
+            goes stale. */}
+        <footer className="site-foot">
+          <div className="footrow">
+            <span className="brandmark">
+              Sarf
+              <em className="tagline">Your X Layer RWA assistant</em>
+            </span>
+            <div className="footlinks">
+              <Link to="/markets">Markets</Link>
+              <Link to="/swap">Swap</Link>
+              <Link to="/how">How it works</Link>
+              <a href="https://web3.okx.com/explorer/x-layer" target="_blank" rel="noreferrer">Explorer</a>
+            </div>
+          </div>
+          <p className="fine" style={{ margin: 0 }}>
+            Sarf is not a broker and is not a licensed adviser. A flat $0.01
+            platform fee is charged per swap in the stablecoin leg, inside the same
+            transaction you sign; network gas is separate and paid in OKB.
+          </p>
+          <div className="copyright">© {new Date().getFullYear()} Syketex Technologies. All rights reserved.</div>
+        </footer>
+      </div>
+    </WalletCtx>
   );
 }

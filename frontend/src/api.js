@@ -138,6 +138,9 @@ export const api = {
       body: JSON.stringify({ tx_hash: txHash, amount_usd: amountUsd }),
     }),
 
+  // Disconnect one agent ({ id }) or every agent but this browser ({ all: true }).
+  revokeConnection: (body) =>
+    req('/api/connections/revoke', { method: 'POST', body: JSON.stringify(body) }),
   grant: () => req('/api/grant'),
   grantPrepare: (body) =>
     req('/api/grant/prepare', { method: 'POST', body: JSON.stringify(body) }),

@@ -449,7 +449,7 @@ _FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
     "/settings", "/activity", "/send", "/sign", "/approve", "/dashboard",
-    "/deposit", "/admin", "/zap", "/swap",
+    "/deposit", "/admin", "/zap", "/swap", "/account",
 ]
 
 # Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with
@@ -517,8 +517,18 @@ if _FRONTEND_DIST.is_dir():
     @app.get("/dashboard{rest:path}", include_in_schema=False)
     async def _legacy_dashboard(rest: str, request: Request):
         target = (rest or "/").rstrip("/") or "/"
-        if target == "/authorize":
-            target = "/approve"
+        # The dashboard itself was split up: its sections now live on the
+        # account page and in the portfolio. Everything else under /dashboard
+        # is a page from when the whole site lived there, and loses the prefix.
+        target = {
+            "/": "/account",
+            "/agents": "/account#agents",
+            "/security": "/account#agents",
+            "/credentials": "/account#credentials",
+            "/deposit": "/portfolio?fund=1",
+            "/activity": "/portfolio?tab=activity",
+            "/authorize": "/approve",
+        }.get(target, target)
         qs = request.url.query
         return RedirectResponse(f"{target}{'?' + qs if qs else ''}", status_code=308)
 

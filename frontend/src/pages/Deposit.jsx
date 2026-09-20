@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ensureSession } from '../api.js';
-import { connect, currentAccount, short } from '../wallet.js';
+import {connect, currentAccount, shortAddr} from '../wallet.js';
 import { ONRAMP_NAME, privyContext } from '../privy.jsx';
 
 /**
@@ -434,7 +434,7 @@ export default function Deposit({ embedded = false }) {
       <div className="card accent">
         <h3>Already hold USDC somewhere else?</h3>
         <p>
-          Send it to <b className="addr">{address ? short(address) : 'your address'}</b> on
+          Send it to <b className="addr">{address ? shortAddr(address) : 'your address'}</b> on
           Base and press <b>Move to X Layer</b> — the fiat step is only for
           starting from dollars. The same address works on both chains.
         </p>

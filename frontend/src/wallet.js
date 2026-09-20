@@ -426,5 +426,25 @@ export function onChainChanged(cb) {
   return () => p.removeListener && p.removeListener('chainChanged', handler);
 }
 
-export const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
+/** Wait for a transaction to be mined, through the wallet's own provider.
+ *  -> true if it succeeded, false if it reverted, null if it never appeared. */
+export async function waitForTx(hash, { timeoutMs = 120000, everyMs = 2500 } = {}) {
+  const p = await waitForProvider();
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await p.request({ method: 'eth_getTransactionReceipt', params: [hash] }).catch(() => null);
+    if (r) return Number(BigInt(r.status)) === 1;
+    if (Date.now() > until) return null;
+    await new Promise((res) => setTimeout(res, everyMs));
+  }
+}
+
+/** The one way an address is shown anywhere on the site: 0xa...19d5. */
+export function shortAddr(addr) {
+  if (!addr) return '';
+  return `${addr.slice(0, 3)}...${addr.slice(-4)}`;
+}
+
+/** Transaction hashes, which are not addresses and keep a longer head. */
+export const shortHash = (h) => (h ? `${h.slice(0, 6)}…${h.slice(-4)}` : '');
 export const txUrl = (h) => `${EXPLORER}/tx/${h}`;

@@ -1,233 +1,183 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { api, ensureSession, getSession } from '../api.js';
-import { currentAccount, short } from '../wallet.js';
-import { markBg } from './Home.jsx';
+import { api } from '../api.js';
+import { shortAddr } from '../wallet.js';
+import { useWallet } from '../walletctx.jsx';
+import { TokenMark } from '../market.jsx';
+import Sheet from '../Sheet.jsx';
 import { LevelsPanel, SendPanel, useXPoints } from '../account.jsx';
 
+// Mounted only when opened: the deposit flow is heavy (card on-ramp, Base
+// bridge), and Activity has its own fetch.
+const Deposit = lazy(() => import('./Deposit.jsx'));
+const ActivityList = lazy(() => import('../sections/ActivityList.jsx'));
+
 /**
- * Portfolio: what is held, and what it is worth.
+ * Portfolio: what is held and what it is worth (Holdings), and every order
+ * placed through Sarf (Activity). The tab is in the URL (?tab=activity) so
+ * it can be linked; ?fund=1 opens the deposit flow.
  *
- * Two sources feed the same view. An address in `?a=` goes through the public
- * read-only endpoint — no session, no signature, nothing granted. Your own
- * address, once signed in, goes through the session-bound one. Same renderer
- * either way, because they are the same numbers read from the same chain.
+ * An address in `?a=` shows that address's holdings through the public
+ * read-only endpoint instead: no session, nothing granted, no tabs.
  *
- * Deliberately just the assets. The page used to lead with a headline, a
- * pitch, an address form and a block of analysis findings before it got to a
- * single holding — so the one thing someone opens a portfolio to see was the
- * last thing on it. The analysis still exists and is still served by the API;
- * it is simply not what this page is for.
+ * USDT, USDC and OKB are listed with the stocks and tagged, so the list adds
+ * up to the total. Server-side they stay out of `positions`, which is the
+ * equity sleeve the concentration analysis measures. A balance worth under a
+ * cent is rounding left by a full sell, not a holding.
  */
 
 const PAGE = 8;
 
+function Holdings({ data, mine, onFund }) {
+  const [showAll, setShowAll] = useState(false);
+  const positions = data?.positions || [];
+  const held = (p) => Boolean(p) && Number(p.quantity) > 0 && (p.value_usd == null || Number(p.value_usd) >= 0.01);
+  const extra = [];
+  if (held(data?.usdt)) extra.push({ ...data.usdt, tag: 'Cash' });
+  if (held(data?.usdc)) extra.push({ ...data.usdc, tag: 'Cash' });
+  if (held(data?.okb)) extra.push({ ...data.okb, tag: 'Gas' });
+  const sorted = [...positions, ...extra].sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0));
+  const visible = showAll ? sorted : sorted.slice(0, PAGE);
+  const unpriced = data?.unpriced_positions || [];
+
+  if (!sorted.length) {
+    return (
+      <div className="card empty-state">
+        <h3>{mine ? 'Nothing here yet' : 'Nothing held at this address'}</h3>
+        <p>{mine
+          ? 'Add dollars by card and they land in your wallet on X Layer, ready to trade.'
+          : 'No tokenized stocks, no USDT, no OKB.'}</p>
+        {mine && <div className="cta"><button className="primary" onClick={onFund}>Fund your wallet</button></div>}
+      </div>
+    );
+  }
+  return (
+    <>
+      {unpriced.length > 0 && (
+        <div className="disclosure">
+          <b>{unpriced.join(', ')}</b> could not be priced right now, so the total above
+          excludes them. They are still held; this is a quote outage, not a zero balance.
+        </div>
+      )}
+      <div className="ledger">
+        {visible.map((p) => {
+          const body = (
+            <>
+              <span className="row-left">
+                <TokenMark asset={p} />
+                <span className="row-id">
+                  <span className="sym">{p.symbol}{p.tag && <span className="chip" style={{ marginLeft: 8 }}>{p.tag}</span>}</span>
+                  <span className="name">{(p.name || '').replace(' xStock', '')}</span>
+                </span>
+              </span>
+              <span className="row-right">
+                <span className="price">{p.value_usd != null ? `$${Number(p.value_usd).toLocaleString()}` : '—'}</span>
+                <span className="weight">{p.quantity}</span>
+              </span>
+            </>
+          );
+          return p.explorer_url
+            ? <a className="row" key={p.symbol} href={p.explorer_url} target="_blank" rel="noreferrer">{body}</a>
+            : <div className="row static" key={p.symbol}>{body}</div>;
+        })}
+      </div>
+      {sorted.length > PAGE && (
+        <button className="see-all" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? 'Show fewer' : `Show all ${sorted.length} holdings →`}
+        </button>
+      )}
+      {mine && (
+        <div className="grid g2" style={{ marginTop: 22 }}>
+          <SendPanel holdings={sorted.filter((h) => Number(h.quantity) > 0)} />
+          <LevelsPanel symbols={positions.map((p) => p.symbol)} />
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function Portfolio() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const queried = params.get('a') || '';
+  const tab = params.get('tab') === 'activity' ? 'activity' : 'holdings';
+  const fundOpen = params.get('fund') === '1';
+  const { address, signedIn } = useWallet();
+  const mine = !queried && signedIn;
 
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const mine = !queried && Boolean(getSession());
+  // Activity mounts on first open and then stays mounted, so switching back
+  // and forth does not refetch it.
+  const [activitySeen, setActivitySeen] = useState(tab === 'activity');
   const xp = useXPoints();
 
-  const loadMine = async () => {
+  const load = async () => {
     setErr(null); setBusy(true);
     try {
-      const addr = await currentAccount();
-      if (!addr) throw new Error('Sign in to see your holdings.');
-      await ensureSession(addr);
-      setData(await api.portfolio());
-    } catch (e) { setErr(e.message || String(e)); }
-    finally { setBusy(false); }
+      setData(queried ? await api.publicPortfolio(queried) : await api.portfolio());
+    } catch (e) { setErr(e.message || String(e)); } finally { setBusy(false); }
   };
+  useEffect(() => { if (queried || signedIn) load(); }, [queried, address]);
 
-  const loadPublic = async (addr) => {
-    setErr(null); setBusy(true); setData(null);
-    try {
-      setData(await api.publicPortfolio(addr));
-    } catch (e) { setErr(e.message || String(e)); }
-    finally { setBusy(false); }
+  const setQuery = (patch) => {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) { if (v == null) next.delete(k); else next.set(k, v); }
+    setParams(next, { replace: true });
   };
-
-  useEffect(() => {
-    if (queried) loadPublic(queried);
-    else if (getSession()) loadMine();
-    else { setData(null); setErr(null); }
-  }, [queried]);
-
-  // Read from positions, not from the analysis weights. A public read carries
-  // no analysis, so a weights-only ledger showed an empty portfolio for any
-  // address that was not your own — the holdings were there the whole time.
-  const positions = data?.positions || [];
-  const unpriced = data?.unpriced_positions || [];
-
-  /**
-   * USDT and OKB are holdings, and this page used to leave them out of the
-   * only list it had — a wallet holding $900 of USDT and one share token read
-   * as a one-asset portfolio, with the stablecoin demoted to a figure in the
-   * stat strip. They are listed here with everything else and tagged for what
-   * they are, so the ledger adds up to the total above it.
-   *
-   * They stay out of `positions` server-side on purpose: that list is the
-   * equity sleeve the concentration analysis is computed against, and cash is
-   * not a single-name exposure. Being shown together is a display decision;
-   * being measured together would be a methodology error.
-   *
-   * A balance worth less than a cent is rounding, not a holding.
-   *
-   * Spending a stablecoin down or selling a position in full rarely lands on
-   * an exact zero — the fill is computed against a balance read a moment
-   * earlier — so a few minimal units survive, and `quantity > 0` kept the row.
-   * The result was a ledger still listing what the user had just sold, priced
-   * at $0. The server drops equity dust for the same reason; this is the same
-   * rule applied to the cash and gas rows it deliberately keeps separate.
-   *
-   * Value, never quantity: 0.4 OKB and 0.4 SPYx are not comparable amounts,
-   * and an unpriced holding is unknown rather than empty, so it stays.
-   */
-  const held = (p) => Boolean(p) && Number(p.quantity) > 0
-    && (p.value_usd == null || Number(p.value_usd) >= 0.01);
-
-  const cashAndGas = [];
-  if (held(data?.usdt)) cashAndGas.push({ ...data.usdt, tag: 'CASH' });
-  // USDC is what a fiat deposit mints, so a wallet that has just been funded
-  // holds it and nothing else — leaving it out would show that wallet empty.
-  if (held(data?.usdc)) cashAndGas.push({ ...data.usdc, tag: 'CASH' });
-  if (held(data?.okb)) cashAndGas.push({ ...data.okb, tag: 'GAS' });
-
-  const sorted = [...positions, ...cashAndGas].sort(
-    (a, b) => (b.value_usd || 0) - (a.value_usd || 0));
-  const visible = showAll ? sorted : sorted.slice(0, PAGE);
+  const openTab = (t) => { if (t === 'activity') setActivitySeen(true); setQuery({ tab: t === 'activity' ? 'activity' : null }); };
+  const setFund = (on) => setQuery({ fund: on ? '1' : null });
 
   return (
     <section>
-      <h1>Portfolio</h1>
+      <div className="page-head">
+        <div>
+          <h1>Portfolio</h1>
+          {data && <p className="muted small" style={{ marginTop: 6 }}>{shortAddr(data.address)} · read live from X Layer</p>}
+        </div>
+        {mine && <button className="primary" onClick={() => setFund(true)}>Fund</button>}
+      </div>
 
       {err && <p className="error" style={{ marginTop: 18 }}>{err}</p>}
       {busy && !data && <p className="muted small" style={{ marginTop: 18 }}>Reading X Layer…</p>}
 
       {data && (
-        <>
-          <p className="muted small" style={{ marginTop: 4 }}>
-            {short(data.address)} · read live from X Layer
-          </p>
+        <div className="stats">
+          <div><b>{data.total_value_usd != null ? `$${Number(data.total_value_usd).toLocaleString()}` : '—'}</b><span>total value</span></div>
+          <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>tokenized stocks</span></div>
+          {mine && xp && <div><b>{Number(xp.xpoints).toLocaleString()}</b><span>xPoints</span></div>}
+        </div>
+      )}
 
-          <div className="stats">
-            <div>
-              <b>{data.total_value_usd != null ? `$${Number(data.total_value_usd).toLocaleString()}` : '—'}</b>
-              <span>total value</span>
-            </div>
-            {/* "positions" read as the whole ledger; it is only the equity
-                sleeve, which is now one part of a list that also holds cash. */}
-            <div><b>${Number(data.positions_value_usd || 0).toLocaleString()}</b><span>tokenized stocks</span></div>
-            {mine && xp && <div><b>{Number(xp.xpoints).toLocaleString()}</b><span>xPoints</span></div>}
-            {/* The USDT and OKB tiles that sat here are gone. They are rows in
-                the ledger below now, with a value and a quantity like every
-                other holding — a tile repeating the same balance in a second
-                format, directly above the row that states it properly, was the
-                only place on the page that said a number twice. */}
+      {mine && (
+        <div className="toolbar" style={{ marginTop: 28 }}>
+          <div className="seg" role="tablist">
+            <button role="tab" aria-selected={tab === 'holdings'} className={tab === 'holdings' ? 'on' : ''} onClick={() => openTab('holdings')}>Holdings</button>
+            <button role="tab" aria-selected={tab === 'activity'} className={tab === 'activity' ? 'on' : ''} onClick={() => openTab('activity')}>Activity</button>
           </div>
-
-          {unpriced.length > 0 && (
-            // Never let a pricing outage read as "these are worth nothing".
-            <div className="disclosure">
-              <b>{unpriced.join(', ')}</b> could not be priced right now, so the total
-              above excludes them. They are still held — this is a quote outage, not a
-              zero balance.
-            </div>
-          )}
-
-          {sorted.length > 0 && (
-            <>
-              <div className="section-label">Assets</div>
-              <div className="ledger">
-                {visible.map((p) => {
-                  const body = (
-                    <>
-                      <span className="row-left">
-                        {/* Logo over a generated monogram, same as the chat cards:
-                            the mark is painted first so a blocked or 404 image
-                            leaves a filled square rather than a hole in the row. */}
-                        <span className="tokenmark" style={{ background: markBg(p.symbol) }}>
-                          {p.logo_url
-                            ? <img src={p.logo_url} alt="" loading="lazy" referrerPolicy="no-referrer"
-                                   onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-                            : null}
-                          <i>{String(p.symbol).replace(/x$/, '').slice(0, 2).toUpperCase()}</i>
-                        </span>
-                        <span className="row-id">
-                          <span className="sym">
-                            {p.symbol}
-                            {/* Cash and gas are labelled rather than left to be
-                                mistaken for equities sitting in the same list. */}
-                            {p.tag && <span className="chip" style={{ marginLeft: 8 }}>{p.tag}</span>}
-                          </span>
-                          <span className="name">{(p.name || '').replace(' xStock', '')}</span>
-                        </span>
-                      </span>
-                      <span className="row-right">
-                        <span className="price">
-                          {p.value_usd != null ? `$${Number(p.value_usd).toLocaleString()}` : '—'}
-                        </span>
-                        <span className="weight">{p.quantity}</span>
-                      </span>
-                    </>
-                  );
-                  // OKB is the native coin, so it has no token page to link to.
-                  // A row that looks clickable and goes nowhere is worse than a
-                  // row that plainly does not.
-                  return p.explorer_url ? (
-                    <a className="row" key={p.symbol} href={p.explorer_url}
-                       target="_blank" rel="noreferrer">{body}</a>
-                  ) : (
-                    <div className="row static" key={p.symbol}>{body}</div>
-                  );
-                })}
-              </div>
-              {sorted.length > PAGE && (
-                <button className="see-all" onClick={() => setShowAll((v) => !v)}>
-                  {showAll ? 'Show fewer' : `Show all ${sorted.length} holdings →`}
-                </button>
-              )}
-            </>
-          )}
-
-          {mine && (
-            <>
-              <div className="cta">
-                <Link className="btn primary" to="/swap">Swap</Link>
-                <Link className="btn" to="/zap">Zap</Link>
-                <Link className="btn" to="/dashboard/deposit">Add money</Link>
-              </div>
-              <div className="grid g2" style={{ marginTop: 18 }}>
-                <SendPanel holdings={sorted.filter((h) => Number(h.quantity) > 0)} />
-                <LevelsPanel symbols={positions.map((p) => p.symbol)} />
-              </div>
-            </>
-          )}
-
-          {sorted.length === 0 && (
-            <p className="muted small" style={{ marginTop: 20 }}>
-              Nothing held at this address — no tokenized stocks, no USDT, no OKB.
-            </p>
-          )}
-
-          {/* The "Informational only — xStocks track a share price…" note that
-              used to close this page is gone, at the owner's instruction, along
-              with every other copy of it on the site. It still rides on every
-              priced tool response to the assistant — see SYNTHETIC_DISCLOSURE
-              in providers/xlayer_rwa.py, which is a separate surface. */}
-        </>
+          <div className="cta" style={{ margin: 0 }}>
+            <Link className="btn small" to="/swap">Swap</Link>
+            <Link className="btn small" to="/zap">Zap</Link>
+          </div>
+        </div>
       )}
 
-      {!data && !busy && !err && (
-        <p className="muted small" style={{ marginTop: 24 }}>
-          Sign in to read your holdings.
-        </p>
+      <div hidden={mine && tab !== 'holdings'}>
+        {data && <Holdings data={data} mine={mine} onFund={() => setFund(true)} />}
+      </div>
+      {mine && activitySeen && (
+        <div hidden={tab !== 'activity'}>
+          <Suspense fallback={<p className="muted small">Loading…</p>}><ActivityList /></Suspense>
+        </div>
       )}
+
+      {!data && !busy && !err && !mine && !queried && (
+        <p className="muted small" style={{ marginTop: 24 }}>Sign in to read your holdings.</p>
+      )}
+
+      <Sheet open={mine && fundOpen} title="Fund your wallet" onClose={() => { setFund(false); load(); }}>
+        <Suspense fallback={<p className="muted small">Loading…</p>}><Deposit embedded /></Suspense>
+      </Sheet>
     </section>
   );
 }

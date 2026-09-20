@@ -225,7 +225,8 @@ export default function Home() {
             <li>Swap <em>· any stock against USDT, USDC, OKB or another stock</em></li>
             <li>Zap <em>· liquidity with an impermanent-loss line</em></li>
             <li>Portfolio <em>· holdings, xPoints, send, stop-loss levels</em></li>
-            <li>Dashboard <em>· add money by card, session key</em></li>
+            <li>Portfolio → Fund <em>· add money by card</em></li>
+            <li>Account <em>· connected agents, session key, revoke</em></li>
           </ul>
           <Link className="btn primary" to="/swap">Open Swap</Link>
         </div>

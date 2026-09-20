@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
-import { connect, currentAccount, short, signMessage } from '../wallet.js';
+import {connect, currentAccount, signMessage, shortAddr} from '../wallet.js';
 
 /**
  * OAuth consent. This is a functional requirement, not marketing: Claude and
@@ -73,7 +73,7 @@ export default function Authorize() {
       </p>
 
       <div className="kv">
-        <div><span>Wallet</span><b>{address ? short(address) : 'not connected'}</b></div>
+        <div><span>Wallet</span><b>{address ? shortAddr(address) : 'not connected'}</b></div>
         <div><span>Redirect</span><b>{host}</b></div>
         <div><span>Network</span><b>X Layer (196)</b></div>
       </div>

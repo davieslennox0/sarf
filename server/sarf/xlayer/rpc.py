@@ -253,6 +253,18 @@ async def erc20_balances(
     return out, unread
 
 
+async def erc20_allowance(token_address: str, owner: str, spender: str) -> int:
+    """allowance(owner, spender): how much of this token the spender may pull.
+    Zero is the normal state before the first sell of an asset."""
+    data = ("0xdd62ed3e" + owner.lower()[2:].rjust(64, "0")
+            + spender.lower()[2:].rjust(64, "0"))
+    res = await _call("eth_call", [{"to": token_address, "data": data}, "latest"])
+    try:
+        return int(res, 16)
+    except (ValueError, TypeError):
+        raise RpcError(f"unreadable allowance response for token {token_address}") from None
+
+
 async def native_balance(holder: str) -> int:
     res = await _call("eth_getBalance", [holder.lower(), "latest"])
     return int(res, 16) if res else 0
@@ -267,6 +279,15 @@ async def transaction_count(address: str) -> int:
 
 async def gas_price() -> int:
     res = await _call("eth_gasPrice", [])
+    return int(res, 16) if res else 0
+
+
+async def estimate_gas(*, from_address: str, to: str, data: str, value: int = 0) -> int:
+    """What the chain says this call costs. Raises RpcError if it would revert,
+    which callers treat as "cannot estimate", never as "refuse the order"."""
+    res = await _call("eth_estimateGas", [{
+        "from": from_address, "to": to, "data": data, "value": hex(int(value)),
+    }])
     return int(res, 16) if res else 0
 
 

@@ -80,18 +80,23 @@ main {
 
 /* ---- header -------------------------------------------------------------- */
 
-/* Identity left, navigation centred as one pill group, account right. */
+/* Identity left, navigation centred as one pill group, account right. The
+   row is contained: nothing in it may push the page wider than the screen. */
 nav {
   position: sticky; top: 0; z-index: 50;
-  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 20px;
+  display: flex; align-items: center; gap: 16px;
+  min-width: 0; max-width: 100%; overflow: hidden;
   height: 72px;
   padding-inline: max(var(--pad), calc((100% - var(--content)) / 2));
   background: rgba(10, 10, 11, .72);
   backdrop-filter: blur(16px) saturate(1.3);
   -webkit-backdrop-filter: blur(16px) saturate(1.3);
 }
+/* The account menu drops below the header, so the header itself must not
+   clip it: overflow is only hidden on the row's own axis content. */
+nav:has(.account-menu) { overflow: visible; }
 nav .brand {
-  justify-self: start; display: inline-flex; align-items: center; gap: 10px;
+  flex: none; display: inline-flex; align-items: center; gap: 10px;
   font-size: 21px; font-weight: 700; letter-spacing: -.02em; color: var(--accent);
   white-space: nowrap;
 }
@@ -109,7 +114,8 @@ nav .brand .tagline, .site-foot .brandmark .tagline {
 }
 
 nav .links {
-  justify-self: center; display: flex; gap: 2px; padding: 4px;
+  margin: 0 auto; min-width: 0; overflow-x: auto; scrollbar-width: none;
+  display: flex; gap: 2px; padding: 4px;
   background: var(--s1); border: 1px solid var(--line); border-radius: var(--pill);
 }
 nav .links a, .navmenu-trigger {
@@ -124,7 +130,7 @@ nav .links a.on, .navmenu-trigger.on, .navmenu-trigger.open {
   color: var(--accent); background: var(--s3);
 }
 
-.header-right { justify-self: end; display: flex; align-items: center; gap: 10px; }
+.header-right { flex: none; display: flex; align-items: center; gap: 10px; }
 
 /* "How it works" as a menu, signed in only (GuideMenu in App.jsx). */
 .navmenu { position: relative; display: flex; align-items: center; }
@@ -677,24 +683,14 @@ footer { display: flex; flex-direction: column; align-items: center; gap: 10px; 
 img, svg, canvas { max-width: 100%; }
 pre, code { overflow-x: auto; max-width: 100%; }
 
-.nav-toggle { display: none; }
-@media (max-width: 860px) {
-  nav { display: flex; flex-wrap: wrap; height: auto; padding-block: 12px; gap: 10px; }
+/* Phones: brand and wallet on the first row, the three tabs as their own
+   full-width row beneath. Three short labels fit at 360px without scrolling. */
+@media (max-width: 760px) {
+  nav { flex-wrap: wrap; height: auto; padding-block: 10px; row-gap: 8px; }
   nav .brand .tagline { display: none; }
   .header-right { margin-left: auto; }
-  .nav-toggle {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 40px; height: 40px; padding: 0; font-size: 16px; border-radius: 50%;
-  }
-  nav .links { display: none; }
-  nav .links.open {
-    display: flex; flex-direction: column; align-items: stretch; order: 3; width: 100%;
-    gap: 2px; padding: 6px; border-radius: var(--r-lg);
-  }
-  nav .links.open a, nav .links.open .navmenu-trigger { padding: 12px 14px; border-radius: var(--r); }
-  .navmenu { flex-direction: column; align-items: stretch; }
-  .navmenu-trigger { justify-content: space-between; }
-  .navmenu-panel { position: static; transform: none; width: auto; max-width: none; margin: 4px 0 6px; box-shadow: none; }
+  nav .links { order: 3; flex: 1 0 100%; margin: 0; justify-content: space-between; }
+  nav .links a { flex: 1; justify-content: center; padding: 8px 6px; }
 }
 @media (max-width: 760px) {
   .modes { grid-template-columns: 1fr; }
@@ -848,3 +844,56 @@ h1 .chip { font-size: 13px; padding: 6px 12px; letter-spacing: 0; vertical-align
 
 .trade-menu .trade-here { background: var(--accent); color: #0A0A0B; font-weight: 600; text-align: center; margin-bottom: 6px; }
 .trade-menu .trade-here:hover { background: #fff; }
+
+/* ---- wallet pill and account menu --------------------------------------------------------- */
+html, body { overflow-x: hidden; }
+/* The Connect button and the signed-in pill reserve the same width, so
+   signing in or out never reflows the header. */
+.wallet-slot { flex: none; min-width: 132px; display: flex; justify-content: flex-end; position: relative; }
+.wallet-slot > button, .wallet-slot .primary { min-width: 132px; }
+.wallet-pill {
+  flex-shrink: 0; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis;
+  /* Same box as the signed-out Connect button, to the pixel: padding and
+     border together match its 10px padding, so the header keeps its height
+     when the pill replaces it. */
+  display: inline-flex; align-items: center; gap: 8px; padding: 9px 12px;
+  background: var(--s2); border: 1px solid var(--line); font-weight: 500;
+}
+.wallet-pill:hover:not(:disabled) { background: var(--s3); }
+.wallet-addr { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' on; letter-spacing: .01em; }
+.wallet-pill .caret { font-size: 10px; color: var(--paper-dim); }
+.account-menu { min-width: 240px; padding: 8px; }
+.menu-id { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px 10px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.menu-item {
+  display: flex; width: 100%; justify-content: flex-start; padding: 10px; border-radius: var(--r-sm);
+  background: none; font-weight: 500; color: var(--paper);
+}
+.menu-item:hover:not(:disabled) { background: var(--s2); }
+.menu-item.danger-text { color: var(--red); }
+.account-menu hr { margin: 6px 0; }
+
+/* ---- sheet: bottom drawer on phones, centred panel above ---------------------------------- */
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: rgba(5, 5, 6, .7); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.sheet {
+  width: 100%; max-width: 640px; max-height: min(86vh, 900px); display: flex; flex-direction: column;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow);
+}
+.sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.sheet-head b { font-size: 17px; }
+.sheet-close { width: 34px; height: 34px; padding: 0; border-radius: 50%; }
+.sheet-body { padding: 18px 20px 24px; overflow-y: auto; }
+@media (max-width: 760px) {
+  .sheet-backdrop { align-items: flex-end; padding: 0; }
+  .sheet { max-width: none; max-height: 88vh; border-radius: var(--r-lg) var(--r-lg) 0 0; border-bottom: 0; }
+}
+
+/* ---- page parts ---------------------------------------------------------------------------- */
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.page-head h1 { margin-top: 6px; }
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 8px; }
+.panel-head p { flex: 1; min-width: 0; }
+.empty-state { text-align: center; padding: 36px 24px; }
+.empty-state .cta { justify-content: center; }

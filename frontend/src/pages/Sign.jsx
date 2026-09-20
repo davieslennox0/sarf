@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, ensureSession, verifyPasskey } from '../api.js';
-import { connect, currentAccount, sendTransaction, short, txUrl } from '../wallet.js';
+import {connect, currentAccount, sendTransaction, txUrl, waitForTx, shortAddr, shortHash} from '../wallet.js';
 
 /**
  * The order signer. Claude links here (sign_url on every order). The page
@@ -30,6 +30,8 @@ export default function Sign() {
   const [order, setOrder] = useState(null);
   const [account, setAccount] = useState(null);
   const [phase, setPhase] = useState('review'); // review | signing | done
+  const [step, setStep] = useState(null);   // what the wallet is being asked for
+  const [settled, setSettled] = useState(null); // true | false | null (still pending)
   const [result, setResult] = useState(null);
   const [err, setErr] = useState(null);
 
@@ -68,31 +70,67 @@ export default function Sign() {
         st?.registered && order.est_usd != null && order.est_usd > (st.stepup_threshold_usd ?? Infinity);
       if (needsStepUp) await verifyPasskey();
 
+      // A token the router has never been allowed to pull needs one approval
+      // first, or the swap reverts inside transferFrom: signed, paid for, and
+      // nothing moved. Approve, wait for it to land, then send the trade.
+      if (order._approval) {
+        setStep(`Approving ${order._approval.symbol}…`);
+        const ah = await sendTransaction(addr, order._approval);
+        const ok = await waitForTx(ah);
+        if (ok === false) throw new Error(`The ${order._approval.symbol} approval reverted, so the trade was not sent.`);
+        if (ok === null) throw new Error('The approval has not confirmed yet. Wait a moment and try again.');
+      }
+
+      setStep('Confirm the trade in your wallet…');
       const hash = await sendTransaction(addr, order.tx);
       await api.orderSubmitted(orderId, hash);
       setResult({ hash });
       setPhase('done');
+
+      // Broadcast is not settled. Watch it, and say plainly if it reverted.
+      setStep(null);
+      for (let i = 0; i < 40; i += 1) {
+        const s2 = await api.orderStatus(orderId).catch(() => null);
+        if (s2?.state === 'confirmed') { setSettled(true); return; }
+        if (s2?.state === 'failed') { setSettled(false); return; }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
     } catch (e) {
       setErr(e.message || String(e));
       setPhase('review');
+      setStep(null);
     }
   };
 
   if (phase === 'done' && result) {
     return (
       <section className="sign-card">
-        <h1>Broadcast to X Layer ✓</h1>
+        <h1>
+          {settled === true ? 'Settled on X Layer ✓'
+            : settled === false ? 'The transaction reverted'
+            : 'Broadcast to X Layer'}
+        </h1>
         <p>
-          Transaction: <code>{short(result.hash)}</code>{' '}
+          Transaction: <code>{shortHash(result.hash)}</code>{' '}
           <a href={txUrl(result.hash)} target="_blank" rel="noreferrer">view on explorer ↗</a>
         </p>
-        <p className="muted">
-          Settlement is final once mined. If this came from a chat, go back and ask for
-          <i> settlement status</i> to confirm it there.
-        </p>
+        {settled === null && <p className="muted">Waiting for it to be mined…</p>}
+        {settled === false && (
+          <p className="error">
+            Nothing moved: your balances are unchanged and you paid only the gas. This
+            usually means the price moved past your slippage while you were signing.
+            Building the trade again gets a fresh quote.
+          </p>
+        )}
+        {settled === true && (
+          <p className="muted">
+            Settlement is final. If this came from a chat, go back and ask for
+            <i> settlement status</i> to see it there.
+          </p>
+        )}
         <div className="cta">
           <Link className="btn primary" to="/portfolio">View portfolio</Link>
-          <Link className="btn" to="/swap">Another swap</Link>
+          <Link className="btn" to="/swap">{settled === false ? 'Try again' : 'Another swap'}</Link>
         </div>
       </section>
     );
@@ -152,11 +190,12 @@ export default function Sign() {
         </div>
       ) : wrongAccount ? (
         <div className="error">
-          Connected wallet {short(account)} does not match this order's wallet{' '}
-          {short(order.address)}. Switch accounts to sign.
+          Connected wallet {shortAddr(account)} does not match this order's wallet{' '}
+          {shortAddr(order.address)}. Switch accounts to sign.
         </div>
       ) : (
         <div className="cta">
+          {step && <p className="muted small" style={{ marginBottom: 10 }}>{step}</p>}
           <button className="primary big" disabled={phase !== 'review'} onClick={approve}>
             {phase === 'signing' ? 'Confirm in your wallet…' : account ? 'Sign & broadcast' : 'Connect wallet & sign'}
           </button>

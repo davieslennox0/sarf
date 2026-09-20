@@ -131,7 +131,7 @@ export const STEPS = [
     hint: 'A capped, revocable session key',
     body: (
       <p>
-        From <b>Dashboard → Trading in chat</b>, you can give Sarf a session key with a
+        From <b>your wallet menu → Agents &amp; session</b>, you can give Sarf a session key with a
         per-trade cap, a daily cap and an expiry. Trades up to $250 that fit those caps then
         settle right in the chat. Anything larger, anything paid in OKB, and every transfer
         still comes to your wallet to sign. Revoke it from the dashboard at any time; it also

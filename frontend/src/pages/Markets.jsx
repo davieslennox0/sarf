@@ -1,9 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { usePrices } from './Home.jsx';
 import {
   MarketTable, SearchIcon, SparkDefs, TopCards, byVolume, compactUsd, useMemoFilter, useOverview,
 } from '../market.jsx';
+
+// The table shows this many rows, then a Load more. Search and sort always
+// run across every asset, so a match is never hidden behind the fold.
+const PAGE = 15;
 
 const SORTS = [
   ['volume', 'Most traded'],
@@ -17,6 +22,8 @@ export default function Markets() {
   const [err, setErr] = useState(null);
   const [q, setQ] = useState('');
   const [sort, setSort] = useState('volume');
+  const [limit, setLimit] = useState(PAGE);
+  useEffect(() => { setLimit(PAGE); }, [q, sort]);
 
   useEffect(() => {
     api.list().then((d) => setAssets(d.assets || [])).catch((e) => setErr(e.message || String(e)));
@@ -48,7 +55,10 @@ export default function Markets() {
     <section>
       <SparkDefs />
       <div className="eyebrow tick">{assets.length || 43} tokenized assets on X Layer</div>
-      <h1>Markets</h1>
+      <div className="page-head">
+        <h1>Markets</h1>
+        <Link className="btn small ghost" to="/how">How it works</Link>
+      </div>
       <p className="sub">
         Trade by the on-chain symbol, the x-suffix form (AAPLx). OKX's centralized order
         book lists the same underlying as XAAPL; that is a different venue and is not
@@ -78,7 +88,16 @@ export default function Markets() {
       </div>
       {!assets.length && !err
         ? <div className="mkt-empty">Loading the registry…</div>
-        : <MarketTable assets={rows} prices={prices} overview={overview} emptyText={`Nothing matches "${q}".`} />}
+        : (
+          <>
+            <MarketTable assets={rows.slice(0, limit)} prices={prices} overview={overview} emptyText={`Nothing matches "${q}".`} />
+            {rows.length > limit && (
+              <button className="see-all" onClick={() => setLimit((n) => n + PAGE)}>
+                Load more ({rows.length - limit} left) →
+              </button>
+            )}
+          </>
+        )}
 
       <p className="fine" style={{ marginTop: 28 }}>
         Each asset links to its contract on the X Layer explorer. The registry is verified

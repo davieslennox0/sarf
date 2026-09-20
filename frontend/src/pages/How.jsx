@@ -118,7 +118,7 @@ export default function How() {
             <li>Swap <em>· any xStock against USDT, USDC, OKB or another xStock</em></li>
             <li>Zap <em>· deposit, watch IL, exit and re-enter</em></li>
             <li>Portfolio <em>· holdings, value, send</em></li>
-            <li>Dashboard <em>· card deposits, session key, connected apps</em></li>
+            <li>Account <em>· connected agents, session key, revoke</em></li>
           </ul>
           <Link className="btn primary" to="/swap">Open Swap</Link>
         </div>
@@ -132,7 +132,7 @@ export default function How() {
           <tr><td>IL-protected liquidity</td><td>"zap 0.5 SPCXx"</td><td><Link to="/zap">Zap</Link></td></tr>
           <tr><td>Holdings and value</td><td>"how is my portfolio doing?"</td><td><Link to="/portfolio">Portfolio</Link></td></tr>
           <tr><td>Send to another address</td><td>"send 10 USDT to 0x…"</td><td><Link to="/portfolio">Portfolio → Send</Link></td></tr>
-          <tr><td>Add money by card</td><td>"deposit $50"</td><td><Link to="/dashboard/deposit">Dashboard → Deposit</Link></td></tr>
+          <tr><td>Add money by card</td><td>"deposit $50"</td><td><Link to="/portfolio?fund=1">Portfolio → Fund</Link></td></tr>
           <tr><td>Stop-loss and take-profit levels</td><td>"stop-loss NVDAx at $200"</td><td><Link to="/portfolio">Portfolio → Levels</Link></td></tr>
           <tr><td>xPoints</td><td>"how many xPoints do I have?"</td><td><Link to="/portfolio">Portfolio</Link></td></tr>
           <tr><td>Basket orders</td><td>"split $100 across SPYx and QQQx"</td><td><b>Chat for now</b>, or one swap per asset</td></tr>

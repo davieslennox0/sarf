@@ -12,6 +12,7 @@ not already settled. It never broadcasts and never holds a signature.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import secrets
@@ -458,6 +459,11 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
         """
         addr = _session_addr(authorization)
         rows = db.active_sessions(addr)
+        # Which row is the browser asking. Only that one is "you" and cannot be
+        # revoked from here; any other browser session is as revocable as an
+        # assistant's.
+        here = hashlib.sha256(
+            authorization[7:].strip().split("_", 2)[-1].split(".", 1)[0].encode()).hexdigest()[:20]
         return {
             "address": addr,
             "count": len(rows),
@@ -472,6 +478,7 @@ def build_xlayer_api(db: Database, dex: OkxDexClient, reg: XStocksRegistry,
                     # rather than guessed at.
                     "identified": bool(row["client_name"]),
                     "kind": "browser" if row["client_name"] == "Sarf website" else "assistant",
+                    "current": row["handle"] == here,
                     "connected_at": int(row["created_at"]),
                     "expires_at": int(row["expires_at"]),
                 }

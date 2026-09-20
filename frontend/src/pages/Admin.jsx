@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, ensureSession } from '../api.js';
-import { connect, currentAccount, short, txUrl } from '../wallet.js';
+import {connect, currentAccount, txUrl, shortAddr, shortHash} from '../wallet.js';
 
 /**
  * Operator console.
@@ -193,7 +193,7 @@ function NotAdmin({ address, reason }) {
       <h1>Not available on this account</h1>
       <p className="sub">
         This page is limited to the Google accounts on the operator allow-list,
-        and this session — signed in as {short(address)} — did not present one.
+        and this session — signed in as {shortAddr(address)} — did not present one.
       </p>
       <p className="muted small">
         If this is your deployment: the console keys off the <b>Google address
@@ -233,7 +233,7 @@ function NotAdmin({ address, reason }) {
           )}
         </div>
       ) : null}
-      <div className="cta"><Link className="btn ghost" to="/dashboard">Back to dashboard</Link></div>
+      <div className="cta"><Link className="btn ghost" to="/account">Back to account</Link></div>
     </section>
   );
 }
@@ -422,7 +422,7 @@ function Overview({ data }) {
             ['Live grants', num(d.grants.live)],
             ['Grants ever issued', num(d.grants.total)],
             ['Revoked', num(d.grants.revoked)],
-            ['Delegate', short(d.config.delegate_address)],
+            ['Delegate', shortAddr(d.config.delegate_address)],
             ['Snapshot age', d.snapshot.updated_at ? ago(d.snapshot.updated_at) : 'never run'],
             ['Snapshot interval', `${d.snapshot.refresh_seconds}s`],
           ]} />
@@ -454,7 +454,7 @@ function Users({ rows, query, setQuery, onRevoke, busy }) {
           <tbody>
             {rows.map((u) => (
               <tr key={u.address}>
-                <td><code>{short(u.address)}</code></td>
+                <td><code>{shortAddr(u.address)}</code></td>
                 <td><span className="chip grey">{u.source}</span></td>
                 <td>{when(u.first_seen)}</td>
                 <td>{ago(u.last_seen)}</td>
@@ -491,13 +491,13 @@ function Orders({ rows }) {
         {rows.map((o) => (
           <tr key={o.order_id}>
             <td>{when(o.created_at)}</td>
-            <td><code>{short(o.address)}</code></td>
+            <td><code>{shortAddr(o.address)}</code></td>
             <td><b>{o.side}</b> {o.symbol}</td>
             <td>{usd(o.est_usd)}</td>
             <td><span className={`chip ${ORDER_TONE[o.status] || 'grey'}`}>{o.status}</span></td>
             <td>
               {o.tx_hash
-                ? <a href={txUrl(o.tx_hash)} target="_blank" rel="noreferrer">{short(o.tx_hash)} ↗</a>
+                ? <a href={txUrl(o.tx_hash)} target="_blank" rel="noreferrer">{shortHash(o.tx_hash)} ↗</a>
                 : '—'}
             </td>
           </tr>
@@ -522,7 +522,7 @@ function Deposits({ rows, onRetry, busy }) {
           {rows.map((d) => (
             <tr key={d.burn_tx}>
               <td>{when(d.created_at)}</td>
-              <td><code>{short(d.address)}</code></td>
+              <td><code>{shortAddr(d.address)}</code></td>
               <td>{usd(d.amount_usd)}</td>
               <td>
                 <span className={`chip ${d.stuck ? 'red' : DEPOSIT_TONE[d.status] || 'grey'}`}>
@@ -568,8 +568,8 @@ function Grants({ rows, onRevoke, busy }) {
         <tbody>
           {rows.map((g) => (
             <tr key={g.address}>
-              <td><code>{short(g.address)}</code></td>
-              <td><code>{short(g.session_address)}</code></td>
+              <td><code>{shortAddr(g.address)}</code></td>
+              <td><code>{shortAddr(g.session_address)}</code></td>
               <td>{when(g.expiry)}</td>
               <td>{usd(g.per_trade_cap / 1e6)}</td>
               <td>{usd(g.daily_cap / 1e6)}</td>
@@ -605,7 +605,7 @@ function Audit({ rows }) {
             <td>{when(e.created_at)}</td>
             <td>{e.actor_email}</td>
             <td><span className="chip accent">{e.action}</span></td>
-            <td><code>{e.target ? short(e.target) : '—'}</code></td>
+            <td><code>{e.target ? shortAddr(e.target) : '—'}</code></td>
           </tr>
         ))}
       </tbody>

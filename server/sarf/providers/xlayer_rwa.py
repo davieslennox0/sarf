@@ -179,7 +179,7 @@ def _wallet_fallback_note(stepup: "passkey.StepUpDecision") -> str:
     """
     return (
         f"Sign this in your wallet: {stepup.reason}. Verifying your passkey at "
-        f"{settings.public_url}/security is what re-enables approving trades here "
+        f"{settings.public_url}/account#agents is what re-enables approving trades here "
         "in chat — it is not needed to sign this one."
     )
 
@@ -578,7 +578,7 @@ class XLayerRwaProvider:
         last = db.last_passkey_verification(address)
         if last is None or (time.time() - last) > passkey.stepup_validity_seconds():
             raise ValueError(
-                f"verify with your passkey first — open {settings.public_url}/security "
+                f"verify with your passkey first — open {settings.public_url}/account#agents "
                 f"and press Verify, then try again within "
                 f"{passkey.stepup_validity_seconds() // 60} minutes. Transfers always "
                 "require this, whatever the amount."
@@ -898,6 +898,37 @@ class XLayerRwaProvider:
             notes.insert(1, _wallet_fallback_note(stepup))
         return notes
 
+    async def _approval_needed(self, asset: Any, address: str, amount: int) -> dict[str, Any] | None:
+        """The one-time approval a wallet-signed sell needs before the router
+        can pull the token, or None when the allowance already covers it.
+
+        Without this an ERC-20 swap reverts inside transferFrom: the user
+        signs, pays gas, and nothing moves. Native OKB needs no approval, and
+        the delegated path does its own exact approve inside the contract, so
+        this is for transactions the user signs in their own wallet.
+
+        Approves exactly this amount, never unlimited: an allowance outlives
+        the trade it was granted for.
+        """
+        if getattr(asset, "is_native", False):
+            return None
+        spender = self.reg.dex_approve_address
+        try:
+            allowed = await rpc.erc20_allowance(asset.address, address, spender)
+        except rpc.RpcError:
+            return None  # unreadable: let the wallet's own simulation decide
+        if allowed >= amount:
+            return None
+        return {
+            "to": asset.address,
+            "data": "0x095ea7b3" + spender.lower()[2:].rjust(64, "0") + f"{amount:064x}",
+            "value": "0",
+            "chainId": CHAIN_ID,
+            "symbol": asset.symbol,
+            "why": (f"{asset.symbol} has to be approved once before the router can sell it. "
+                    "This approves exactly this trade's amount, not an unlimited allowance."),
+        }
+
     def _can_execute_now(self, address: str, est_usd: float | None, *,
                          stepup: passkey.StepUpDecision,
                          native_leg: bool = False) -> bool:
@@ -1190,6 +1221,7 @@ class XLayerRwaProvider:
             # Persist everything the signer page must re-display. It is the last
             # review surface before the user signs, so it has to show exactly
             # what the assistant showed them.
+            approval = await self._approval_needed(sell_asset, address, amount_min_units)
             order_id = db.create_order(
                 address=address, side=side, symbol=asset.symbol,
                 amount_in=amount_min_units, quoted_out=quote.to_amount,
@@ -1212,6 +1244,7 @@ class XLayerRwaProvider:
                     # rather than recomputed so execution uses the exact terms
                     # the user was shown — a re-quote at execute time would
                     # settle a different trade than the one they approved.
+                    "_approval": approval,
                     "_exec": {
                         "sell_token": sell_addr, "buy_token": buy_addr,
                         "sell_amount": str(amount_min_units),
@@ -1225,6 +1258,7 @@ class XLayerRwaProvider:
             payload = {
                 "order_id": order_id,
                 "chain_id": CHAIN_ID,
+                "approval": approval,
                 "side": side,
                 "symbol": asset.symbol,
                 "name": asset.name,
@@ -1477,6 +1511,7 @@ class XLayerRwaProvider:
                     "wallet even if you have a session grant — the session key is built "
                     "so that it can never touch your gas.")
 
+            approval = await self._approval_needed(sell_asset, address, amount_min_units)
             order_id = db.create_order(
                 address=address, side="swap", symbol=buy_asset.symbol,
                 amount_in=amount_min_units, quoted_out=quote.to_amount,
@@ -1492,6 +1527,7 @@ class XLayerRwaProvider:
                         f"{buy_asset.symbol}" if unsigned.min_receive else None),
                     "price_impact_percent": impact, "slippage_percent": slippage,
                     "disclosure": SYNTHETIC_DISCLOSURE,
+                    "_approval": approval,
                     "_exec": {
                         "sell_token": sell_asset.address, "buy_token": buy_asset.address,
                         "sell_amount": str(amount_min_units),
@@ -1503,6 +1539,7 @@ class XLayerRwaProvider:
             )
             payload = {
                 "order_id": order_id, "chain_id": CHAIN_ID, "side": "swap",
+                "approval": approval,
                 "symbol": f"{sell_asset.symbol} → {buy_asset.symbol}",
                 "name": f"{_label(sell_asset)} to {_label(buy_asset)}",
                 # The asset being ACQUIRED carries the card, matching how the
@@ -1713,7 +1750,7 @@ class XLayerRwaProvider:
                 "delegation_installed": on_chain,
                 "auto_execute_under_usd": settings.delegated_auto_usd,
                 "passkey_registered": bool(db.passkeys_for_address(address)),
-                "setup_url": f"{settings.public_url}/security" if settings.public_url else None,
+                "setup_url": f"{settings.public_url}/account#agents" if settings.public_url else None,
             }
             # "A row exists" was treated as "a grant exists", so an expired or
             # locally revoked grant still produced "A live grant exists: orders
@@ -2013,7 +2050,7 @@ class XLayerRwaProvider:
                     f"order routes through ({row['router']} vs {ex['router']}), so the "
                     "trade would revert on-chain and still cost gas. The router is "
                     "baked into the signed grant and cannot be changed server-side — "
-                    f"re-authorise the session at {settings.public_url}/security, then "
+                    f"re-authorise the session at {settings.public_url}/account#agents, then "
                     "ask again. Nothing has been broadcast and no funds moved."
                 )
 
@@ -2031,7 +2068,7 @@ class XLayerRwaProvider:
                     f"{settings.delegate_address}). That version approved the swap "
                     "router rather than the contract that actually collects the "
                     "tokens, so every trade under it reverts on-chain and still costs "
-                    f"gas. Re-authorise at {settings.public_url}/security to move to "
+                    f"gas. Re-authorise at {settings.public_url}/account#agents to move to "
                     "the current one. Nothing has been broadcast and no funds moved."
                 )
 
@@ -2081,7 +2118,7 @@ class XLayerRwaProvider:
                     raise ValueError(
                         f"this is {_usd(est)}, over the {_usd(auto_limit_usd)} you set "
                         "for in-chat trades, so it needs your passkey. Verify at "
-                        f"{settings.public_url}/security, then ask again."
+                        f"{settings.public_url}/account#agents, then ask again."
                     )
 
             # Separate from the passkey and kept: the threshold is the user's own

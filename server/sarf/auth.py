@@ -252,7 +252,7 @@ def require_address() -> str:
     if addr:
         return addr
     dashboard = (
-        f"{settings.public_url}/activity" if settings.public_url else "the Sarf dashboard"
+        f"{settings.public_url}/portfolio" if settings.public_url else "the Sarf website"
     )
     minutes = settings.session_ttl_seconds // 60
     if _session_state.get() == "expired":
