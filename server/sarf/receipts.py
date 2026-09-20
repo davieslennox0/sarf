@@ -186,21 +186,24 @@ async def anchor(digest_hex: str) -> str:
     key = settings.relayer_private_key
     if not key:
         raise ReceiptError("no relayer configured; receipts cannot be anchored")
+    from .xlayer import delegation  # shares the relayer, so shares its nonce
+
     acct = Account.from_key(key)
-    nonce = await rpc.transaction_count(acct.address)
-    gas_price = await rpc.gas_price()
-    tx = {
-        "to": acct.address, "value": 0, "data": digest_hex,
-        "chainId": CHAIN_ID, "nonce": nonce,
-        # 21k for the send plus 16 per non-zero calldata byte; a round 40k
-        # covers it with room and costs nothing extra when unused.
-        "gas": 40_000,
-        "maxFeePerGas": gas_price * 2,
-        "maxPriorityFeePerGas": min(gas_price, 10 ** 8),
-    }
-    signed = acct.sign_transaction(tx)
-    return await rpc.send_raw_transaction(
-        "0x" + signed.raw_transaction.hex().removeprefix("0x"))
+    async with delegation.NONCE_LOCK:
+        nonce = await rpc.transaction_count(acct.address)
+        gas_price = await rpc.gas_price()
+        tx = {
+            "to": acct.address, "value": 0, "data": digest_hex,
+            "chainId": CHAIN_ID, "nonce": nonce,
+            # 21k for the send plus 16 per non-zero calldata byte; a round 40k
+            # covers it with room and costs nothing extra when unused.
+            "gas": 40_000,
+            "maxFeePerGas": gas_price * 2,
+            "maxPriorityFeePerGas": min(gas_price, 10 ** 8),
+        }
+        signed = acct.sign_transaction(tx)
+        return await rpc.send_raw_transaction(
+            "0x" + signed.raw_transaction.hex().removeprefix("0x"))
 
 
 async def issue(db, order: dict[str, Any], *, block_number: int | None,

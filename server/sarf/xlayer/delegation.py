@@ -297,6 +297,16 @@ def relayer_address() -> str | None:
     return Account.from_key(key).address
 
 
+# The relayer has ONE nonce, and three code paths spend it: an in-chat swap,
+# a 7702 authorization, and a receipt anchor. Each reads the account's current
+# count and then signs with it, so two that overlap read the same number and
+# the second transaction is rejected as a duplicate. With a single tester that
+# never happens; with real traffic it is only a matter of two people trading
+# in the same second. Reading the nonce, signing and broadcasting therefore
+# happen as one critical section rather than three racing ones.
+NONCE_LOCK = asyncio.Lock()
+
+
 async def relay(*, to: str, data: str, gas_limit: int = 900_000) -> str:
     """Submit a signed executeSwap and return its X Layer tx hash.
 
@@ -319,18 +329,19 @@ async def relay(*, to: str, data: str, gas_limit: int = 900_000) -> str:
     # uses, so every in-chat trade failed on its own `to` field.
     to = to_checksum_address(validate_evm_address(to))
 
-    nonce = await rpc.transaction_count(acct.address)
-    gas_price = await rpc.gas_price()
-    tx = {
-        "to": to, "data": data, "value": 0, "gas": gas_limit,
-        # X Layer runs at ~0.02 gwei; a 2x ceiling still costs a fraction of a
-        # cent and keeps a submission from stalling in a fee spike.
-        "maxFeePerGas": gas_price * 2,
-        "maxPriorityFeePerGas": gas_price,
-        "nonce": nonce, "chainId": CHAIN_ID, "type": 2,
-    }
-    raw = acct.sign_transaction(tx).raw_transaction
-    return await rpc.send_raw_transaction("0x" + raw.hex())
+    async with NONCE_LOCK:
+        nonce = await rpc.transaction_count(acct.address)
+        gas_price = await rpc.gas_price()
+        tx = {
+            "to": to, "data": data, "value": 0, "gas": gas_limit,
+            # X Layer runs at ~0.02 gwei; a 2x ceiling still costs a fraction
+            # of a cent and keeps a submission from stalling in a fee spike.
+            "maxFeePerGas": gas_price * 2,
+            "maxPriorityFeePerGas": gas_price,
+            "nonce": nonce, "chainId": CHAIN_ID, "type": 2,
+        }
+        raw = acct.sign_transaction(tx).raw_transaction
+        return await rpc.send_raw_transaction("0x" + raw.hex())
 
 
 # ------------------------------------------------- gas for the self-call
@@ -469,22 +480,23 @@ async def relay_authorization(
     validate_evm_address(to)
 
     auth = _normalise_authorization(authorization)
-    nonce = await rpc.transaction_count(acct.address)
     # eth_account validates addresses as EIP-55 checksummed and rejects the
     # lowercase form outright ("Transaction had invalid fields: {'to': ...}").
     # validate_evm_address normalises to lowercase — right for storage and
     # comparison, wrong for handing to the signer — so checksum on the way in.
     to = to_checksum_address(to)
-    gas_price = await rpc.gas_price()
-    tx = {
-        "to": to, "data": data, "value": value, "gas": gas_limit,
-        "maxFeePerGas": gas_price * 2,
-        "maxPriorityFeePerGas": gas_price,
-        "nonce": nonce, "chainId": CHAIN_ID, "type": 4,
-        "authorizationList": [auth],
-    }
-    signed = acct.sign_transaction(tx)
-    return await rpc.send_raw_transaction("0x" + signed.raw_transaction.hex())
+    async with NONCE_LOCK:
+        nonce = await rpc.transaction_count(acct.address)
+        gas_price = await rpc.gas_price()
+        tx = {
+            "to": to, "data": data, "value": value, "gas": gas_limit,
+            "maxFeePerGas": gas_price * 2,
+            "maxPriorityFeePerGas": gas_price,
+            "nonce": nonce, "chainId": CHAIN_ID, "type": 4,
+            "authorizationList": [auth],
+        }
+        signed = acct.sign_transaction(tx)
+        return await rpc.send_raw_transaction("0x" + signed.raw_transaction.hex())
 
 
 def _normalise_authorization(a: dict[str, Any]) -> dict[str, Any]:

@@ -165,3 +165,47 @@ def test_the_anchor_carries_the_digest_itself(signing, monkeypatch):
     from eth_utils import keccak  # noqa: F401
     decoded = Account.recover_transaction(raw_seen["raw"])
     assert decoded.lower() == signer.lower()
+
+
+def test_concurrent_anchors_do_not_collide_on_the_relayer_nonce(signing, monkeypatch):
+    """The relayer has one nonce and three paths spend it. Two settlements in
+    the same second used to read the same count and the second broadcast was
+    rejected as a duplicate — invisible with one tester, certain with traffic."""
+    import asyncio as aio
+
+    import sarf.xlayer.rpc as real_rpc
+
+    state = {"mined": 0}
+    seen: list[int] = []
+
+    async def transaction_count(_a):
+        # What a node reports: the count only moves once a send lands.
+        await aio.sleep(0)          # a real await, so an unlocked caller interleaves here
+        return state["mined"]
+
+    async def gas_price():
+        return 20_000_000
+
+    async def send_raw_transaction(raw):
+        await aio.sleep(0)
+        state["mined"] += 1
+        return "0x" + "ab" * 32
+
+    monkeypatch.setattr(real_rpc, "transaction_count", transaction_count)
+    monkeypatch.setattr(real_rpc, "gas_price", gas_price)
+    monkeypatch.setattr(real_rpc, "send_raw_transaction", send_raw_transaction)
+
+    from eth_account import Account
+    orig = Account.sign_transaction
+
+    def spy(transaction_dict, private_key, *a, **k):
+        seen.append(transaction_dict["nonce"])
+        return orig(transaction_dict, private_key, *a, **k)
+
+    monkeypatch.setattr(Account, "sign_transaction", staticmethod(spy))
+
+    async def many():
+        await aio.gather(*(receipts.anchor("0x" + f"{i:064x}") for i in range(6)))
+
+    run(many())
+    assert seen == sorted(seen) and len(set(seen)) == len(seen), seen
