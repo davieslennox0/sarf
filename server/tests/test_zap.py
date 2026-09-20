@@ -601,20 +601,42 @@ def test_a_closed_position_reports_what_was_banked_not_a_live_mark():
     assert "Closed" in v["headline"] and "90.15" in v["headline"]
 
 
-def test_rewards_sarf_cannot_pay_are_never_given_an_amount():
-    """The X Layer incentive is paid by OKX off-chain, from a pot split across
-    pools we cannot enumerate. A number there would be a guess in the clothes
-    of a measurement."""
+def test_incentives_are_counted_from_arrivals_never_estimated():
+    """What is OWED cannot be read: the pot is split across pools X Layer
+    picks, on its side. What ARRIVED can be, from the token's transfer log —
+    so the page reports payments, each one a hash, and never a projection."""
     db = Database(":memory:")
     eng = ZapEngine(db, None, registry())
     pid = db.create_zap_position(
         address=OWNER, pool_key="LAIKA-wSPCXx", deposit_symbol="SPCXx",
         deposit_amount=str(E18 // 2), deposit_usd=92.4, il_threshold_bps=800,
-        reentry_bps=400, state="in_pool")
+        reentry_bps=400, state="in_pool", entered_at=100.0)
+
     v = run(eng.view(db.get_zap_position(pid)))
     paid = v["earnings"]["paid_separately"]
-    assert paid["amount_usdg"] is None
+    assert paid["received_usdg"] == 0 and paid["drops"] == []
+    assert paid["amount_owed_usdg"] is None
     assert paid["claimable_here"] is False
     assert paid["claim"]["url"].startswith("https://")
-    # No yield figure ever travels without the IL that paid for it.
-    assert "il_bps_now" in v["earnings"]
+    assert "il_bps_now" in v["earnings"]   # no yield figure without its IL
+
+    # Two arrivals land; both are counted, and a rescan of the same logs does
+    # not pay anybody twice.
+    rows = [{"tx_hash": "0x" + "ab" * 32, "log_index": 4, "address": OWNER.lower(),
+             "token": eng.REWARD_TOKEN, "symbol": "USDG", "amount": "1250000",
+             "decimals": 6, "sender": "0x" + "cd" * 20, "block": 10, "at": 200.0},
+            {"tx_hash": "0x" + "ef" * 32, "log_index": 1, "address": OWNER.lower(),
+             "token": eng.REWARD_TOKEN, "symbol": "USDG", "amount": "750000",
+             "decimals": 6, "sender": "0x" + "cd" * 20, "block": 20, "at": 300.0}]
+    assert db.record_zap_rewards(rows) == 2
+    assert db.record_zap_rewards(rows) == 0
+
+    paid = run(eng.view(db.get_zap_position(pid)))["earnings"]["paid_separately"]
+    assert paid["received_usdg"] == 2.0 and paid["drop_count"] == 2
+    assert paid["drops"][0]["tx_hash"].startswith("0x")
+
+    # Arrivals from before the position existed are not its earnings.
+    db.record_zap_rewards([{**rows[0], "tx_hash": "0x" + "11" * 32, "at": 50.0,
+                            "amount": "9000000"}])
+    assert run(eng.view(db.get_zap_position(pid)))["earnings"]["paid_separately"][
+        "received_usdg"] == 2.0

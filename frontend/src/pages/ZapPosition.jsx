@@ -253,6 +253,13 @@ export default function ZapPosition() {
               <Fact label={closed ? 'Realised' : 'Accrued so far'}
                     value={closed ? usd(e.realized_usd) : (e.total_accrued_usd != null ? usd(e.total_accrued_usd) : '—')}
                     sub={closed ? 'in your wallet' : 'already inside the position value'} />
+              {paid && (
+                <Fact label="Incentives received"
+                      value={paid.received_usdg > 0 ? `${paid.received_usdg} USDG` : '0 USDG'}
+                      sub={paid.drop_count > 0
+                        ? `${paid.drop_count} payment${paid.drop_count === 1 ? '' : 's'} · IL ${pct(il.current_bps)}`
+                        : `none has landed yet · IL ${pct(il.current_bps)}`} />
+              )}
             </div>
             <p className="small">{acc.note}.</p>
 
@@ -266,6 +273,27 @@ export default function ZapPosition() {
                   Claim at OKX ↗
                 </a>
               </div>
+              {/* Received, not projected. Every figure here is a transfer
+                  with a hash behind it. */}
+              <div className="reward-total">
+                <b>{paid.received_usdg > 0 ? `${paid.received_usdg} USDG` : 'Nothing yet'}</b>
+                <span>
+                  {paid.drop_count > 0
+                    ? `received in ${paid.drop_count} payment${paid.drop_count === 1 ? '' : 's'} since you entered`
+                    : 'no incentive payment has reached this wallet yet'}
+                </span>
+              </div>
+              {paid.drops?.length > 0 && (
+                <ol className="drop-list">
+                  {paid.drops.map((d) => (
+                    <li key={`${d.tx_hash}-${d.block}`}>
+                      <b>+{d.amount} {d.symbol}</b>
+                      <span className="muted">block {d.block}</span>
+                      <a href={txUrl(d.tx_hash)} target="_blank" rel="noreferrer">tx ↗</a>
+                    </li>
+                  ))}
+                </ol>
+              )}
               <div className="kv tight">
                 <div><span>Window</span><b>{paid.window}</b></div>
                 <div><span>Your share of this pool</span>
@@ -273,7 +301,7 @@ export default function ZapPosition() {
                 <div><span>Paid by</span><b>X Layer, in USDG, on OKX's side</b></div>
               </div>
               <p className="small">
-                {paid.why_no_amount}. {paid.claim.note}.
+                {paid.why_no_owed_amount}. {paid.claim.note}.
               </p>
               <ol className="claim-steps">
                 {paid.claim.steps.map((st) => <li key={st}>{st}</li>)}

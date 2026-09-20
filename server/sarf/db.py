@@ -389,6 +389,28 @@ CREATE TABLE IF NOT EXISTS zap_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_zap_addr ON zap_positions(address, created_at);
 
+-- Incentive payments that actually arrived, one row per on-chain transfer.
+--
+-- The programme pays USDG from a pot split across pools X Layer picks, on a
+-- schedule it does not publish, so no amount can be derived. What CAN be
+-- known is what landed: this table is filled by reading the token's own
+-- Transfer logs, so every figure shown to a user is a transaction they can
+-- open in an explorer.
+CREATE TABLE IF NOT EXISTS zap_rewards (
+  tx_hash    TEXT NOT NULL,
+  log_index  INTEGER NOT NULL,
+  address    TEXT NOT NULL,        -- recipient, lowercased
+  token      TEXT NOT NULL,
+  symbol     TEXT NOT NULL,
+  amount     TEXT NOT NULL,        -- base units, decimal string
+  decimals   INTEGER NOT NULL,
+  sender     TEXT NOT NULL,
+  block      INTEGER NOT NULL,
+  at         REAL NOT NULL,
+  PRIMARY KEY (tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS idx_zap_rewards_addr ON zap_rewards(address, at);
+
 CREATE TABLE IF NOT EXISTS zap_events (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   position_id  TEXT NOT NULL,
@@ -1129,6 +1151,38 @@ class Database:
             args += (expect_state,)
         with self._lock, self._conn:
             return self._conn.execute(sql, args).rowcount == 1
+
+    def record_zap_rewards(self, rows: list[dict[str, Any]]) -> int:
+        """Insert reward arrivals, ignoring ones already seen.
+
+        A rescan of the same blocks must not double-count someone's money,
+        which is why the primary key is the log itself rather than a row id.
+        """
+        if not rows:
+            return 0
+        with self._lock, self._conn:
+            before = self._conn.total_changes
+            self._conn.executemany(
+                """INSERT OR IGNORE INTO zap_rewards
+                   (tx_hash,log_index,address,token,symbol,amount,decimals,sender,block,at)
+                   VALUES (:tx_hash,:log_index,:address,:token,:symbol,:amount,:decimals,
+                           :sender,:block,:at)""", rows)
+            return self._conn.total_changes - before
+
+    def zap_rewards_for(self, address: str, since: float | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM zap_rewards WHERE address=?"
+        args: tuple[Any, ...] = (address.lower(),)
+        if since is not None:
+            sql += " AND at >= ?"
+            args += (since,)
+        cur = self._conn.execute(sql + " ORDER BY at DESC", args)
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def zap_reward_addresses(self) -> set[str]:
+        """Everyone who has ever held a zap position, so the scanner knows
+        whose arrivals are worth recording."""
+        return {r[0] for r in self._conn.execute("SELECT DISTINCT address FROM zap_positions")}
 
     def log_zap_event(self, position_id: str, kind: str, detail: dict[str, Any]) -> None:
         with self._lock, self._conn:

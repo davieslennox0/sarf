@@ -208,6 +208,9 @@ async def lifespan(app: FastAPI):
     # Zap IL watcher. OFF by default (ZAP_AUTOEXIT_ENABLED unset). When on, it
     # flips positions to exit_pending / reentry_pending; the wallet still
     # signs the transactions. See xlayer/zap.py.
+    # Reward arrivals are scanned whether or not auto-exit is on: it reads
+    # the token's logs and writes bookkeeping, and never moves anything.
+    reward_watcher = asyncio.create_task(zap_engine.watch_rewards_forever())
     zap_watcher = (
         asyncio.create_task(zap_engine.watch_forever())
         if settings.zap_autoexit_enabled else None
@@ -221,6 +224,7 @@ async def lifespan(app: FastAPI):
         settler.cancel()
         if watcher:
             watcher.cancel()
+        reward_watcher.cancel()
         if zap_watcher:
             zap_watcher.cancel()
 

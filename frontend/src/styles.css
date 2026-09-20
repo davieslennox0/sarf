@@ -119,12 +119,10 @@ nav .brand {
   white-space: nowrap;
 }
 nav .brand::before {
-  content: ''; width: 26px; height: 26px; border-radius: 8px; flex: none;
-  background:
-    radial-gradient(circle at 30% 25%, #ffffff 0 18%, transparent 19%),
-    linear-gradient(145deg, #F4F6F9, #7C838C);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25);
+  content: '\25C8'; flex: none; font-size: 22px; line-height: 1;
+  color: var(--accent); transition: filter .15s ease;
 }
+nav .brand:hover::before { filter: brightness(1.25); }
 nav .brand:hover { text-decoration: none; }
 nav .brand .tagline, .site-foot .brandmark .tagline {
   font-style: normal; font-weight: 400; font-size: 13px; letter-spacing: 0;
@@ -686,6 +684,7 @@ input, select, textarea { font-family: var(--sans); }
 }
 .site-foot .footrow { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .site-foot .brandmark { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 18px; font-weight: 700; color: var(--accent); }
+.site-foot .brandmark::before { content: '\25C8'; font-size: 20px; line-height: 1; }
 .footlinks { display: flex; gap: 22px; font-size: 14px; }
 .footlinks a { color: var(--paper-dim); }
 .footlinks a:hover { color: var(--accent); text-decoration: none; }
@@ -1100,3 +1099,12 @@ html, body { overflow-x: hidden; }
 .reward-head p { margin-top: 4px; max-width: 46ch; }
 .reward-panel .kv { margin: 14px 0 10px; }
 .claim-steps { margin: 10px 0 0 18px; font-size: 13px; color: var(--paper-dim); line-height: 1.8; }
+
+/* Incentive arrivals: the total, then the payments it is made of. */
+.reward-total { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.reward-total b { font-size: 21px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.reward-total span { font-size: 13px; color: var(--paper-dim); }
+.drop-list { list-style: none; margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.drop-list li { display: flex; align-items: baseline; gap: 12px; font-size: 13px; }
+.drop-list b { color: var(--text-success); font-variant-numeric: tabular-nums; }
+.drop-list .muted { margin-left: auto; }

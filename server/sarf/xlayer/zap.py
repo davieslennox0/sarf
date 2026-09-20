@@ -1111,6 +1111,11 @@ class ZapEngine:
         pool_share_pct = None
         if st and st.get("total_supply") and pos.get("lp_amount"):
             pool_share_pct = 100 * int(pos["lp_amount"]) / st["total_supply"]
+        # What the programme has actually paid this wallet, counted from the
+        # token's own Transfer logs since the position first entered a pool.
+        # Nothing here is apportioned or projected: each drop is a hash.
+        drops = self.db.zap_rewards_for(pos["address"], since=pos.get("entered_at"))
+        received = sum(int(d["amount"]) for d in drops) / 10 ** self.REWARD_DECIMALS
         realized_usd = pos.get("realized_usd")
         earned = [x for x in (pool_fees_usd, aave_interest_usd) if x is not None]
         earnings = {
@@ -1128,11 +1133,21 @@ class ZapEngine:
                 "window": self.incentive["window"],
                 "pot": self.incentive.get("rewards"),
                 "your_pool_share_pct": round(pool_share_pct, 4) if pool_share_pct is not None else None,
-                "amount_usdg": None,
-                "why_no_amount": ("The pot is split across the pools X Layer selects and paid on "
-                                  "OKX's side, so Sarf cannot read what you are owed without "
-                                  "guessing the divisor. Your share of the pool above is what the "
-                                  "reward is proportional to"),
+                # Received, not estimated. None of these are apportioned to a
+                # single position: they are payments to the wallet, and the
+                # wallet is what the programme pays.
+                "received_usdg": round(received, 6),
+                "drops": [{"amount": int(d["amount"]) / 10 ** d["decimals"],
+                           "symbol": d["symbol"], "tx_hash": d["tx_hash"],
+                           "from": d["sender"], "block": d["block"], "seen_at": d["at"]}
+                          for d in drops[:20]],
+                "drop_count": len(drops),
+                "counted_since": pos.get("entered_at"),
+                "amount_owed_usdg": None,
+                "why_no_owed_amount": ("What is OWED cannot be read: the pot is split across the "
+                                       "pools X Layer selects and worked out on its side. What has "
+                                       "ARRIVED is above, counted from the token's own transfer "
+                                       "log, so every figure is a transaction you can open"),
                 "claimable_here": False,
                 "claim": {
                     "where": "OKX Wallet",
@@ -1255,6 +1270,84 @@ class ZapEngine:
                     self.db.log_zap_event(pid, event, snap)
                     moved.append((pid, event))
         return moved
+
+    # ------------------------------------------------------- reward arrivals
+
+    # USDG on X Layer, read from the aggregator's own token list on
+    # 2026-09-20 rather than a third-party listing, and checked on-chain:
+    # symbol USDG, name "Global Dollar", 6 decimals.
+    REWARD_TOKEN = "0x4ae46a509f6b1d9056937ba4500cb143933d2dc8"
+    REWARD_SYMBOL = "USDG"
+    REWARD_DECIMALS = 6
+    # The public RPC refuses wider eth_getLogs ranges, and silently enough
+    # that an earlier scan of mine "found" zero transfers for a whole day
+    # because every 2000-block window was a 400 nobody looked at.
+    LOG_WINDOW = 100
+    MAX_WINDOWS_PER_PASS = 30
+
+    async def scan_rewards(self) -> int:
+        """Record incentive payments that have landed, -> rows added.
+
+        Reads the reward token's Transfer logs at the head and keeps the ones
+        addressed to somebody who holds a zap position. Nothing is estimated
+        and nothing is attributed: a row exists only because a transfer does.
+        """
+        holders = {a.lower() for a in self.db.zap_reward_addresses()}
+        if not holders:
+            return 0
+        head = int(await rpc._call("eth_blockNumber", []), 16)
+        mark = self.db.get_stat("zap_reward_cursor")
+        cursor = int(mark[0]["block"]) if mark else head - self.LOG_WINDOW
+        # A long outage must not turn into a thousand calls in one pass; the
+        # scan catches up over several, oldest first.
+        cursor = max(cursor, head - self.LOG_WINDOW * self.MAX_WINDOWS_PER_PASS)
+        added, now = 0, time.time()
+        while cursor < head:
+            to_block = min(cursor + self.LOG_WINDOW - 1, head)
+            try:
+                logs = await rpc._call("eth_getLogs", [{
+                    "address": self.REWARD_TOKEN, "topics": [TRANSFER_TOPIC],
+                    "fromBlock": hex(cursor), "toBlock": hex(to_block)}])
+            except Exception:
+                # Leave the cursor where it is and try again next pass, rather
+                # than skipping a window and losing whatever landed in it.
+                logging.getLogger("sarf.zap").warning(
+                    "reward scan failed for blocks %s-%s", cursor, to_block, exc_info=True)
+                break
+            rows = []
+            for lg in logs or []:
+                topics = lg.get("topics") or []
+                if len(topics) < 3:
+                    continue
+                to_addr = "0x" + topics[2][-40:]
+                if to_addr.lower() not in holders:
+                    continue
+                rows.append({
+                    "tx_hash": lg["transactionHash"], "log_index": int(lg["logIndex"], 16),
+                    "address": to_addr.lower(), "token": self.REWARD_TOKEN,
+                    "symbol": self.REWARD_SYMBOL, "amount": str(int(lg["data"], 16)),
+                    "decimals": self.REWARD_DECIMALS,
+                    "sender": ("0x" + topics[1][-40:]).lower(),
+                    "block": int(lg["blockNumber"], 16), "at": now,
+                })
+            added += self.db.record_zap_rewards(rows)
+            cursor = to_block + 1
+            self.db.set_stat("zap_reward_cursor", {"block": cursor})
+        return added
+
+    async def watch_rewards_forever(self, every: float = 90.0) -> None:
+        """Runs whether or not auto-exit does: this only reads logs."""
+        log = logging.getLogger("sarf.zap")
+        while True:
+            try:
+                n = await self.scan_rewards()
+                if n:
+                    log.info("recorded %d incentive arrival(s)", n)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("reward scan pass failed", exc_info=True)
+            await asyncio.sleep(every)
 
     async def watch_forever(self) -> None:
         while True:
