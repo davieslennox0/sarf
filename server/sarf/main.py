@@ -517,10 +517,17 @@ if _FRONTEND_DIST.is_dir():
         app.add_api_route(f"{_path}/{{rest:path}}", lambda rest="": _index(),
                           methods=["GET", "HEAD"], include_in_schema=False)
 
-    @app.get("/favicon.ico", include_in_schema=False)
-    async def _favicon():
-        f = _FRONTEND_DIST / "favicon.ico"
-        return FileResponse(f) if f.exists() else Response(status_code=404)
+    # Files the build drops at the root of dist — favicons, the logo, and
+    # anything else public/ carries. Registered by NAME from what is actually
+    # there, one route each: a path parameter here would need its own
+    # traversal guard and would shadow the SPA routes below.
+    for _f in sorted(p for p in _FRONTEND_DIST.iterdir()
+                     if p.is_file() and p.name != "index.html"):
+        def _static(_file: Path = _f) -> FileResponse:
+            return FileResponse(_file, headers={"Cache-Control": "public, max-age=86400"})
+
+        app.add_api_route(f"/{_f.name}", _static, methods=["GET", "HEAD"],
+                          include_in_schema=False)
 
     # The site used to live under /dashboard. Old sign links and bookmarks
     # still arrive there, so keep them working rather than 404ing.

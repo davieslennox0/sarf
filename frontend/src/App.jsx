@@ -155,7 +155,7 @@ function SignInRequired({ what, onDone }) {
   );
 }
 
-function RequirePasskey({ onDone, otherDomains = [] }) {
+function RequirePasskey({ onDone, onLater, otherDomains = [] }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const supported = typeof window !== 'undefined' && window.PublicKeyCredential;
@@ -192,7 +192,16 @@ function RequirePasskey({ onDone, otherDomains = [] }) {
           <button className="primary" disabled={busy || !supported} onClick={add}>
             {busy ? 'Waiting for your device…' : 'Add passkey'}
           </button>
+          {onLater && (
+            <button className="ghost" onClick={onLater}>
+              {supported ? 'Not now' : 'Continue without one'}
+            </button>
+          )}
         </div>
+        <p className="muted small" style={{ marginTop: 10 }}>
+          You can browse without it. Adding one is needed before a trade can settle in
+          chat or a transfer leaves your wallet, and you can add it later under Account.
+        </p>
       </div>
     </div>
   );
@@ -284,29 +293,66 @@ export default function App() {
     return element;
   };
 
+  // Everyone is asked for a passkey when they sign in, and nobody is asked
+  // again by being locked out of the site. This used to return INSTEAD of the
+  // app, so a wallet without a passkey for this domain could not so much as
+  // look at Markets — which is what a signed-in visitor did after the move to
+  // getsarf.xyz. The prompt now sits over the app at sign-in, and afterwards
+  // is a line in the header. Signing still asks for it: that is where a
+  // second factor means something.
   const [needsPasskey, setNeedsPasskey] = useState(false);
   const [otherDomains, setOtherDomains] = useState([]);
+  const [promptPasskey, setPromptPasskey] = useState(false);
+  const [hidPasskeyNote, setHidPasskeyNote] = useState(false);
+  const wasSignedIn = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    if (!signedIn) { setNeedsPasskey(false); return undefined; }
+    if (!signedIn) {
+      setNeedsPasskey(false);
+      setHidPasskeyNote(false);
+      wasSignedIn.current = false;
+      return undefined;
+    }
+    const fresh = !wasSignedIn.current;   // signed in during this visit = signup
+    wasSignedIn.current = true;
     (async () => {
       try {
         const pk = await api.passkeyStatus();
-        if (!cancelled) { setNeedsPasskey(!pk?.registered); setOtherDomains(pk?.other_domains || []); }
-      } catch { if (!cancelled) setNeedsPasskey(true); }
+        if (cancelled) return;
+        const missing = !pk?.registered;
+        setNeedsPasskey(missing);
+        setOtherDomains(pk?.other_domains || []);
+        if (missing && fresh) setPromptPasskey(true);
+      } catch {
+        // A status we cannot read is not a reason to block the site.
+        if (!cancelled) setNeedsPasskey(false);
+      }
     })();
     return () => { cancelled = true; };
   }, [signedIn, session?.address]);
-
-  if (needsPasskey) return <RequirePasskey otherDomains={otherDomains} onDone={() => setNeedsPasskey(false)} />;
 
   const ctx = { session, address: session?.address || null, signedIn, isAdmin, refresh };
 
   return (
     <WalletCtx value={ctx}>
       <div className="app">
+        {promptPasskey && (
+          <RequirePasskey
+            otherDomains={otherDomains}
+            onDone={() => { setPromptPasskey(false); setNeedsPasskey(false); }}
+            onLater={() => setPromptPasskey(false)}
+          />
+        )}
+        {needsPasskey && !promptPasskey && !hidPasskeyNote && (
+          <div className="passkey-note">
+            <span>No passkey on this device yet — needed before a trade settles in chat or a transfer leaves your wallet.</span>
+            <button className="btn small primary" onClick={() => setPromptPasskey(true)}>Add passkey</button>
+            <button className="linkish" onClick={() => setHidPasskeyNote(true)}>Dismiss</button>
+          </div>
+        )}
         <nav>
           <Link className="brand" to="/">
+            <img className="brand-mark" src="/sarf-logo.png" alt="" width="42" height="26" />
             Sarf <em className="tagline">Your X Layer RWA assistant</em>
           </Link>
           <div className="links">
@@ -354,6 +400,7 @@ export default function App() {
         <footer className="site-foot">
           <div className="footrow">
             <span className="brandmark">
+              <img className="brand-mark" src="/sarf-logo.png" alt="" width="52" height="32" />
               Sarf
               <em className="tagline">Your X Layer RWA assistant</em>
             </span>

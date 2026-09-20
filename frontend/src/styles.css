@@ -118,11 +118,11 @@ nav .brand {
   font-size: 21px; font-weight: 700; letter-spacing: -.02em; color: var(--accent);
   white-space: nowrap;
 }
-nav .brand::before {
-  content: '\25C8'; flex: none; font-size: 22px; line-height: 1;
-  color: var(--accent); transition: filter .15s ease;
+.brand-mark {
+  flex: none; height: 26px; width: auto; object-fit: contain;
+  transition: filter .15s ease;
 }
-nav .brand:hover::before { filter: brightness(1.25); }
+nav .brand:hover .brand-mark { filter: brightness(1.12); }
 nav .brand:hover { text-decoration: none; }
 nav .brand .tagline, .site-foot .brandmark .tagline {
   font-style: normal; font-weight: 400; font-size: 13px; letter-spacing: 0;
@@ -684,7 +684,7 @@ input, select, textarea { font-family: var(--sans); }
 }
 .site-foot .footrow { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .site-foot .brandmark { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 18px; font-weight: 700; color: var(--accent); }
-.site-foot .brandmark::before { content: '\25C8'; font-size: 20px; line-height: 1; }
+.site-foot .brandmark .brand-mark { height: 32px; margin-bottom: 2px; }
 .footlinks { display: flex; gap: 22px; font-size: 14px; }
 .footlinks a { color: var(--paper-dim); }
 .footlinks a:hover { color: var(--accent); text-decoration: none; }
@@ -1108,3 +1108,15 @@ html, body { overflow-x: hidden; }
 .drop-list li { display: flex; align-items: baseline; gap: 12px; font-size: 13px; }
 .drop-list b { color: var(--text-success); font-variant-numeric: tabular-nums; }
 .drop-list .muted { margin-left: auto; }
+
+/* Passkey reminder, once the prompt at sign-in has been passed over. A line
+   in the page, not a wall across it. */
+.passkey-note {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  /* Full-bleed strip above the header, but its text starts on the same
+     gutter as the page it sits over. */
+  margin: 0; padding: 11px var(--pad); font-size: 13px; color: var(--paper);
+  background: var(--bg-warning); border-bottom: 1px solid var(--border-warning);
+}
+.passkey-note span { flex: 1 1 260px; min-width: 0; }
+.passkey-note .linkish { font-size: 13px; padding: 0; color: var(--paper-dim); }
