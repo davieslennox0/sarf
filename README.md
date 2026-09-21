@@ -95,7 +95,7 @@ trade against an account they have not proven control of.
 | `get_status(tx_hash?, history_limit?)` | read | session grant by default; optionally a tx's confirmation state and recent orders |
 | `analyze_portfolio()` | read | concentration, diversification, sector and instrument mix — measurement only, not advice |
 | `set_risk_params(symbol, stop_loss?, take_profit?)` | write | stop-loss / take-profit levels, flagged when you ask about the asset |
-| `get_xpoints()` | read | points computed live from confirmed order history |
+| `get_xpoints()` | read | xStocks xPoints balance and breakdown, once the wallet has registered (one signature on Portfolio) |
 
 Nineteen, grouped. The count grew because the surface did, but the money paths
 stay separate from one another on purpose: `transfer` never merges into a

@@ -9,6 +9,7 @@ on is the server's RISK_WATCH_ENABLED setting, and the response says which.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
@@ -17,6 +18,7 @@ from .. import auth
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError
+from . import xstocks_points
 from .registry import XStocksRegistry
 
 
@@ -37,6 +39,59 @@ def build_account_api(db: Database, reg: XStocksRegistry, provider) -> APIRouter
     async def xpoints(authorization: str | None = Header(default=None)) -> dict[str, Any]:
         _addr(authorization)
         return await provider._get_xpoints()
+
+    # Official xStocks xPoints. Registration is the user's own EIP-191
+    # signature over xStocks' text; the page fetches the exact message here,
+    # has the wallet sign it, and posts it back to be checked and relayed.
+    # Nothing here can register a wallet the session does not belong to.
+    def _xpoints_on() -> None:
+        if not settings.xstocks_points_enabled:
+            raise HTTPException(404, "official xPoints are not enabled on this server")
+
+    @r.get("/xpoints/register-message")
+    async def xpoints_register_message(
+            authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _addr(authorization)
+        _xpoints_on()
+        ts = int(time.time())
+        return {"message": xstocks_points.registration_message(ts), "timestamp": ts,
+                "referral_code": settings.xstocks_referral_code or None}
+
+    @r.post("/xpoints/register")
+    async def xpoints_register(body: dict[str, Any],
+                               authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        addr = _addr(authorization)
+        _xpoints_on()
+        sig, ts = body.get("signature"), body.get("timestamp")
+        if not isinstance(sig, str) or not isinstance(ts, int):
+            raise HTTPException(400, "signature (hex string) and timestamp (int) are required")
+        out = await xstocks_points.register(addr, sig, ts)
+        if out["status"] in ("registered", "already_registered"):
+            db.link_xpoints(addr, "registered")
+        elif out["status"] == "rejected":
+            raise HTTPException(400, out["reason"])
+        return out
+
+    @r.post("/xpoints/link")
+    async def xpoints_link(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """For a wallet that already signed up on xStocks: the session proves
+        ownership, so no second signature; this only records the opt-in."""
+        addr = _addr(authorization)
+        _xpoints_on()
+        known = await xstocks_points.is_registered(addr)
+        if known is None:
+            raise HTTPException(503, "could not reach xStocks; try again")
+        if not known:
+            raise HTTPException(404, "this wallet is not registered on xStocks yet")
+        db.link_xpoints(addr, "linked")
+        return {"status": "linked"}
+
+    @r.delete("/xpoints/link")
+    async def xpoints_unlink(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        """Stop Sarf reading the balance. The xStocks account itself stays;
+        only xStocks can remove that."""
+        addr = _addr(authorization)
+        return {"unlinked": db.unlink_xpoints(addr)}
 
     @r.get("/levels")
     async def levels(authorization: str | None = Header(default=None)) -> dict[str, Any]:

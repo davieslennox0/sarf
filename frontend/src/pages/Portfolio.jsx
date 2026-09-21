@@ -6,7 +6,7 @@ import { Fact } from '../zapui.jsx';
 import { useWallet } from '../walletctx.jsx';
 import { TokenMark } from '../market.jsx';
 import Sheet from '../Sheet.jsx';
-import { LevelsPanel, SendPanel, useXPoints } from '../account.jsx';
+import { LevelsPanel, SendPanel, XPointsPanel, useXPoints } from '../account.jsx';
 
 // Mounted only when opened: the deposit flow is heavy (card on-ramp, Base
 // bridge), and Activity has its own fetch.
@@ -167,9 +167,10 @@ export default function Portfolio() {
                 value={`${Number(data.gas_balance_okb || 0).toFixed(4)} OKB`}
                 tone={lowGas ? 'warn' : undefined}
                 sub={lowGas ? 'too low to sign much' : 'pays for your own signatures'} />
-          {mine && xp && (
-            <Fact label="xPoints" value={Number(xp.xpoints).toLocaleString()}
-                  sub="from confirmed trades" />
+          {mine && xp?.official?.status === 'ok' && (
+            <Fact label="xPoints"
+                  value={Number(xp.official.total_points || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  sub="xStocks program, counted daily" />
           )}
         </div>
       )}
@@ -188,6 +189,8 @@ export default function Portfolio() {
           </span>
         </div>
       )}
+
+      {mine && data && <XPointsPanel xp={xp} address={address} />}
 
       {mine && (
         <div className="toolbar" style={{ marginTop: 28 }}>

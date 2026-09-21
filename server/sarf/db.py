@@ -456,6 +456,18 @@ CREATE TABLE IF NOT EXISTS admin_audit (
 CREATE INDEX IF NOT EXISTS idx_admin_audit_time ON admin_audit(created_at DESC);
 """
 
+# Wallets whose owner opted in to Sarf reading their official xStocks xPoints.
+# A row is the consent: without one, get_xpoints never sends the address to
+# xStocks. `via` is 'registered' (signed up through Sarf) or 'linked' (already
+# had an xStocks account and asked Sarf to show it).
+_XPOINTS_TABLE = """
+CREATE TABLE IF NOT EXISTS xpoints_links (
+  address    TEXT PRIMARY KEY,
+  via        TEXT NOT NULL,
+  linked_at  REAL NOT NULL
+);
+"""
+
 # How long a revoked session row is retained after revocation for auditing
 # (a compromise investigation needs to see WHEN and WHY a token was killed).
 # Non-revoked rows are pruned as soon as they expire — they carry no signal.
@@ -482,6 +494,7 @@ class Database:
         self._conn.executescript(_SCHEMA)
         self._conn.executescript(_RISK_TABLE)
         self._conn.executescript(_ADMIN_TABLE)
+        self._conn.executescript(_XPOINTS_TABLE)
         self._conn.executescript(_ZAP_TABLES)
         for mig in _MIGRATIONS:
             try:
@@ -1502,22 +1515,25 @@ class Database:
                 "view_url": r[4], "tx_digest": r[5], "detail": r[6], "created_at": r[7]}
 
     # -------------------------------------------------------------- xpoints
-    # v1, deliberately simple: 1 point per $10 of CONFIRMED trade volume (est_usd
-    # at order time), plus a flat bonus per confirmed trade. Computed live from
-    # `orders` -- the same rows get_status and the dashboard already show -- not
-    # a separate ledger that could drift from what actually executed. Easy to
-    # retune (see xlayer_rwa.py get_xpoints) or replace with a real ledger later.
 
-    def xpoints_activity(self, address: str) -> dict[str, Any]:
-        row = self._conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(est_usd),0) "
-            "FROM orders WHERE address=? AND status='confirmed'",
-            (address.lower(),),
-        ).fetchone()
-        return {
-            "confirmed_trades": int(row[0] or 0),
-            "confirmed_volume_usd": float(row[1] or 0),
-        }
+    def link_xpoints(self, address: str, via: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO xpoints_links VALUES (?,?,?)
+                   ON CONFLICT(address) DO NOTHING""",
+                (address.lower(), via, time.time()),
+            )
+
+    def unlink_xpoints(self, address: str) -> bool:
+        with self._lock, self._conn:
+            cur = self._conn.execute("DELETE FROM xpoints_links WHERE address=?",
+                                     (address.lower(),))
+            return cur.rowcount > 0
+
+    def xpoints_link(self, address: str) -> dict[str, Any] | None:
+        r = self._conn.execute("SELECT via, linked_at FROM xpoints_links WHERE address=?",
+                               (address.lower(),)).fetchone()
+        return {"via": r[0], "linked_at": r[1]} if r else None
 
     def set_stat(self, key: str, value: dict[str, Any]) -> None:
         with self._lock, self._conn:

@@ -343,6 +343,27 @@ class Settings:
     zap_watch_interval_seconds: int = field(
         default_factory=lambda: int(_env("ZAP_WATCH_INTERVAL_SECONDS", "60"))
     )
+
+    # --- Official xStocks xPoints (see xlayer/xstocks_points.py) --------------
+    # OFF by default. On, get_xpoints also reads the account's balance from the
+    # xStocks points API, which means sending that wallet address to a third
+    # party (Backed/xStocks). The address is public on-chain, but "this address
+    # uses Sarf" is not, so this is a deliberate switch, not a default.
+    xstocks_points_enabled: bool = field(
+        default_factory=lambda: _env("XSTOCKS_POINTS_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
+    # Optional xStocks referral code sent with registrations made through
+    # Sarf. Gives the user +20% xPoints and credits the code's owner with
+    # referral points, so it must be disclosed where the user signs. Empty
+    # sends no referral.
+    xstocks_referral_code: str = field(
+        default_factory=lambda: _env("XSTOCKS_REFERRAL_CODE", "").strip()
+    )
+    xstocks_points_api: str = field(
+        default_factory=lambda: _env(
+            "XSTOCKS_POINTS_API", "https://points-api.xstocks.fi/api/v1"
+        ).rstrip("/")
+    )
     # Tolerance on every in-pool swap and on addLiquidity/removeLiquidity
     # minimums. The pools are meme/xStock pairs, so 1% is tight but honest.
     zap_slippage_pct: float = field(

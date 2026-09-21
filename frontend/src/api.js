@@ -161,6 +161,13 @@ export const api = {
   // Swap on the website. Built by the same code as the chat's swap tool; the
   // result is an unsigned order the /sign page signs in the wallet.
   xpoints: () => req('/api/me/xpoints'),
+  // Official xStocks xPoints: the page has the wallet sign xStocks' own
+  // registration text, and the server checks the signature and relays it.
+  xpointsRegisterMessage: () => req('/api/me/xpoints/register-message'),
+  xpointsRegister: (body) =>
+    req('/api/me/xpoints/register', { method: 'POST', body: JSON.stringify(body) }),
+  xpointsLink: () => req('/api/me/xpoints/link', { method: 'POST' }),
+  xpointsUnlink: () => req('/api/me/xpoints/link', { method: 'DELETE' }),
   levels: () => req('/api/me/levels'),
   setLevels: (body) => req('/api/me/levels', { method: 'POST', body: JSON.stringify(body) }),
   swapTokens: () => req('/api/swap/tokens'),

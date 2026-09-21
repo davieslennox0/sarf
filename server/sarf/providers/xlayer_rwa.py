@@ -40,7 +40,7 @@ from ..auth import require_address
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError, validate_amount, validate_usd_cap
-from ..xlayer import delegation, rpc
+from ..xlayer import delegation, rpc, xstocks_points
 from ..xlayer import deposit as deposit_route
 from ..xlayer.analysis import analyze
 from ..xlayer.card import logo_data_uri, render_order_card, render_order_card_text
@@ -1969,37 +1969,34 @@ class XLayerRwaProvider:
 
         @mcp.tool()
         async def get_xpoints() -> dict[str, Any]:
-            """Xpoints balance and how it was earned.
+            """xPoints balance: the xStocks xPoints program.
 
-            v1 accrual rule, deliberately simple and easy to retune: 1 point per
-            $10 of CONFIRMED trade volume, plus a 5-point bonus per confirmed
-            trade. Computed live from this account's own order history (the same
-            rows get_status shows) -- not a separate ledger that could drift from
-            what actually executed. Streaks and referrals are NOT implemented in
-            this pass (Sarf logs neither yet); they are omitted rather than
-            faked.
+            Run by xStocks, earned by holding, lending and providing liquidity
+            for xStocks, counted by xStocks once a day. Points accrue only after
+            the wallet registers, which is one signature in the user's own
+            wallet on the Portfolio page (no transaction, no gas); Sarf cannot
+            sign it for them. If the account is not linked yet, the answer says
+            so and gives register_url.
             """
             address = require_address()
-            activity = db.xpoints_activity(address)
-            volume_points = int(activity["confirmed_volume_usd"] // 10)
-            trade_bonus = activity["confirmed_trades"] * 5
+            # Read only for wallets whose owner opted in (registered through
+            # Sarf, or linked an existing xStocks account): that row is the
+            # consent to send this address to xStocks.
+            if db.xpoints_link(address):
+                official = await xstocks_points.fetch(address)
+            else:
+                official = {
+                    "status": "not_linked",
+                    "detail": ("xPoints are not set up for this account yet. Registering "
+                               "takes one signature in the user's own wallet (no "
+                               "transaction, no gas) on the Portfolio page."),
+                    "register_url": (f"{settings.public_url}/portfolio"
+                                     if settings.public_url else xstocks_points.SIGNUP_URL),
+                }
             return {
                 "address": address,
-                "xpoints": volume_points + trade_bonus,
-                "breakdown": {
-                    "from_volume": {
-                        "points": volume_points,
-                        "rule": "1 point per $10 of confirmed trade volume",
-                        "confirmed_volume_usd": round(activity["confirmed_volume_usd"], 2),
-                    },
-                    "from_trades": {
-                        "points": trade_bonus,
-                        "rule": "5 points per confirmed trade",
-                        "confirmed_trades": activity["confirmed_trades"],
-                    },
-                },
-                "not_yet_tracked": ["referrals", "login/trading streaks"],
-                "rules_version": "v1",
+                "xpoints": official.get("total_points"),
+                "official": official,
             }
 
         @mcp.tool(meta=ui(ORDER_CARD_URI))

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from './api.js';
 import { OpenInChat } from './handoff.jsx';
+import { signMessage } from './wallet.js';
 
 /**
  * The account actions that used to be chat-only, for the Portfolio page:
@@ -11,8 +12,77 @@ import { OpenInChat } from './handoff.jsx';
 
 export function useXPoints() {
   const [x, setX] = useState(null);
-  useEffect(() => { api.xpoints().then(setX).catch(() => {}); }, []);
-  return x;
+  const reload = () => api.xpoints().then(setX).catch(() => {});
+  useEffect(() => { reload(); }, []);
+  return x && { ...x, reload };
+}
+
+const fmtPts = (n) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+/** Official xStocks xPoints. Registering is one signature in the user's own
+ *  wallet over xStocks' text: no transaction, no gas. Sarf cannot sign it. */
+export function XPointsPanel({ xp, address }) {
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const o = xp?.official;
+  if (!o || o.status === 'disabled') return null;
+
+  const run = (label, fn) => async () => {
+    setErr(null); setBusy(label);
+    try { await fn(); await xp.reload(); } catch (e) { setErr(e.message || String(e)); } finally { setBusy(null); }
+  };
+  const register = run('register', async () => {
+    const m = await api.xpointsRegisterMessage();
+    const signature = await signMessage(address, m.message);
+    await api.xpointsRegister({ signature, timestamp: m.timestamp });
+  });
+  const link = run('link', () => api.xpointsLink());
+  const unlink = run('unlink', () => api.xpointsUnlink());
+
+  const b = o.breakdown || {};
+  return (
+    <div className="card" style={{ marginTop: 22 }}>
+      <h3>xPoints</h3>
+      {o.status === 'ok' && (
+        <>
+          <p>
+            <b>{fmtPts(o.total_points)}</b> xPoints from the xStocks program
+            {o.season ? ` (${o.season})` : ''}. xStocks counts them once a day from what this
+            wallet holds, lends and provides as liquidity.
+          </p>
+          <p className="muted small">
+            Holding {fmtPts(b.holding)} · Lending {fmtPts(b.lending)} · Liquidity {fmtPts(b.liquidity)}
+            {o.next_snapshot ? ` · next snapshot ${new Date(o.next_snapshot).toLocaleString()}` : ''}
+          </p>
+          <button className="linkish" disabled={!!busy} onClick={unlink}>Stop showing xPoints here</button>
+        </>
+      )}
+      {o.status === 'not_linked' && (
+        <>
+          <p>
+            Earn xStocks xPoints for holding and providing liquidity for tokenized stocks.
+            Registering takes one signature in your wallet: no transaction and no gas.
+          </p>
+          <div className="cta" style={{ marginBottom: 0 }}>
+            <button className="primary" disabled={!!busy} onClick={register}>
+              {busy === 'register' ? 'Check your wallet…' : 'Register for xPoints'}
+            </button>
+            <button className="btn" disabled={!!busy} onClick={link}>
+              {busy === 'link' ? 'Checking…' : 'Already registered? Show my xPoints'}
+            </button>
+          </div>
+        </>
+      )}
+      {o.status === 'not_registered' && (
+        <p>This wallet is not registered with xStocks yet.
+          <button className="linkish" disabled={!!busy} onClick={register}>Register for xPoints</button></p>
+      )}
+      {o.status === 'unavailable' && (
+        <p className="muted">xPoints could not be read right now ({o.reason}). Try again shortly.</p>
+      )}
+      {err && <p className="error" style={{ marginTop: 10 }}>{err}</p>}
+    </div>
+  );
 }
 
 /** Send to another address: builds the transfer, then the signer page shows
