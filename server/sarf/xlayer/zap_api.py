@@ -11,6 +11,8 @@ session.
 
 from __future__ import annotations
 
+import logging
+
 import time
 from collections import defaultdict, deque
 from typing import Any
@@ -21,7 +23,7 @@ from .. import auth
 from ..db import Database
 from ..providers.zap_tools import position_url
 from ..validation import ValidationError
-from .zap import ZapEngine
+from .zap import GAP_CAVEAT, ZapEngine
 
 PUBLIC_VIEW_TTL = 10.0
 PUBLIC_PER_MINUTE = 60
@@ -59,19 +61,57 @@ def build_zap_api(db: Database, engine: ZapEngine) -> APIRouter:
 
     @r.get("/pools")
     async def pools() -> dict[str, Any]:
+        """Every pool, never filtered — the page shows what each one is worth
+        and lets the reader decide. The backtest fields are the same ones the
+        chat tool returns; the page hides them when a server does not send
+        them, so this endpoint staying quiet is safe rather than broken."""
         out = []
         for p in engine.pools.values():
+            st = None
             try:
                 st = await engine.pool_state(p)
                 price = st["price"]
             except Exception:
                 price = None
-            out.append({**p.public(), "zap_with": [p.underlying.symbol, p.rwa.symbol],
-                        "price": price,
-                        "buy_tax_pct": p.other.buy_tax_bps / 100,
-                        "sell_tax_pct": p.other.sell_tax_bps / 100,
-                        "exit_and_reentry_cost_bps": engine.cycle_cost_bps(p)})
-        return {"pools": out, "incentive_program": engine.incentive}
+            row = {**p.public(), "zap_with": [p.underlying.symbol, p.rwa.symbol],
+                   "price": price,
+                   "buy_tax_pct": p.other.buy_tax_bps / 100,
+                   "sell_tax_pct": p.other.sell_tax_bps / 100,
+                   "exit_and_reentry_cost_bps": engine.cycle_cost_bps(p)}
+            try:
+                v = await engine.pool_viability(p, st)
+                bt = v.get("backtest") or {}
+                row.update({
+                    "fee_apy_7d_pct": v["fee_apy_pct"],
+                    "fee_apy_basis": v["label"],
+                    "protects_from_pct": v.get("protects_from_pct"),
+                    "protection_demonstrated": v.get("protection_demonstrated"),
+                    "suggested_threshold_pct": (v["suggested_threshold_bps"] / 100
+                                                if v.get("suggested_threshold_bps") else None),
+                    "no_threshold_passed": (v.get("basis_of_gate") == "backtest"
+                                            and v.get("protects_from_bps") is None),
+                    "confidence": v.get("confidence"),
+                    "confidence_note": v.get("confidence_note"),
+                    "exits_observed": v.get("exits_observed"),
+                    "days_of_history": bt.get("days_of_history"),
+                    "gate_basis": v.get("basis_of_gate"),
+                    "summary": v.get("reason"),
+                    "backtest_caveat": bt.get("caveat"),
+                    "no_auto_exit_mode": ({**v["no_auto_exit"],
+                                           "how": "deposit with il_threshold_bps=0",
+                                           "recommended_here": bool(v.get("recommend_no_auto_exit"))}
+                                          if v.get("no_auto_exit") else None),
+                })
+            except Exception:
+                # A pool that cannot be judged is still a pool worth listing.
+                logging.getLogger("sarf.zap").warning(
+                    "pool viability unavailable for %s", p.key, exc_info=True)
+            out.append(row)
+        return {"pools": out, "incentive_program": engine.incentive,
+                "protection_limit": GAP_CAVEAT,
+                "not_a_forecast": ("Backtest figures replay ~30 days of each pair's own "
+                                   "prices. They describe a period that has already "
+                                   "happened and do not predict the next one.")}
 
     @r.get("/position/{position_id}")
     async def public_position(position_id: str, request: Request) -> dict[str, Any]:

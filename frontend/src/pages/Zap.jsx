@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { api, ensureSession, getSession } from '../api.js';
+import { useZapClient } from '../zapclient.jsx';
 import { connect, currentAccount } from '../wallet.js';
 import { OpenInChat } from '../handoff.jsx';
 import { Fact, PairMark, num, pct, usd } from '../zapui.jsx';
@@ -26,7 +26,7 @@ const net = (v) => (v.value.current_usd == null || v.deposit.usd_at_deposit == n
   ? null : v.value.current_usd - v.deposit.usd_at_deposit);
 
 /** One pool, as a table row: identity, the numbers, and the way in. */
-function PoolRow({ p, chosen, onPick }) {
+function PoolRow({ p, chosen, onPick, hasBacktest }) {
   return (
     <div className={`mkt-row zap-cols${chosen ? ' on' : ''}`}>
       <span className="row-id mark">
@@ -40,10 +40,13 @@ function PoolRow({ p, chosen, onPick }) {
         {p.price == null ? '—' : num(p.price)}
         <span className="sub">{p.other.symbol} per {p.rwa.symbol}</span>
       </span>
+      {hasBacktest && (
       <span className="r">
         {p.fee_apy_7d_pct == null ? 'measuring' : `${num(p.fee_apy_7d_pct)}%`}
         <span className="sub">7d fees only</span>
       </span>
+      )}
+      {hasBacktest && (
       <span className="r">
         {p.no_threshold_passed
           ? 'none worked'
@@ -55,6 +58,7 @@ function PoolRow({ p, chosen, onPick }) {
             : `backtested · ${p.confidence || '—'} confidence`}
         </span>
       </span>
+      )}
       <span className="r hide-sm">
         {p.sell_tax_pct}% / {p.buy_tax_pct}%
         <span className="sub">tax out / in</span>
@@ -127,6 +131,7 @@ export default function Zap() {
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);   // has the user chosen a pool yet
+  const { api, ensureSession, getSession, basePath, brand, hasBacktest } = useZapClient();
   const [form, setForm] = useState({ pool: '', asset: '', amount: '', exitPct: '8', reentryPct: '' });
 
   useEffect(() => {
@@ -183,7 +188,7 @@ export default function Zap() {
         pool: form.pool, asset: form.asset, amount: form.amount,
         il_threshold_bps: exitBps, reentry_threshold_bps: reBps,
       });
-      nav(`/zap/${v.position_id}`);
+      nav(`${basePath}/${v.position_id}`);
     } catch (e) {
       setErr(e.message || String(e));
     } finally {
@@ -217,7 +222,7 @@ export default function Zap() {
       <div className="market-head">
         <div>
           <div className="eyebrow tick">X Layer · RWA liquidity</div>
-          <h1>Zap</h1>
+          <h1>{brand}</h1>
           <p className="sub">
             Put one asset into a liquidity pool and draw a line for impermanent loss.
             Past the line Sarf moves you to Aave; when the price comes back, so do you.
@@ -247,14 +252,15 @@ export default function Zap() {
           <div className="mkt-head zap-cols">
             <span>Pool</span>
             <span className="r">Pool price</span>
-            <span className="r">7d fee APY</span>
-            <span className="r">Protects from</span>
+            {hasBacktest && <span className="r">7d fee APY</span>}
+            {hasBacktest && <span className="r">Protects from</span>}
             <span className="r hide-sm">Token tax</span>
             <span className="r hide-md">Round trip</span>
             <span />
           </div>
           {pools.map((p) => (
-            <PoolRow key={p.key} p={p} chosen={open && p.key === form.pool} onPick={pick} />
+            <PoolRow key={p.key} p={p} chosen={open && p.key === form.pool} onPick={pick}
+                     hasBacktest={hasBacktest} />
           ))}
         </div>
       )}

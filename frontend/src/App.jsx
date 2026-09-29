@@ -1,5 +1,7 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+
+import { EARN, ZapClientProvider } from './zapclient.jsx';
 import { api, clearSession, getSession, registerPasskey } from './api.js';
 import Onboarding from './Onboarding.jsx';
 import Sheet from './Sheet.jsx';
@@ -31,6 +33,9 @@ const NAV = [
   { to: '/markets', label: 'Markets', on: (p) => p === '/markets' },
   { to: '/portfolio', label: 'Portfolio', on: (p) => p === '/portfolio' },
   { to: '/zap', label: 'Zap', on: (p) => p.startsWith('/zap') },
+  // Earn is the same pages against the new build, which runs as its own app
+  // on its own database. Separate entry, separate session, nothing shared.
+  { to: '/earn', label: 'Earn', on: (p) => p.startsWith('/earn') },
 ];
 
 const isPhone = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
@@ -363,6 +368,8 @@ export default function App() {
               <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
               <Route path="/zap" element={<Zap />} />
               <Route path="/zap/:id" element={<ZapPosition />} />
+              <Route path="/earn" element={<ZapClientProvider value={EARN}><Zap /></ZapClientProvider>} />
+              <Route path="/earn/:id" element={<ZapClientProvider value={EARN}><ZapPosition /></ZapClientProvider>} />
               <Route path="/swap" element={<Swap />} />
               <Route path="/how" element={<How />} />
               <Route path="/account" element={gate('Your account', <Account />)} />

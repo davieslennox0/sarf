@@ -461,6 +461,11 @@ _SPA_ROUTES = [
     "/", "/portfolio", "/markets", "/how", "/security", "/connect",
     "/settings", "/activity", "/send", "/sign", "/approve", "/receipt",
     "/deposit", "/admin", "/zap", "/swap", "/account",
+    # Earn is the same bundle under a different name, served by the earn-server
+    # app so the main app does not need a restart to carry it. Caddy sends
+    # /earn and /earn/* there; /assets/* still comes from whichever app is
+    # already serving them, because it is one dist directory on disk.
+    "/earn",
 ]
 
 # Frozen snapshot of the pre-Privy site (git tag `pre-privy`), built with

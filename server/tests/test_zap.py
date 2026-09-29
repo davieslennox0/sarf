@@ -742,3 +742,20 @@ def test_close_hands_back_the_asset_that_was_deposited(env):
 
     v = run(env.e.view(env.db.get_zap_position(pid)))
     assert "SPCXx" in v["headline"] and v["state"] == "closed"
+
+
+def test_rest_pools_lists_every_pool_with_its_gate_fields(client, env):
+    """The page reads this endpoint, so an empty list or a missing verdict is
+    a blank screen. A refactor dropped the append once; this is the guard."""
+    r = client.get("/api/zap/pools")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["pools"]) == len(env.e.pools), "every pool, never filtered"
+    assert "sudden gaps" in body["protection_limit"]
+    assert "not predict" in body["not_a_forecast"]
+    for row in body["pools"]:
+        assert row["key"] and row["pair_address"]
+        # Present even when unmeasured: the page branches on the key existing.
+        for k in ("fee_apy_7d_pct", "protects_from_pct", "confidence",
+                  "no_auto_exit_mode", "summary", "gate_basis"):
+            assert k in row, f"{row['key']} missing {k}"

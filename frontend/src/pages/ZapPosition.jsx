@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, ensureSession, getSession } from '../api.js';
+import { useZapClient } from '../zapclient.jsx';
 import { connect, currentAccount, sendTransaction, txUrl } from '../wallet.js';
 import { OpenInChat } from '../handoff.jsx';
 import { Fact, IL_TONE_LABEL, IlRing, PairMark, ilTone, num, pct, usd } from '../zapui.jsx';
@@ -77,6 +77,7 @@ function IlMeter({ il }) {
 }
 
 export default function ZapPosition() {
+  const { api, ensureSession, getSession, basePath, brand } = useZapClient();
   const { id } = useParams();
   const [v, setV] = useState(null);
   const [isOwner, setIsOwner] = useState(false);
@@ -156,7 +157,7 @@ export default function ZapPosition() {
     }
   };
 
-  if (err && !v) return <section><p className="error">{err}</p><p><Link to="/zap">All zap pools</Link></p></section>;
+  if (err && !v) return <section><p className="error">{err}</p><p><Link to={basePath}>All zap pools</Link></p></section>;
   if (!v) return <section><p className="muted">Loading position…</p></section>;
 
   const { il, value, pool } = v;
@@ -191,7 +192,7 @@ export default function ZapPosition() {
 
   return (
     <section className="zap">
-      <Link className="backlink" to="/zap">← All zap pools</Link>
+      <Link className="backlink" to={basePath}>← All zap pools</Link>
 
       <div className="market-head">
         <div className="pos-id">

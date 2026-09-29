@@ -29,6 +29,29 @@ const env = dotenv(__dirname + '/.env');
 // X Layer is an ordinary EVM chain reached over JSON-RPC, and the DEX
 // aggregator is an HTTP API — so there is no Node sidecar any more. The Sui
 // build needed one only to host the Current Finance SDK.
+// Earn is the same code as sarf-server, deliberately deployed twice.
+//
+// It gets its own port and its own DATABASE, which is what keeps it from
+// touching anything the live app is responsible for: separate positions,
+// separate sessions, separate watcher. That isolation has one visible cost —
+// an Earn session is a different credential, so the site asks for one more
+// wallet signature on /earn — and it buys the thing that matters, which is
+// that a bug in the new build cannot reach an open position in the old one.
+//
+// Only ONE watcher may ever run against a given database. sarf-server watches
+// data/sarf.db; this watches data/earn.db; neither can see the other's rows.
+const earnEnv = {
+  ...env,
+  SARF_PORT: '8761',
+  SARF_DB_PATH: './data/earn.db',
+  // Signing links and the connector URL have to point at the Earn paths, not
+  // the main app's, or a user would be sent to a server that has never heard
+  // of their position.
+  SARF_PUBLIC_URL: (env.SARF_PUBLIC_URL || 'https://getsarf.xyz') + '/earn',
+  // The 7702 keeper stays off here too. Deployed is not enabled.
+  ZAP_7702_ENABLED: 'false',
+};
+
 module.exports = {
   apps: [
     {
@@ -37,6 +60,15 @@ module.exports = {
       script: '.venv/bin/python',
       args: '-m sarf.main',
       env,
+      max_restarts: 10,
+      restart_delay: 3000,
+    },
+    {
+      name: 'earn-server',
+      cwd: __dirname + '/server',
+      script: '.venv/bin/python',
+      args: '-m sarf.main',
+      env: earnEnv,
       max_restarts: 10,
       restart_delay: 3000,
     },
