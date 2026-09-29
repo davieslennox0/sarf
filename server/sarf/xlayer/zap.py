@@ -299,6 +299,9 @@ class Pool:
     rwa: Token
     other: Token
     underlying: Token
+    # Daily volatility of the POOL RATIO, measured (see zap_pools.json).
+    # None means unmeasured, which the gate treats as "do not judge".
+    daily_sigma: float | None = None
 
     def public(self) -> dict[str, Any]:
         return {
@@ -344,6 +347,8 @@ class ZapEngine:
                 rwa=Token(r["symbol"], validate_evm_address(r["address"]), int(r["decimals"]), r["name"]),
                 other=Token(o["symbol"], validate_evm_address(o["address"]), int(o["decimals"]),
                             o["name"], int(o.get("buy_tax_bps", 0)), int(o.get("sell_tax_bps", 0))),
+                daily_sigma=(float(p["volatility"]["daily_sigma_pct"]) / 100
+                             if p.get("volatility", {}).get("daily_sigma_pct") else None),
                 underlying=Token(r["underlying_symbol"], validate_evm_address(r["underlying_address"]),
                                  int(r["decimals"])),
             )
@@ -453,6 +458,21 @@ class ZapEngine:
             # swap leg and the most stable price for the IL watcher.
             states = await asyncio.gather(*(self.pool_state(p) for p in candidates))
             pool = max(zip(candidates, states), key=lambda ps: ps[1]["reserve_rwa"])[0]
+        # The gate, applied at the one place every surface goes through: a
+        # pool whose measured 7-day fees do not cover one round trip is closed
+        # to NEW deposits. Exits, re-entries and closes of existing positions
+        # never come through here, so nobody is trapped by it.
+        # Judged at the threshold THIS user picked, not the list view's
+        # default: a wider threshold means fewer exits, so someone who sets
+        # one should be measured against the cost they are actually choosing.
+        gate = await self.pool_viability(pool, threshold_bps=il_t)
+        if gate["gated"]:
+            raise ValidationError(
+                f"{pool.key} is closed to new deposits: {gate['reason']}. "
+                + (f"Open pools: {', '.join(k for k in self.pools if k != pool.key)}."
+                   if len(self.pools) > 1 else "")
+            )
+
         is_underlying = asset.strip().lower() == pool.underlying.symbol.lower()
         token = pool.underlying if is_underlying else pool.rwa
         units = _units(amount, token.decimals)
@@ -1318,6 +1338,189 @@ class ZapEngine:
             "close_pending": "Sign the close on the position page: unwind the pool and send it back to your wallet",
             "closing": "Finish signing the close on the position page",
         }.get(pos["state"])
+
+    # ------------------------------------------------- pool yield and gating
+
+    SWAP_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
+    APY_WINDOW_DAYS = 7
+    # A pool needs enough history for the number to mean anything. Below this
+    # the APY is reported as "measuring" and the pool is NOT gated on it —
+    # hiding a pool because nobody has measured it yet would be a bug wearing
+    # a risk control's clothes.
+    MIN_COVERAGE_DAYS = 5
+
+    @staticmethod
+    def _day(ts: float | None = None) -> int:
+        return int((ts if ts is not None else time.time()) // 86400)
+
+    async def scan_pool_volume(self) -> int:
+        """Extend each pool's daily volume buckets toward the chain head.
+
+        Same shape as scan_rewards, and for the same reason: the public RPC
+        caps eth_getLogs at 100 blocks, so a week is thousands of calls and a
+        long outage must not become one enormous pass. -> windows processed.
+        """
+        head = int(await rpc._call("eth_blockNumber", []), 16)
+        done = 0
+        for key, pool in self.pools.items():
+            mark = self.db.get_stat(f"zap_vol_cursor_{key}")
+            cursor = int(mark[0]["block"]) if mark else head - self.LOG_WINDOW
+            cursor = max(cursor, head - self.LOG_WINDOW * self.MAX_WINDOWS_PER_PASS * 4)
+            price = await self.rwa_usd(pool)
+            if price is None:
+                continue
+            t0 = (await _eth_call(pool.pair, "token0()", [], [], out=["address"]))[0]
+            rwa_is0 = t0.lower() == pool.rwa.address.lower()
+            windows = 0
+            while cursor < head and windows < self.MAX_WINDOWS_PER_PASS:
+                to_block = min(cursor + self.LOG_WINDOW - 1, head)
+                try:
+                    logs = await rpc._call("eth_getLogs", [{
+                        "address": pool.pair, "topics": [self.SWAP_TOPIC],
+                        "fromBlock": hex(cursor), "toBlock": hex(to_block)}])
+                except Exception:
+                    # Leave the cursor put and retry next pass rather than
+                    # skipping a window: a skipped window is volume that never
+                    # existed as far as the APY is concerned.
+                    log.warning("pool volume scan failed for %s %s-%s", key, cursor, to_block)
+                    break
+                vol = 0.0
+                for entry in logs or []:
+                    d = entry["data"][2:]
+                    a = [int(d[i * 64:(i + 1) * 64], 16) for i in range(4)]
+                    units = (a[0] + a[2]) if rwa_is0 else (a[1] + a[3])
+                    vol += units / 10 ** pool.rwa.decimals
+                if logs:
+                    self.db.add_zap_pool_volume(key, self._day(), vol * price, len(logs))
+                cursor = to_block + 1
+                windows += 1
+                done += 1
+            self.db.set_stat(f"zap_vol_cursor_{key}", {"block": cursor})
+        self.db.prune_zap_pool_volume(self._day() - 30)
+        return done
+
+    async def pool_yield(self, pool: Pool, st: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Trailing 7-day fee APY for a pool, measured, not projected.
+
+        Fees only: X Layer's RWA incentive rounds are over (Round 2 ended
+        2026-09-25 and no Round 3 has been announced), so a number that
+        included them would describe a week that is not this one.
+        """
+        since = self._day() - self.APY_WINDOW_DAYS
+        v = self.db.zap_pool_volume(pool.key, since)
+        st = st or await self.pool_state(pool)
+        price = await self.rwa_usd(pool)
+        tvl = (2 * st["reserve_rwa"] / 10 ** pool.rwa.decimals * price) if price else None
+        covered = v["days_covered"]
+        apy = None
+        if tvl and tvl > 0 and covered >= self.MIN_COVERAGE_DAYS:
+            # Scale by the days actually covered, not by 7, so a window that is
+            # 6 days old is not silently reported as a seventh short.
+            daily = v["volume_usd"] / covered
+            apy = round((daily * 365 * (self.fee_bps / 10000)) / tvl * 100, 2)
+        return {
+            "fee_apy_pct": apy,
+            "window_days": self.APY_WINDOW_DAYS,
+            "days_measured": covered,
+            "volume_usd": round(v["volume_usd"], 2),
+            "swaps": v["swaps"],
+            "tvl_usd": round(tvl, 2) if tvl else None,
+            "label": "fees only, incentives ended",
+            "basis": ("measured from this pool's own Swap events over the last "
+                      f"{covered} day(s); trading fees only. X Layer's RWA incentive "
+                      "rounds have ended, so no reward emissions are included."
+                      if apy is not None else
+                      "not enough measured history yet — this pool is still being "
+                      f"measured ({covered} of {self.MIN_COVERAGE_DAYS} days needed)"),
+        }
+
+    # The exit threshold the pool list is judged at, in bps. Matches the
+    # Zap page's own default (8%), because a hurdle computed at a threshold
+    # nobody uses would gate pools for a scenario nobody is in.
+    DEFAULT_EXIT_THRESHOLD_BPS = 800
+
+    @staticmethod
+    def move_for_il(il_bps: int) -> float:
+        """The price move, in log terms, that produces this much IL.
+
+        A threshold is set in IL, but a pool exits when the PRICE moves, and
+        the two are far apart: 8% IL takes a ratio change of roughly +129% or
+        -56%, not 8%. Dividing an IL threshold by a price volatility directly
+        would count thousands of exits a year where there are a dozen, so the
+        threshold is converted first.
+
+        Inverts the constant-product curve  IL(r) = 2*sqrt(r)/(1+r) - 1
+        exactly: with v = 1 + IL, u = sqrt(r) solves v*u^2 - 2*u + v = 0.
+        """
+        v = 1 - max(min(il_bps, 9999), 1) / 10000
+        disc = max(1 - v * v, 0.0)
+        u = (1 - math.sqrt(disc)) / v          # the downside root, < 1
+        return abs(math.log(u * u))
+
+    def expected_exits_per_year(self, pool: Pool, threshold_bps: int | None = None) -> float | None:
+        """How many exit-and-re-entry round trips this pool is expected to
+        cost in a year, at a given exit threshold.
+
+        First-passage time of a random walk: a barrier m away from the start,
+        with daily volatility sigma, is reached in about (m/sigma)^2 days. So
+        exits/year = 365 / (m/sigma)^2, where m is the move that trips the
+        threshold. None when the pair's volatility has not been measured.
+        """
+        if not pool.daily_sigma:
+            return None
+        m = self.move_for_il(threshold_bps or self.DEFAULT_EXIT_THRESHOLD_BPS)
+        days = (m / pool.daily_sigma) ** 2
+        return 365 / days if days > 0 else None
+
+    async def pool_viability(self, pool: Pool, st: dict[str, Any] | None = None,
+                             threshold_bps: int | None = None) -> dict[str, Any]:
+        """Whether a pool earns enough to be worth entering at all.
+
+        The hurdle is not one round trip, it is the round trips this pool will
+        actually cost over a year: a volatile pair trips the exit threshold
+        again and again, and each exit-and-re-entry pays taxes, pool fees and
+        the aggregator hop. So the test is
+
+            7-day fee APY  >=  expected exits/year  x  round-trip cost
+
+        Both sides are measured: the fee APY from the pool's own swaps, the
+        volatility from 30 days of paired closes, the round-trip cost from the
+        token's own taxes. A pool that fails is closed to NEW deposits only;
+        existing positions are untouched and can always exit.
+        """
+        y = await self.pool_yield(pool, st)
+        cost_pct = self.cycle_cost_bps(pool) / 100
+        threshold = threshold_bps or self.DEFAULT_EXIT_THRESHOLD_BPS
+        exits = self.expected_exits_per_year(pool, threshold)
+        apy = y["fee_apy_pct"]
+        base = {
+            **y,
+            "round_trip_cost_pct": cost_pct,
+            "exit_threshold_bps": threshold,
+            "daily_sigma_pct": round(pool.daily_sigma * 100, 2) if pool.daily_sigma else None,
+            "expected_exits_per_year": round(exits, 1) if exits else None,
+            "hurdle_pct": round(exits * cost_pct, 2) if exits else None,
+        }
+        if apy is None:
+            return {**base, "viable": True, "gated": False,
+                    "reason": "still measuring; not gated on an unmeasured number"}
+        if exits is None:
+            return {**base, "viable": True, "gated": False,
+                    "reason": "this pair's volatility has not been measured, so the number "
+                              "of round trips it would cost is unknown"}
+        hurdle = exits * cost_pct
+        viable = apy >= hurdle
+        return {
+            **base, "viable": viable, "gated": not viable,
+            "reason": (
+                f"7-day fee APY {apy:.2f}% is below the {hurdle:.2f}% this pool is expected to "
+                f"spend on exits: at {pool.daily_sigma * 100:.1f}% daily volatility a "
+                f"{threshold / 100:g}% IL threshold is tripped about {exits:.1f} times a year, "
+                f"and each round trip costs {cost_pct:.2f}%"
+                if not viable else
+                f"7-day fee APY {apy:.2f}% covers the {hurdle:.2f}% expected cost of "
+                f"{exits:.1f} round trips a year at {cost_pct:.2f}% each"),
+        }
 
     # --------------------------------------------------------------- watcher
 

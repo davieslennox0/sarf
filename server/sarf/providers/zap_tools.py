@@ -40,31 +40,75 @@ def register_zap_tools(mcp: FastMCP, engine: ZapEngine) -> None:
             raise ValueError(str(e))
 
     @mcp.tool()
-    async def get_zap_pools() -> dict[str, Any]:
-        """List the X Layer RWA incentive pools the zap can deposit into.
+    async def get_zap_pools(
+        include_gated: Annotated[bool, Field(
+            default=False,
+            description="Also list pools Sarf has closed to new deposits, with the "
+                        "measured reason")] = False,
+    ) -> dict[str, Any]:
+        """List the Uniswap V2 pools the zap can deposit into.
 
-        These are Uniswap V2 pools from X Layer's RWA Liquidity Incentive
-        Program (current round), each pairing a wrapped xStock with an ecosystem
-        token. Every pair address was checked on-chain against Uniswap's
-        official factory. Includes live reserves and the current pool price."""
-        out = []
+        Each pairs a wrapped xStock with an ecosystem token, and every pair
+        address was checked on-chain against Uniswap's official factory.
+        Includes live reserves, the current pool price, and the pool's trailing
+        7-day fee APY.
+
+        That APY is TRADING FEES ONLY. X Layer's RWA incentive rounds have
+        ended (Round 2 finished 2026-09-25, no Round 3 announced), so nothing
+        here includes reward emissions — say so when you quote it.
+
+        Pools whose 7-day fee APY does not cover the round trips they are
+        expected to cost in a year are closed to new deposits and omitted
+        unless include_gated is set. That expectation is measured, not
+        guessed: the pair's own 30-day volatility says how often an exit
+        threshold is tripped, and each trip costs the pool's own
+        exit-and-re-entry cost. The list is judged at the default 8% exit
+        threshold; a wider threshold means fewer exits and a lower hurdle, and
+        a deposit is judged at whatever threshold the user actually sets.
+        Positions already open are unaffected.
+        """
+        out, gated = [], []
         for p in engine.pools.values():
             st = await engine.pool_state(p)
             usd = await engine.rwa_usd(p)
-            out.append({
+            v = await engine.pool_viability(p, st)
+            row = {
                 **p.public(),
                 "zap_with": [p.underlying.symbol, p.rwa.symbol],
                 "price": f"{st['price']:,.2f} {p.other.symbol} per {p.rwa.symbol}",
                 "tvl_usd_estimate": (round(2 * st["reserve_rwa"] / 10 ** p.rwa.decimals * usd)
                                      if usd else None),
-            })
+                "fee_apy_7d_pct": v["fee_apy_pct"],
+                "fee_apy_basis": v["label"],
+                "fee_apy_detail": v["basis"],
+                "round_trip_cost_pct": v["round_trip_cost_pct"],
+                "daily_sigma_pct": v["daily_sigma_pct"],
+                "expected_exits_per_year": v["expected_exits_per_year"],
+                "hurdle_pct": v["hurdle_pct"],
+                "judged_at_exit_threshold_bps": v["exit_threshold_bps"],
+                "open_to_deposits": v["viable"],
+            }
+            if v["gated"]:
+                row["closed_because"] = v["reason"]
+                gated.append(row)
+            else:
+                out.append(row)
         return {
-            "pools": out,
-            "incentive_program": engine.incentive,
+            "pools": out + (gated if include_gated else []),
+            "gated_count": len(gated),
+            "yield_basis": ("fee_apy_7d_pct is trading fees only, measured over the last 7 "
+                            "days from each pool's own swaps. X Layer's RWA incentive rounds "
+                            "have ended, so no reward emissions are included in it."),
+            "gate_basis": ("A pool is open only if fee_apy_7d_pct >= hurdle_pct, where "
+                           "hurdle_pct = expected_exits_per_year x round_trip_cost_pct. "
+                           "expected_exits_per_year comes from the pair's measured daily "
+                           "volatility and the price move that actually trips the exit "
+                           "threshold, so a volatile pair has to earn much more to be worth "
+                           "entering."),
+            "incentive_program": {**engine.incentive, "status": "ended"},
             "exit_parking": "Aave V3 USDT on X Layer",
-            "note": ("No RWA+stablecoin pair is incentivised in the current round, so every "
-                     "pool pairs the xStock with a volatile ecosystem token. IL here is driven "
-                     "by that token's price as much as the stock's."),
+            "note": ("Every pool pairs the xStock with a volatile ecosystem token, so IL here "
+                     "is driven by that token's price as much as the stock's."),
         }
 
     @mcp.tool()

@@ -40,6 +40,12 @@ function PoolRow({ p, chosen, onPick }) {
         {p.price == null ? '—' : num(p.price)}
         <span className="sub">{p.other.symbol} per {p.rwa.symbol}</span>
       </span>
+      <span className="r">
+        {p.fee_apy_7d_pct == null ? 'measuring' : `${num(p.fee_apy_7d_pct)}%`}
+        <span className="sub">
+          {p.hurdle_pct == null ? '7d fees only' : `7d fees · needs ${num(p.hurdle_pct)}%`}
+        </span>
+      </span>
       <span className="r hide-sm">
         {p.sell_tax_pct}% / {p.buy_tax_pct}%
         <span className="sub">tax out / in</span>
@@ -192,13 +198,14 @@ export default function Zap() {
           <div className="eyebrow tick">X Layer · RWA liquidity</div>
           <h1>Zap</h1>
           <p className="sub">
-            Put one asset into an incentivised pool and draw a line for impermanent loss.
+            Put one asset into a liquidity pool and draw a line for impermanent loss.
             Past the line Sarf moves you to Aave; when the price comes back, so do you.
           </p>
         </div>
         <div className="market-stats">
           <div><b>{pools ? pools.length : '—'}</b><span>pools</span></div>
-          {daysLeft != null && <div><b>{daysLeft}d</b><span>left in this round</span></div>}
+          {daysLeft != null && daysLeft > 0
+            && <div><b>{daysLeft}d</b><span>left in this round</span></div>}
           {live.length ? <div><b>{live.length}</b><span>your positions</span></div> : null}
           {live.length ? <div><b>{usd(mineValue)}</b><span>your value</span></div> : null}
         </div>
@@ -219,6 +226,7 @@ export default function Zap() {
           <div className="mkt-head zap-cols">
             <span>Pool</span>
             <span className="r">Pool price</span>
+            <span className="r">7d fee APY</span>
             <span className="r hide-sm">Token tax</span>
             <span className="r hide-md">Round trip</span>
             <span />
@@ -228,12 +236,15 @@ export default function Zap() {
           ))}
         </div>
       )}
-      {program && (
-        <p className="fine" style={{ textAlign: 'left', margin: '10px 2px 0', maxWidth: 'none' }}>
-          {program.name}, {program.window}. {program.rewards}. Rewards are claimed on OKX's
-          side; Sarf does not handle them.
-        </p>
-      )}
+      <p className="fine" style={{ textAlign: 'left', margin: '10px 2px 0', maxWidth: 'none' }}>
+        7d fee APY is trading fees only, measured from each pool's own swaps over the last
+        seven days. X Layer's RWA incentive rounds have ended{program?.window ? ` (the last ran ${program.window})` : ''}, so no reward emissions are included in it. "Needs" is what
+        this pool has to earn to cover the exits it is expected to cost in a year: how often
+        {' '}{pools?.[0]?.judged_at_exit_threshold_bps ? `a ${pools[0].judged_at_exit_threshold_bps / 100}%` : 'an'}{' '}
+        IL threshold is tripped at the pair's measured volatility, times what one exit and
+        re-entry costs. A pool that does not clear it is closed to new deposits and is not
+        listed. A wider exit threshold trips less often, so it needs less.
+      </p>
 
       {finished.length ? (
         <>
@@ -350,8 +361,9 @@ export default function Zap() {
           <div className="step-body">
             <h3>Earn in the pool</h3>
             <p>
-              Your liquidity earns Uniswap trading fees, and X Layer pays incentive rewards
-              to LPs in these pools during the program window.
+              Your liquidity earns Uniswap trading fees. X Layer's RWA incentive rounds
+              have ended, so fees are the whole return now — that is what the 7d fee APY
+              above measures.
             </p>
           </div>
         </div>

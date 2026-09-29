@@ -441,6 +441,20 @@ CREATE TABLE IF NOT EXISTS zap_events (
   detail_json  TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_zap_events_pos ON zap_events(position_id, at);
+
+-- Daily swap volume per pool, in USD, from the pair's own Swap events. Day
+-- buckets rather than one rolling total so the 7-day window can move without
+-- rescanning a week of blocks: the scanner appends to today, and the window is
+-- a SUM over the last seven complete days. `swaps` is kept as the evidence
+-- that a zero is a real zero and not a scan that never ran.
+CREATE TABLE IF NOT EXISTS zap_pool_volume (
+  pool_key    TEXT NOT NULL,
+  day_utc     INTEGER NOT NULL,
+  volume_usd  REAL NOT NULL DEFAULT 0,
+  swaps       INTEGER NOT NULL DEFAULT 0,
+  updated_at  REAL NOT NULL,
+  PRIMARY KEY (pool_key, day_utc)
+);
 """
 
 _ADMIN_TABLE = """
@@ -1250,6 +1264,51 @@ class Database:
         cur = self._conn.execute(sql + " ORDER BY at DESC", args)
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    # ------------------------------------------------------ pool volume/APY
+
+    def add_zap_pool_volume(self, pool_key: str, day_utc: int, volume_usd: float,
+                            swaps: int) -> None:
+        """Add to a day's bucket. Additive because a pass covers part of a day
+        and the next pass covers the rest."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO zap_pool_volume VALUES (?,?,?,?,?)
+                   ON CONFLICT(pool_key, day_utc) DO UPDATE SET
+                     volume_usd = volume_usd + excluded.volume_usd,
+                     swaps      = swaps + excluded.swaps,
+                     updated_at = excluded.updated_at""",
+                (pool_key, day_utc, volume_usd, swaps, time.time()),
+            )
+
+    def set_zap_pool_volume(self, pool_key: str, day_utc: int, volume_usd: float,
+                            swaps: int) -> None:
+        """Replace a day's bucket. Used by the backfill, which measures a whole
+        day at once and must not double-count if it is run twice."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO zap_pool_volume VALUES (?,?,?,?,?)
+                   ON CONFLICT(pool_key, day_utc) DO UPDATE SET
+                     volume_usd = excluded.volume_usd,
+                     swaps      = excluded.swaps,
+                     updated_at = excluded.updated_at""",
+                (pool_key, day_utc, volume_usd, swaps, time.time()),
+            )
+
+    def zap_pool_volume(self, pool_key: str, since_day: int) -> dict[str, Any]:
+        r = self._conn.execute(
+            """SELECT COALESCE(SUM(volume_usd),0), COALESCE(SUM(swaps),0), COUNT(*)
+               FROM zap_pool_volume WHERE pool_key=? AND day_utc>=?""",
+            (pool_key, since_day),
+        ).fetchone()
+        return {"volume_usd": float(r[0] or 0), "swaps": int(r[1] or 0),
+                "days_covered": int(r[2] or 0)}
+
+    def prune_zap_pool_volume(self, before_day: int) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM zap_pool_volume WHERE day_utc < ?", (before_day,))
+            return cur.rowcount
 
     def zap_reward_addresses(self) -> set[str]:
         """Everyone who has ever held a zap position, so the scanner knows
