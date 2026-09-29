@@ -16,6 +16,8 @@ import time
 import urllib.request
 
 from cryptography.hazmat.primitives import hashes
+from eth_account import Account
+from eth_utils import to_checksum_address
 from cryptography.hazmat.primitives.asymmetric import ec, utils as au
 from eth_abi import encode as abi_encode
 from eth_utils import keccak
@@ -49,8 +51,38 @@ def cast(*args):
     return r.stdout.strip()
 
 
+def num(out: str) -> int:
+    """cast prints big numbers as `123 [1.23e2]`; keep the exact half."""
+    return int(out.split()[0], 0)
+
+
 def send(*args):
     return cast("send", *args, "--private-key", KEY)
+
+
+def send_raw(data: str) -> str:
+    """Sign and broadcast a call to the account itself.
+
+    Not `cast send`: the WebAuthn assertion carries a JSON string inside a
+    tuple, and cast's argument parser stops at the first escaped quote. The
+    calldata is built with eth_abi instead, which also keeps the exact bytes
+    the contract will hash.
+    """
+    acct = Account.from_key(KEY)
+    tx = {"chainId": num(cast("chain-id")), "to": to_checksum_address(ACCOUNT),
+          "data": data, "value": 0,
+          "nonce": int(rpc("eth_getTransactionCount", [acct.address, "pending"]), 16),
+          "gas": 600_000, "gasPrice": int(rpc("eth_gasPrice", []), 16)}
+    signed = acct.sign_transaction(tx)
+    h = rpc("eth_sendRawTransaction", ["0x" + signed.raw_transaction.hex().removeprefix("0x")])
+    for _ in range(40):
+        r = rpc("eth_getTransactionReceipt", [h])
+        if r:
+            if int(r["status"], 16) != 1:
+                raise RuntimeError(f"reverted: {h}")
+            return h
+        time.sleep(1.5)
+    raise RuntimeError(f"no receipt for {h}")
 
 
 def b64url(b: bytes) -> str:
@@ -71,7 +103,7 @@ priv = ec.generate_private_key(ec.SECP256R1())
 pub = priv.public_key().public_numbers()
 print(f"    passkey x={hex(pub.x)[:18]}… y={hex(pub.y)[:18]}…")
 send(ACCOUNT, "registerPasskey(uint256,uint256)", str(pub.x), str(pub.y))
-on_chain_x = int(cast("call", ACCOUNT, "passkeyX()(uint256)"), 0)
+on_chain_x = num(cast("call", ACCOUNT, "passkeyX()(uint256)"))
 assert on_chain_x == pub.x, "passkey did not register"
 print("    registerPasskey ok")
 
@@ -85,7 +117,7 @@ daily = [10**18]
 
 digest = keccak(abi_encode(
     ["address", "uint256", "address", "uint64", "bytes32", "bytes32", "bytes32", "bytes32", "uint256"],
-    [ACCOUNT, int(cast("chain-id")), KEEPER, expiry,
+    [ACCOUNT, num(cast("chain-id")), KEEPER, expiry,
      keccak(b"".join(bytes.fromhex(a[2:]).rjust(32, b"\0") for a in targets)),
      keccak(b"".join(bytes.fromhex(a[2:]).rjust(32, b"\0") for a in tokens)),
      keccak(b"".join(v.to_bytes(32, "big") for v in per_action)),
@@ -104,13 +136,22 @@ r, s = au.decode_dss_signature(
 if s > N // 2:
     s = N - s
 
-spec = f'({KEEPER},{expiry},[{KEEPER}],[{TOKEN}],[{per_action[0]}],[{daily[0]}])'
-sig = f'(0x{auth_data.hex()},{json.dumps(client_data.decode())},{challenge_index},{r},{s})'
-sel = ("setScopeWithPasskey((address,uint64,address[],address[],uint128[],uint128[]),"
+SIG = ("setScopeWithPasskey((address,uint64,address[],address[],uint128[],uint128[]),"
        "uint256,(bytes,string,uint256,uint256,uint256))")
+TYPES = ["(address,uint64,address[],address[],uint128[],uint128[])", "uint256",
+         "(bytes,string,uint256,uint256,uint256)"]
+
+
+def scope_call(nonce_: int, r_: int, s_: int) -> str:
+    spec_ = (to_checksum_address(KEEPER), expiry,
+             [to_checksum_address(t) for t in targets],
+             [to_checksum_address(t) for t in tokens], per_action, daily)
+    sig_ = (auth_data, client_data.decode(), challenge_index, r_, s_)
+    return "0x" + keccak(text=SIG)[:4].hex() + abi_encode(TYPES, [spec_, nonce_, sig_]).hex()
+
 
 print("    calling setScopeWithPasskey (verified by 0x100 on-chain)…")
-send(ACCOUNT, sel, spec, str(nonce), sig)
+send_raw(scope_call(nonce, r, s))
 
 got = cast("call", ACCOUNT, "scope()(address,uint64)").split()
 assert got[0].lower() == KEEPER.lower(), f"scope keeper is {got[0]}"
@@ -118,9 +159,9 @@ print(f"    scope set on-chain by a P-256 signature: keeper={got[0]} expiry={got
 
 # --- and a replay must fail -------------------------------------------------
 try:
-    send(ACCOUNT, sel, spec, str(nonce), sig)
+    send_raw(scope_call(nonce, r, s))
 except RuntimeError as e:
-    assert "PasskeyNonceUsed" in str(e) or "revert" in str(e).lower(), e
+    assert "revert" in str(e).lower() or "PasskeyNonceUsed" in str(e), e
     print("    replay of the same assertion refused on-chain")
 else:
     print("!! REPLAY SUCCEEDED — that is a bug, stop and investigate", file=sys.stderr)

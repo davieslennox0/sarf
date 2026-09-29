@@ -56,10 +56,18 @@ echo "    deployed at $DELEGATE"
 
 echo "==> 2/5 attaching the 7702 delegation"
 cast send "$ADDR" --auth "$DELEGATE" --private-key "$KEY" --rpc-url "$RPC" >/dev/null
-CODE="$(cast code "$ADDR" --rpc-url "$RPC")"
+# The public RPC is load-balanced and a node one block behind still answers
+# "0x" for an account delegated a second ago. Read it until it settles rather
+# than calling a lagging node a failure.
+CODE=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  CODE="$(cast code "$ADDR" --rpc-url "$RPC")"
+  case "$CODE" in 0xef0100*) break ;; esac
+  sleep 2
+done
 case "$CODE" in
   0xef0100*) echo "    code is $CODE" ;;
-  *) echo "!! no delegation indicator: $CODE" >&2; exit 1 ;;
+  *) echo "!! no delegation indicator after 20s: $CODE" >&2; exit 1 ;;
 esac
 
 echo "==> 3/5 registering a passkey and 4/5 setting a scope with it"

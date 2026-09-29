@@ -12,7 +12,7 @@
       "runtime_code_bytes": 3853,
       "deployer": "0x1edd083cd06de7c17db8670af7ca054ea99d9110",
       "supersedes": {
-        "_comment": "v1 pinned the sell-side allowance to the swap router. OKX's router does not call transferFrom itself — it reaches tokens through its TokenApprove — so the allowance was never spent and every swap reverted with SwapFailed after the gas was paid. Observed four times on-chain at 223,459 gas each before the cause was found. v2 pins the spender in the grant alongside the router. Grants signed against v1 are unusable and cannot be migrated: the delegate is named in the user's own 7702 authorisation, so it takes a fresh one.",
+        "_comment": "v1 pinned the sell-side allowance to the swap router. OKX's router does not call transferFrom itself \u2014 it reaches tokens through its TokenApprove \u2014 so the allowance was never spent and every swap reverted with SwapFailed after the gas was paid. Observed four times on-chain at 223,459 gas each before the cause was found. v2 pins the spender in the grant alongside the router. Grants signed against v1 are unusable and cannot be migrated: the delegate is named in the user's own 7702 authorisation, so it takes a fresh one.",
         "address": "0x30eeC302C6D98253dCcA7d970343dBb95c920D76",
         "deployed_at": "2026-08-07",
         "tx_hash": "0xf720d8cb258825cbfedb5dae4d4dd523fe3368c6e833f430e27580bde67432a7",
@@ -20,7 +20,7 @@
         "retired_at": "2026-08-12"
       },
       "create2": {
-        "_comment": "Deployed through the canonical deterministic deployer, so the address is a pure function of the salt and the init code — anyone can recompute it from source and confirm nothing else was deployed here. Verified after deployment: the on-chain runtime code matches a fresh build of src/SarfSessionKey.sol byte for byte.",
+        "_comment": "Deployed through the canonical deterministic deployer, so the address is a pure function of the salt and the init code \u2014 anyone can recompute it from source and confirm nothing else was deployed here. Verified after deployment: the on-chain runtime code matches a fresh build of src/SarfSessionKey.sol byte for byte.",
         "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
         "salt": "0x0000000000000000000000000000000000000000000000000000005361726602"
       },
@@ -29,11 +29,36 @@
         "owner": null,
         "admin": null,
         "upgradeable": false,
-        "deployer_retains": "nothing — the contract has no privileged role of any kind, so the wallet that paid for deployment has no more power over it than any other address"
+        "deployer_retains": "nothing \u2014 the contract has no privileged role of any kind, so the wallet that paid for deployment has no more power over it than any other address"
       },
       "constants": {
         "MAX_GRANT_SECONDS": 2592000
       }
+    },
+    "SarfDelegate": {
+      "address": "0x732e221Bf3B988eb00Bc42CA1766e49251be4Ae5",
+      "version": 1,
+      "deployed_at": "2026-09-29",
+      "tx_hash": "0xedbf21d5e3720d9c182ca241883f9fb3e005722c2cdcc7ddabd77b26b07b473f",
+      "deployer": "0xf0139a53d77246eE6cC506753784034A3DA74039",
+      "runtime_code_bytes": 6953,
+      "purpose": "EIP-7702 delegate for the zap keeper: scoped, per-token-capped exit and re-entry. Nothing can act under it until the account owner sets a scope.",
+      "status": "UNAUDITED - deployed for the passkey proof below. ZAP_7702_ENABLED is false and ZAP_DELEGATE_ADDRESS is unset in production; no user account delegates to it.",
+      "passkey_proof": {
+        "run_at": "2026-09-29",
+        "account": "0xf0139a53d77246eE6cC506753784034A3DA74039",
+        "what": "registerPasskey, then setScopeWithPasskey verified by X Layer's own RIP-7212 precompile at 0x100, then the same assertion replayed and refused, then revoke() clearing the scope and bumping the epoch.",
+        "why_it_could_not_be_a_test": "Foundry's EVM has no P-256 precompile even when forking, so the contract's passkey branch can only meet the real precompile on-chain.",
+        "revoke_tx": "0xc85bef79e69cc467c3428a27a2ee7ce0ef3f1c4debba41e110439549f90f2b13",
+        "cost_okb": 4.1e-05,
+        "delegation_tx": "0xfdfe613f94c9b6a4a30b7301772fb7dd66d3cd6a12ce4a32e685c5bd7037608c",
+        "register_passkey_tx": "0x8ab48dc084d69286f8bfe2b75d0a111e6c1f82d2f22df4013c8d857dd56f4286",
+        "set_scope_with_passkey_tx": "0xee2ee65849caa596d094c53b68527ebb80762722f9e22e42a1fa7119843c3059",
+        "replay_refused_tx": "0x4650687d603a517927a8c1e265abdbade69de813d7280be5ac8825b9cbffb732",
+        "_comment": "Every hash above was read back off chain 196 by scanning the deployer's transactions, not recorded from a tool's stdout."
+      },
+      "block": 71936189,
+      "deploy_gas": 1556107
     }
   },
   "external": {
@@ -42,6 +67,10 @@
     "entrypoint_v08": "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108",
     "create2_deployer": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
     "okx_dex_approve_address": "0x8b773D83bc66Be128c60e07E17C8901f7a64F000",
-    "not_deployed": ["RIP-7212 P-256 precompile (0x100)", "Safe7579 adapter", "ZeroDev Kernel v3.1"]
+    "not_deployed": [
+      "RIP-7212 P-256 precompile (0x100)",
+      "Safe7579 adapter",
+      "ZeroDev Kernel v3.1"
+    ]
   }
 }
