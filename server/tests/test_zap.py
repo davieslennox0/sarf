@@ -498,11 +498,22 @@ def test_create_refuses_what_the_wallet_does_not_hold_and_bad_thresholds(env):
     with pytest.raises(ValidationError, match="holds"):
         run(env.e.create(OWNER, "SPCXx", "1", 200))
     env.ch.bal[(env.pool.underlying.address.lower(), OWNER)] = 10 * E18
-    for il, re_ in [(0, None), (6000, None), (200, 200), (200, -1), (True, None)]:
+    # 0 is no longer "an absurd threshold" — it is the no-auto-exit mode.
+    for il, re_ in [(6000, None), (200, 200), (200, -1), (True, None)]:
         with pytest.raises(ValidationError):
             run(env.e.create(OWNER, "SPCXx", "1", il, re_))
     with pytest.raises(ValidationError, match="no incentivised pool"):
         run(env.e.create(OWNER, "AAPLx", "1", 200))
+
+
+def test_zero_threshold_opens_a_position_the_watcher_ignores(env):
+    """No auto-exit: a plain LP. It is a real position, priced and shown like
+    any other; the only difference is that the watcher never acts on it."""
+    env.ch.bal[(env.pool.underlying.address.lower(), OWNER)] = 10 * E18
+    pos = run(env.e.create(OWNER, "SPCXx", "1", 0))
+    assert pos["il_threshold_bps"] == 0 and pos["reentry_bps"] == 0
+    row = env.db.get_zap_position(pos["position_id"])
+    assert row["il_threshold_bps"] == 0
 
 
 # ------------------------------------------------------------------- REST

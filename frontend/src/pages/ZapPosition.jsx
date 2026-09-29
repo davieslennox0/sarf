@@ -43,8 +43,17 @@ const EVENT_LABELS = {
   close_started: 'Closing started',
 };
 
-/** The linear view of the same thing the ring shows, with both lines on it. */
+/** The linear view of the same thing the ring shows, with both lines on it.
+ *  A position with no auto-exit has no lines to draw: it says so instead of
+ *  drawing a meter whose markers sit at zero. */
 function IlMeter({ il }) {
+  if (!il.exit_threshold_bps) {
+    return (
+      <div className="il-legend">
+        <span>No auto-exit — this position is a plain LP and is never exited for you.</span>
+      </div>
+    );
+  }
   const max = Math.max(il.exit_threshold_bps * 1.5, (il.current_bps || 0) * 1.1, 1);
   const at = (v) => `${Math.min(100, (v / max) * 100)}%`;
   const tone = ilTone(il.current_bps, il.exit_threshold_bps);
@@ -59,6 +68,10 @@ function IlMeter({ il }) {
         <span><i className="dot re" /> re-enter under {pct(il.reentry_threshold_bps)}</span>
         <span><i className="dot ex" /> exit past {pct(il.exit_threshold_bps)}</span>
       </div>
+      <p className="fine" style={{ margin: '8px 0 0' }}>
+        Protects against sustained moves, not sudden gaps. A one-day drop is taken in full
+        before an exit can fire.
+      </p>
     </>
   );
 }

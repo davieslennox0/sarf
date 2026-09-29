@@ -42,8 +42,17 @@ function PoolRow({ p, chosen, onPick }) {
       </span>
       <span className="r">
         {p.fee_apy_7d_pct == null ? 'measuring' : `${num(p.fee_apy_7d_pct)}%`}
+        <span className="sub">7d fees only</span>
+      </span>
+      <span className="r">
+        {p.no_threshold_passed
+          ? 'none worked'
+          : p.protects_from_pct == null ? '—'
+          : `from ${num(p.protects_from_pct)}%`}
         <span className="sub">
-          {p.hurdle_pct == null ? '7d fees only' : `7d fees · needs ${num(p.hurdle_pct)}%`}
+          {p.no_threshold_passed ? 'no exit paid off'
+            : p.protection_demonstrated === false ? 'never had to exit'
+            : `backtested · ${p.confidence || '—'} confidence`}
         </span>
       </span>
       <span className="r hide-sm">
@@ -144,10 +153,20 @@ export default function Zap() {
   const over = bal != null && Number(form.amount) > Number(bal);
   const cheapExit = pool && exitBps <= pool.exit_and_reentry_cost_bps;
   const valid = pool && Number(form.amount) > 0 && !over
-    && exitBps >= 1 && exitBps <= 5000 && reBps >= 0 && reBps < exitBps;
+    && ((exitBps === 0 && form.reentryPct === '')
+        || (exitBps >= 1 && exitBps <= 5000 && reBps >= 0 && reBps < exitBps));
 
+  // Pre-fill the exit threshold from what the backtest says was worth
+  // setting for THIS pool, never below the page default.
   const pick = (p) => {
-    setForm((f) => ({ ...f, pool: p.key, asset: p.zap_with[0] }));
+    setForm((f) => ({
+      ...f, pool: p.key, asset: p.zap_with[0],
+      // max(page default, what the backtest protected from + 2%), so the
+      // threshold offered is one that actually paid for itself here.
+      exitPct: p.suggested_threshold_pct != null
+        ? String(Math.max(Number(f.exitPct) || 0, p.suggested_threshold_pct))
+        : f.exitPct,
+    }));
     setOpen(true);
     requestAnimationFrame(() => document.getElementById('zap-deposit')?.scrollIntoView({
       behavior: 'smooth', block: 'center',
@@ -174,7 +193,9 @@ export default function Zap() {
 
   const chatText = pool
     ? `Using Sarf, zap-deposit ${form.amount || '<amount>'} ${form.asset} into the ${pool.key} pool `
-      + `with an impermanent-loss exit threshold of ${exitBps} bps and re-entry at ${reBps} bps.`
+      + (exitBps === 0
+        ? 'with no automatic exit — a plain LP position.'
+        : `with an impermanent-loss exit threshold of ${exitBps} bps and re-entry at ${reBps} bps.`)
     : 'Using Sarf, show me the zap pools.';
 
   const live = (mine || []).filter((v) => v.state !== 'closed');
@@ -227,6 +248,7 @@ export default function Zap() {
             <span>Pool</span>
             <span className="r">Pool price</span>
             <span className="r">7d fee APY</span>
+            <span className="r">Protects from</span>
             <span className="r hide-sm">Token tax</span>
             <span className="r hide-md">Round trip</span>
             <span />
@@ -237,13 +259,14 @@ export default function Zap() {
         </div>
       )}
       <p className="fine" style={{ textAlign: 'left', margin: '10px 2px 0', maxWidth: 'none' }}>
-        7d fee APY is trading fees only, measured from each pool's own swaps over the last
-        seven days. X Layer's RWA incentive rounds have ended{program?.window ? ` (the last ran ${program.window})` : ''}, so no reward emissions are included in it. "Needs" is what
-        this pool has to earn to cover the exits it is expected to cost in a year: how often
-        {' '}{pools?.[0]?.judged_at_exit_threshold_bps ? `a ${pools[0].judged_at_exit_threshold_bps / 100}%` : 'an'}{' '}
-        IL threshold is tripped at the pair's measured volatility, times what one exit and
-        re-entry costs. A pool that does not clear it is closed to new deposits and is not
-        listed. A wider exit threshold trips less often, so it needs less.
+        "Protects from" is the tightest exit threshold that would have beaten simply holding
+        the LP when the zap's own exit-and-re-entry policy is replayed over this pair's last
+        30 days of prices, paying what an exit really costs and earning Aave's real rate while
+        parked. <b>It is a backtest over history, not a forecast</b> — the next 30 days are not
+        obliged to resemble the last. 7d fee APY is trading fees only; X Layer's RWA incentive
+        rounds have ended{program?.window ? ` (the last ran ${program.window})` : ''}, so no
+        reward emissions are in it. <b>Protects against sustained moves, not sudden gaps: a
+        one-day drop is taken in full before an exit can fire.</b>
       </p>
 
       {finished.length ? (
@@ -259,6 +282,27 @@ export default function Zap() {
       <div className="card deposit-panel" id="zap-deposit">
         <div className="dp-head">
           <h3>Deposit</h3>
+          {pool?.no_auto_exit_mode && (
+            <div className={`callout${pool.no_auto_exit_mode.recommended_here ? ' warning' : ''}`}
+                 style={{ marginBottom: 12 }}>
+              <span className="callout-k">No auto-exit</span>
+              <b className="callout-v">{num(pool.no_auto_exit_mode.net_pct)}%</b>
+              <span className="callout-s">
+                Hold the LP with the watcher off — no exits, no round-trip costs. That is what
+                this pool returned over the backtest window.
+                {pool.no_auto_exit_mode.recommended_here
+                  && ' For this pool that beat every exit threshold tested, so it is the mode we suggest.'}
+                <button className="linkish" onClick={() => setForm((f) => ({ ...f, exitPct: '0' }))}>
+                  Use no auto-exit
+                </button>
+              </span>
+            </div>
+          )}
+          {pool?.summary && (
+            <span className="dp-note fine" style={{ display: 'block', margin: '0 0 10px' }}>
+              {pool.summary}
+            </span>
+          )}
           {pool && (
             <span className="dp-pool">
               <PairMark a={pool.other.symbol} b={pool.rwa.symbol} small />

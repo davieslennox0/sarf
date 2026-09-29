@@ -16,7 +16,7 @@ from pydantic import Field
 
 from ..auth import require_address
 from ..config import settings
-from ..xlayer.zap import ZapEngine
+from ..xlayer.zap import GAP_CAVEAT, ZapEngine
 
 
 def position_url(position_id: str) -> str:
@@ -40,39 +40,35 @@ def register_zap_tools(mcp: FastMCP, engine: ZapEngine) -> None:
             raise ValueError(str(e))
 
     @mcp.tool()
-    async def get_zap_pools(
-        include_gated: Annotated[bool, Field(
-            default=False,
-            description="Also list pools Sarf has closed to new deposits, with the "
-                        "measured reason")] = False,
-    ) -> dict[str, Any]:
+    async def get_zap_pools() -> dict[str, Any]:
         """List the Uniswap V2 pools the zap can deposit into.
 
-        Each pairs a wrapped xStock with an ecosystem token, and every pair
-        address was checked on-chain against Uniswap's official factory.
-        Includes live reserves, the current pool price, and the pool's trailing
-        7-day fee APY.
+        Every pool is listed, always. What changes per pool is the exit
+        threshold that would have been worth setting: `protects_from_pct` is
+        the tightest threshold at which replaying the zap's own exit/re-entry
+        policy over this pair's recent prices beat simply holding the LP.
+        `suggested_threshold_pct` is what to pre-fill.
 
-        That APY is TRADING FEES ONLY. X Layer's RWA incentive rounds have
-        ended (Round 2 finished 2026-09-25, no Round 3 announced), so nothing
-        here includes reward emissions — say so when you quote it.
+        That number is a BACKTEST over ~30 days of real history, not a
+        forecast, and it must be relayed as such. `backtest.caveat` says so in
+        one sentence; use it.
 
-        Pools whose 7-day fee APY does not cover the round trips they are
-        expected to cost in a year are closed to new deposits and omitted
-        unless include_gated is set. That expectation is measured, not
-        guessed: the pair's own 30-day volatility says how often an exit
-        threshold is tripped, and each trip costs the pool's own
-        exit-and-re-entry cost. The list is judged at the default 8% exit
-        threshold; a wider threshold means fewer exits and a lower hurdle, and
-        a deposit is judged at whatever threshold the user actually sets.
-        Positions already open are unaffected.
+        A pool where no threshold beat holding carries
+        `no_threshold_passed: true` — deposits into it are refused at any
+        threshold, and the honest summary is that over this window its exits
+        cost more than they saved.
+
+        Fee APY is trading fees only: X Layer's RWA incentive rounds ended on
+        2026-09-25 and no Round 3 is announced, so nothing here includes
+        reward emissions.
         """
-        out, gated = [], []
+        out = []
         for p in engine.pools.values():
             st = await engine.pool_state(p)
             usd = await engine.rwa_usd(p)
             v = await engine.pool_viability(p, st)
-            row = {
+            bt = v.get("backtest") or {}
+            out.append({
                 **p.public(),
                 "zap_with": [p.underlying.symbol, p.rwa.symbol],
                 "price": f"{st['price']:,.2f} {p.other.symbol} per {p.rwa.symbol}",
@@ -80,42 +76,51 @@ def register_zap_tools(mcp: FastMCP, engine: ZapEngine) -> None:
                                      if usd else None),
                 "fee_apy_7d_pct": v["fee_apy_pct"],
                 "fee_apy_basis": v["label"],
-                "fee_apy_detail": v["basis"],
                 "round_trip_cost_pct": v["round_trip_cost_pct"],
-                "daily_sigma_pct": v["daily_sigma_pct"],
-                "expected_exits_per_year": v["expected_exits_per_year"],
-                "hurdle_pct": v["hurdle_pct"],
-                "judged_at_exit_threshold_bps": v["exit_threshold_bps"],
-                "open_to_deposits": v["viable"],
-            }
-            if v["gated"]:
-                row["closed_because"] = v["reason"]
-                gated.append(row)
-            else:
-                out.append(row)
+                "protects_from_pct": v.get("protects_from_pct"),
+                "protection_demonstrated": v.get("protection_demonstrated"),
+                "suggested_threshold_pct": (v["suggested_threshold_bps"] / 100
+                                            if v.get("suggested_threshold_bps") else None),
+                "no_threshold_passed": v.get("basis_of_gate") == "backtest"
+                                       and v.get("protects_from_bps") is None,
+                "confidence": v.get("confidence"),
+                "confidence_note": v.get("confidence_note"),
+                "exits_observed": v.get("exits_observed"),
+                # The other way to hold this pool: a plain LP, watcher off.
+                "no_auto_exit_mode": ({
+                    **v["no_auto_exit"],
+                    "how": "deposit with il_threshold_bps=0",
+                    "recommended_here": bool(v.get("recommend_no_auto_exit")),
+                } if v.get("no_auto_exit") else None),
+                "gate_basis": v.get("basis_of_gate"),
+                "backtest": bt or None,
+                "summary": v["reason"],
+            })
         return {
-            "pools": out + (gated if include_gated else []),
-            "gated_count": len(gated),
-            "yield_basis": ("fee_apy_7d_pct is trading fees only, measured over the last 7 "
-                            "days from each pool's own swaps. X Layer's RWA incentive rounds "
-                            "have ended, so no reward emissions are included in it."),
-            "gate_basis": ("A pool is open only if fee_apy_7d_pct >= hurdle_pct, where "
-                           "hurdle_pct = expected_exits_per_year x round_trip_cost_pct. "
-                           "expected_exits_per_year comes from the pair's measured daily "
-                           "volatility and the price move that actually trips the exit "
-                           "threshold, so a volatile pair has to earn much more to be worth "
-                           "entering."),
+            "pools": out,
+            "protection_limit": GAP_CAVEAT,
+            "how_to_read_this": (
+                "protects_from_pct is the tightest exit threshold that beat holding the LP "
+                "over the backtest window. Pre-fill suggested_threshold_pct. A deposit is "
+                "refused only when the policy lost at EVERY threshold tested and did so "
+                "over enough exits to mean something — otherwise the user chooses, with the "
+                "confidence label in front of them. When protection_demonstrated is false, no "
+                "exit ever fired in the window: that threshold cost nothing and proved "
+                "nothing. Every pool can also be held with no auto-exit at all "
+                "(no_auto_exit_mode), which is the B column of the same backtest."),
+            "not_a_forecast": (
+                "Every number under `backtest` is a replay of ~30 days of this pair's own "
+                "prices. Say so whenever you quote one: it describes a period that has "
+                "already happened and does not predict the next one."),
             "incentive_program": {**engine.incentive, "status": "ended"},
             "exit_parking": "Aave V3 USDT on X Layer",
-            "note": ("Every pool pairs the xStock with a volatile ecosystem token, so IL here "
-                     "is driven by that token's price as much as the stock's."),
         }
 
     @mcp.tool()
     async def zap_deposit(
         asset: Annotated[str, Field(description="What the user is depositing: 'SPCXx' (or 'wSPCXx'), or 'NVDAx' (or 'wNVDAx')")],
         amount: Annotated[str, Field(description="Amount of `asset` in whole tokens, e.g. '0.5'")],
-        il_threshold_bps: Annotated[int, Field(description="Exit when impermanent loss exceeds this, in basis points (100 = 1%). 1-5000")],
+        il_threshold_bps: Annotated[int, Field(description="Exit when impermanent loss exceeds this, in basis points (100 = 1%). 1-5000, or 0 for NO AUTO-EXIT: a plain LP position the IL watcher never acts on")],
         reentry_threshold_bps: Annotated[int | None, Field(
             default=None, description="Re-enter when IL falls back to or below this. Default: half of il_threshold_bps")] = None,
         pool: Annotated[str | None, Field(

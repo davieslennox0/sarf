@@ -64,7 +64,7 @@ from eth_utils import keccak
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError
-from . import rpc, zap_keeper
+from . import rpc, zap_backtest, zap_keeper
 from .evm import validate_evm_address, validate_tx_hash
 from .okx_dex import DexError, OkxDexClient
 from .registry import EXPLORER_TX, XStocksRegistry
@@ -87,7 +87,18 @@ IL_THRESHOLD_MAX_BPS = 5000
 # mean the wallet is partway through signing a flow; the watcher leaves those
 # alone, because a half-built position must never be re-routed underneath the
 # person signing it.
+# An exit threshold of zero means the user asked for a plain LP position with
+# no automatic exit. The position is tracked and shown like any other; the IL
+# watcher simply never acts on it.
+NO_AUTO_EXIT = 0
+
 WATCHED_STATES = ("in_pool", "exit_pending", "parked", "reentry_pending")
+
+# One sentence, in one place, because it is the most important limit of the
+# whole feature and it must read identically on the pool list, the position
+# page and every tool response.
+GAP_CAVEAT = ("Protects against sustained moves, not sudden gaps. A one-day drop is taken "
+              "in full before an exit can fire.")
 LIVE_STATES = WATCHED_STATES + ("entering", "exiting", "reentering")
 
 STATE_LABELS = {
@@ -348,6 +359,10 @@ class ZapEngine:
                           int(a["park_asset_decimals"]))
         self.a_token = validate_evm_address(a["a_token"], what="aToken")
         self.incentive = raw["incentive_program"]
+        # Paired daily closes per pool, for the backtest gate. Kept in the
+        # pool file rather than fetched at runtime so a gate decision can be
+        # audited against the exact numbers it was made from.
+        self.history = {p["key"].upper(): p.get("price_history") or {} for p in raw["pools"]}
         self.pools: dict[str, Pool] = {}
         for p in raw["pools"]:
             r, o = p["rwa"], p["other"]
@@ -474,13 +489,21 @@ class ZapEngine:
         # Judged at the threshold THIS user picked, not the list view's
         # default: a wider threshold means fewer exits, so someone who sets
         # one should be measured against the cost they are actually choosing.
-        gate = await self.pool_viability(pool, threshold_bps=il_t)
+        # Judged at the threshold THIS user picked. Nothing is hidden and no
+        # pool is closed outright: the only refusal is "the line you drew
+        # would not have been worth drawing", and it says what would have
+        # been. A threshold that passes is allowed even in a pool whose
+        # default is poor.
+        # No auto-exit asks nothing of the policy, so there is nothing to
+        # refuse: the backtest's B column IS this mode, and the user has been
+        # shown it.
+        gate = ({"gated": False} if il_t == NO_AUTO_EXIT
+                else await self.pool_viability(pool, threshold_bps=il_t))
         if gate["gated"]:
+            suggest = gate.get("suggested_threshold_bps")
             raise ValidationError(
-                f"{pool.key} is closed to new deposits: {gate['reason']}. "
-                + (f"Open pools: {', '.join(k for k in self.pools if k != pool.key)}."
-                   if len(self.pools) > 1 else "")
-            )
+                f"{pool.key}: {gate['reason']}"
+                + (f" Try {suggest / 100:g}% or wider." if suggest else ""))
 
         is_underlying = asset.strip().lower() == pool.underlying.symbol.lower()
         token = pool.underlying if is_underlying else pool.rwa
@@ -516,9 +539,15 @@ class ZapEngine:
 
     @staticmethod
     def _validate_thresholds(il_t: object, re_t: object | None) -> tuple[int, int]:
+        """-> (exit bps, re-entry bps). Zero exit bps means NO AUTO-EXIT: a
+        plain LP position the IL watcher leaves alone. It is a sentinel rather
+        than a very tight threshold, and every state machine that reads a
+        threshold has to check for it (see tick())."""
         if isinstance(il_t, bool) or not isinstance(il_t, (int, float)):
             raise ValidationError("il_threshold_bps must be a number of basis points")
         il_t = int(il_t)
+        if il_t == NO_AUTO_EXIT:
+            return NO_AUTO_EXIT, 0
         if not IL_THRESHOLD_MIN_BPS <= il_t <= IL_THRESHOLD_MAX_BPS:
             raise ValidationError(
                 f"il_threshold_bps must be {IL_THRESHOLD_MIN_BPS}-{IL_THRESHOLD_MAX_BPS} "
@@ -1360,6 +1389,7 @@ class ZapEngine:
                       "awaiting_confirmation": pend.get("tx_hash")} if pos["flow"] else None),
             "action_needed": self._action(pos),
             "auto_watch": settings.zap_autoexit_enabled,
+            "protection_limit": GAP_CAVEAT,
             "last_checked_at": pos.get("last_checked_at"),
             "history": self.db.zap_events(pos["position_id"]),
             "created_at": pos["created_at"],
@@ -1514,6 +1544,82 @@ class ZapEngine:
         days = (m / pool.daily_sigma) ** 2
         return 365 / days if days > 0 else None
 
+    # The sweep is cheap, but the history it reads only changes when the
+    # kline refresh runs, so re-running it more often than weekly would just
+    # write the same answer again with a new timestamp.
+    BACKTEST_REFRESH_SECONDS = 7 * 86400
+
+    async def refresh_backtests(self, *, force: bool = False) -> list[str]:
+        """Re-run the sweep for every pool whose stored run is a week old.
+
+        Each run is stored rather than overwritten: a user refused a deposit
+        last Tuesday is owed the numbers that refused them, not this week's.
+        -> the pools that were re-run.
+        """
+        done = []
+        for pool in self.pools.values():
+            last = self.db.last_zap_backtest(pool.key)
+            if not force and last and time.time() - last["run_at"] < self.BACKTEST_REFRESH_SECONDS:
+                continue
+            try:
+                bt = await self.pool_backtest(pool)
+            except Exception:
+                log.warning("backtest refresh failed for %s", pool.key, exc_info=True)
+                continue
+            if bt is not None:
+                self.db.record_zap_backtest(pool.key, bt)
+                done.append(pool.key)
+        return done
+
+    async def pool_backtest(self, pool: Pool, st: dict[str, Any] | None = None
+                            ) -> dict[str, Any] | None:
+        """Replay the policy over this pool's price history at every threshold
+        from 5% to 35%, and report the tightest one that beat holding the LP.
+
+        None when the pool has less than MIN_HISTORY_DAYS of paired closes —
+        the caller falls back to the volatility formula there rather than
+        drawing a conclusion from a week of prices.
+        """
+        hist = self.history.get(pool.key.upper()) or {}
+        rwa, other = hist.get("rwa_usd") or [], hist.get("other_usd") or []
+        if min(len(rwa), len(other)) < zap_backtest.MIN_HISTORY_DAYS:
+            return None
+        y = await self.pool_yield(pool, st)
+        if y["fee_apy_pct"] is None:
+            return None
+        aave = await self.aave_state()
+        runs = zap_backtest.sweep(
+            rwa, other, fee_apy_pct=y["fee_apy_pct"],
+            aave_apy_pct=float(aave.get("supply_apy_pct") or 0),
+            exit_cost_bps=self.exit_cost_bps(pool), entry_cost_bps=self.entry_cost_bps(pool))
+        best = zap_backtest.lowest_passing(runs)
+        # The no-auto-exit baseline is the same LP left alone, which is exactly
+        # B and identical at every threshold; take it off the widest run.
+        hold = runs[-1]
+        return {
+            "days_of_history": min(len(rwa), len(other)),
+            "every_threshold_loses": zap_backtest.every_threshold_loses(runs),
+            "max_exits": zap_backtest.max_exits(runs),
+            "hold_only": {"net_pct": hold.as_dict()["lp_hold_net_pct"],
+                          "rwa_hold_net_pct": hold.as_dict()["rwa_hold_net_pct"],
+                          "what": "the same LP with the IL watcher off, never exiting"},
+            "fee_apy_pct": y["fee_apy_pct"],
+            "aave_apy_pct": round(float(aave.get("supply_apy_pct") or 0), 3),
+            "protects_from_bps": best.threshold_bps if best else None,
+            "best": best.as_dict() if best else None,
+            "runs": [r.as_dict() for r in runs],
+            "caveat": ("Backtest over the last "
+                       f"{min(len(rwa), len(other))} days of this pair's own prices. It is "
+                       "what the policy WOULD have returned over a period that has already "
+                       "happened, not a forecast, and fees are assumed to keep running at "
+                       "last week's measured rate."),
+        }
+
+    def _backtest_verdict(self, bt: dict[str, Any], threshold_bps: int) -> dict[str, Any]:
+        """Does this user's chosen threshold pass the backtest?"""
+        run = next((r for r in bt["runs"] if r["threshold_bps"] >= threshold_bps), None)
+        return run or (bt["runs"][-1] if bt["runs"] else {})
+
     async def pool_viability(self, pool: Pool, st: dict[str, Any] | None = None,
                              threshold_bps: int | None = None) -> dict[str, Any]:
         """Whether a pool earns enough to be worth entering at all.
@@ -1533,35 +1639,111 @@ class ZapEngine:
         y = await self.pool_yield(pool, st)
         cost_pct = self.cycle_cost_bps(pool) / 100
         threshold = threshold_bps or self.DEFAULT_EXIT_THRESHOLD_BPS
-        exits = self.expected_exits_per_year(pool, threshold)
         apy = y["fee_apy_pct"]
         base = {
             **y,
             "round_trip_cost_pct": cost_pct,
             "exit_threshold_bps": threshold,
             "daily_sigma_pct": round(pool.daily_sigma * 100, 2) if pool.daily_sigma else None,
-            "expected_exits_per_year": round(exits, 1) if exits else None,
-            "hurdle_pct": round(exits * cost_pct, 2) if exits else None,
         }
         if apy is None:
-            return {**base, "viable": True, "gated": False,
+            return {**base, "viable": True, "gated": False, "basis_of_gate": "none",
                     "reason": "still measuring; not gated on an unmeasured number"}
+
+        # --- the backtest, where there is enough history to run one --------
+        bt = await self.pool_backtest(pool, st)
+        if bt is not None:
+            run = self._backtest_verdict(bt, threshold)
+            protects = bt["protects_from_bps"]
+            days = bt["days_of_history"]
+            exits_seen = bt["max_exits"]
+            conf = zap_backtest.confidence(days, exits_seen)
+
+            # A deposit is refused ONLY on clear, repeated failure: the policy
+            # lost at every threshold tested, and it lost often enough to
+            # mean something. One exit is an anecdote — the same month with
+            # that move a day earlier could say the opposite — so it never
+            # closes a pool. Everything else is the user's call, made with the
+            # numbers and the confidence in front of them.
+            all_lose = bt["every_threshold_loses"]
+            refuse = all_lose and exits_seen >= 3
+            if all_lose and not refuse:
+                reason = (
+                    f"Over the last {days} days, no exit threshold from 5% to 35% beat simply "
+                    f"holding the LP — but that rests on {exits_seen} "
+                    f"exit{'s' if exits_seen != 1 else ''}, which is too thin to call. "
+                    "Consider the no-auto-exit mode, which is what those numbers describe. "
+                    "History, not a forecast.")
+            elif all_lose:
+                reason = (
+                    f"Over the last {days} days, exiting never beat staying in: across "
+                    f"{exits_seen} exits at thresholds from 5% to 35%, the round trip cost "
+                    f"({cost_pct:.2f}% each) took more than the exits saved. The no-auto-exit "
+                    "mode is the one that matched this pool. History, not a forecast.")
+            elif not run.get("fired"):
+                reason = (
+                    f"Impermanent loss never reached {threshold / 100:g}% in the last {days} "
+                    f"days, so no exit would have fired and this threshold would have changed "
+                    f"nothing: {run['zap_net_pct']:+.2f}%, the same as holding the LP. That is "
+                    "not evidence it protects you, only that it would not have cost you.")
+            elif run.get("passes"):
+                reason = (
+                    f"Over the last {days} days, exiting at {run['threshold_bps'] / 100:g}% IL "
+                    f"returned {run['zap_net_pct']:+.2f}% against {run['lp_hold_net_pct']:+.2f}% "
+                    f"for holding the LP ({run['exits']} "
+                    f"exit{'s' if run['exits'] != 1 else ''}). History, not a forecast.")
+            else:
+                better = (f" A {protects / 100:g}% threshold did pay for itself here."
+                          if protects else "")
+                reason = (
+                    f"A {threshold / 100:g}% exit threshold would have returned "
+                    f"{run['zap_net_pct']:+.2f}% against {run['lp_hold_net_pct']:+.2f}% for "
+                    f"holding the LP over the last {days} days.{better} Allowed either way — "
+                    "this is one month of one pair, not a forecast.")
+
+            hold_run = bt["hold_only"]
+            return {
+                **base, "viable": not refuse, "gated": refuse,
+                "basis_of_gate": "backtest",
+                "protects_from_bps": protects,
+                "protects_from_pct": round(protects / 100, 1) if protects else None,
+                "protection_demonstrated": bool(bt["best"] and bt["best"].get("fired")),
+                "suggested_threshold_bps": (max(self.DEFAULT_EXIT_THRESHOLD_BPS, protects + 200)
+                                            if protects else None),
+                "confidence": conf,
+                "confidence_note": zap_backtest.confidence_note(days, exits_seen),
+                "exits_observed": exits_seen,
+                "no_auto_exit": hold_run,
+                "recommend_no_auto_exit": all_lose,
+                "gap_caveat": GAP_CAVEAT,
+                "backtest": {k: bt[k] for k in
+                             ("days_of_history", "fee_apy_pct", "aave_apy_pct", "best",
+                              "caveat")},
+                "at_your_threshold": run,
+                "reason": reason,
+            }
+
+        # --- fallback: too little history to replay anything ---------------
+        exits = self.expected_exits_per_year(pool, threshold)
+        base["expected_exits_per_year"] = round(exits, 1) if exits else None
+        base["hurdle_pct"] = round(exits * cost_pct, 2) if exits else None
         if exits is None:
-            return {**base, "viable": True, "gated": False,
-                    "reason": "this pair's volatility has not been measured, so the number "
-                              "of round trips it would cost is unknown"}
+            return {**base, "viable": True, "gated": False, "basis_of_gate": "none",
+                    "reason": "this pair has neither enough price history to replay nor a "
+                              "measured volatility, so nothing is judged"}
         hurdle = exits * cost_pct
         viable = apy >= hurdle
         return {
-            **base, "viable": viable, "gated": not viable,
+            **base, "viable": viable, "gated": not viable, "basis_of_gate": "volatility formula",
             "reason": (
-                f"7-day fee APY {apy:.2f}% is below the {hurdle:.2f}% this pool is expected to "
-                f"spend on exits: at {pool.daily_sigma * 100:.1f}% daily volatility a "
-                f"{threshold / 100:g}% IL threshold is tripped about {exits:.1f} times a year, "
-                f"and each round trip costs {cost_pct:.2f}%"
+                f"Under {zap_backtest.MIN_HISTORY_DAYS} days of price history, so this falls "
+                f"back to the volatility estimate: 7-day fee APY {apy:.2f}% against the "
+                f"{hurdle:.2f}% this pool is expected to spend on exits (a {threshold / 100:g}% "
+                f"IL threshold tripped about {exits:.1f} times a year at {cost_pct:.2f}% each)"
                 if not viable else
-                f"7-day fee APY {apy:.2f}% covers the {hurdle:.2f}% expected cost of "
-                f"{exits:.1f} round trips a year at {cost_pct:.2f}% each"),
+                f"Under {zap_backtest.MIN_HISTORY_DAYS} days of price history, so this falls "
+                f"back to the volatility estimate: 7-day fee APY {apy:.2f}% covers the "
+                f"{hurdle:.2f}% expected cost of {exits:.1f} round trips a year"),
         }
 
     # ----------------------------------------------------------- 7702 keeper
@@ -1613,7 +1795,11 @@ class ZapEngine:
     async def tick(self) -> list[tuple[str, str]]:
         """One pass of the IL watcher. -> [(position_id, transition)]."""
         moved: list[tuple[str, str]] = []
-        positions = [p for p in self.db.zap_positions_in(LIVE_STATES) if p.get("p_initial")]
+        # A position with no auto-exit is still priced and still shown; what
+        # it never gets is a state transition. Filtering here rather than in
+        # the rules keeps "the watcher does not touch this" in one place.
+        positions = [p for p in self.db.zap_positions_in(LIVE_STATES)
+                     if p.get("p_initial") and p["il_threshold_bps"] != NO_AUTO_EXIT]
         states: dict[str, dict[str, Any]] = {}
         for pos in positions:
             key = pos["pool_key"]

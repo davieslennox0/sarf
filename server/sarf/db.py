@@ -447,6 +447,24 @@ CREATE INDEX IF NOT EXISTS idx_zap_events_pos ON zap_events(position_id, at);
 -- rescanning a week of blocks: the scanner appends to today, and the window is
 -- a SUM over the last seven complete days. `swaps` is kept as the evidence
 -- that a zero is a real zero and not a scan that never ran.
+-- Every backtest the gate has run, kept so a past decision can be explained
+-- with the numbers it was actually made from. The sweep is re-run weekly as
+-- history grows, and an old row is never edited: a superseded verdict is
+-- still the verdict that was applied at the time.
+CREATE TABLE IF NOT EXISTS zap_backtest_runs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  pool_key      TEXT NOT NULL,
+  run_at        REAL NOT NULL,
+  days_history  INTEGER NOT NULL,
+  fee_apy_pct   REAL,
+  aave_apy_pct  REAL,
+  protects_bps  INTEGER,
+  max_exits     INTEGER NOT NULL DEFAULT 0,
+  all_lose      INTEGER NOT NULL DEFAULT 0,
+  result_json   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_zap_backtest_pool ON zap_backtest_runs(pool_key, run_at DESC);
+
 CREATE TABLE IF NOT EXISTS zap_pool_volume (
   pool_key    TEXT NOT NULL,
   day_utc     INTEGER NOT NULL,
@@ -1309,6 +1327,35 @@ class Database:
             cur = self._conn.execute(
                 "DELETE FROM zap_pool_volume WHERE day_utc < ?", (before_day,))
             return cur.rowcount
+
+    def record_zap_backtest(self, pool_key: str, result: dict[str, Any]) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """INSERT INTO zap_backtest_runs
+                   (pool_key, run_at, days_history, fee_apy_pct, aave_apy_pct,
+                    protects_bps, max_exits, all_lose, result_json)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (pool_key, time.time(), int(result.get("days_of_history") or 0),
+                 result.get("fee_apy_pct"), result.get("aave_apy_pct"),
+                 result.get("protects_from_bps"), int(result.get("max_exits") or 0),
+                 1 if result.get("every_threshold_loses") else 0,
+                 json.dumps(result, default=str)),
+            )
+            return int(cur.lastrowid or 0)
+
+    def last_zap_backtest(self, pool_key: str) -> dict[str, Any] | None:
+        r = self._conn.execute(
+            """SELECT run_at, result_json FROM zap_backtest_runs
+               WHERE pool_key=? ORDER BY run_at DESC LIMIT 1""", (pool_key,)).fetchone()
+        return {"run_at": r[0], "result": json.loads(r[1])} if r else None
+
+    def zap_backtest_history(self, pool_key: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """SELECT run_at, days_history, protects_bps, max_exits, all_lose
+               FROM zap_backtest_runs WHERE pool_key=? ORDER BY run_at DESC LIMIT ?""",
+            (pool_key, limit)).fetchall()
+        return [{"run_at": r[0], "days_history": r[1], "protects_bps": r[2],
+                 "max_exits": r[3], "all_lose": bool(r[4])} for r in rows]
 
     def zap_reward_addresses(self) -> set[str]:
         """Everyone who has ever held a zap position, so the scanner knows

@@ -786,8 +786,8 @@ h1 .chip { font-size: 13px; padding: 6px 12px; letter-spacing: 0; vertical-align
 .trade-menu .muted { padding: 2px 6px 8px; line-height: 1.45; white-space: normal; }
 .trade-menu a { padding: 9px 10px; border-radius: var(--r-sm); color: var(--paper); font-size: 14px; }
 .trade-menu a:hover { background: var(--s2); text-decoration: none; }
-.mkt-head.zap-cols, .mkt-row.zap-cols { grid-template-columns: minmax(190px, 1.5fr) 1fr .9fr .8fr 1fr 110px; }
-@media (max-width: 980px) { .mkt-head.zap-cols, .mkt-row.zap-cols { grid-template-columns: minmax(150px, 1.4fr) 1fr .9fr .8fr 100px; } }
+.mkt-head.zap-cols, .mkt-row.zap-cols { grid-template-columns: minmax(170px, 1.4fr) .9fr .9fr 1fr .8fr .9fr 105px; }
+@media (max-width: 980px) { .mkt-head.zap-cols, .mkt-row.zap-cols { grid-template-columns: minmax(140px, 1.3fr) .9fr 1fr .8fr 100px; } }
 @media (max-width: 640px) { .mkt-head.zap-cols, .mkt-row.zap-cols { grid-template-columns: minmax(0, 1fr) auto auto auto; } }
 
 @media (max-width: 640px) {
