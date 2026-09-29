@@ -11,7 +11,9 @@ session.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 import time
 from collections import defaultdict, deque
@@ -23,7 +25,22 @@ from .. import auth
 from ..db import Database
 from ..providers.zap_tools import position_url
 from ..validation import ValidationError
+from . import earn_allocator, rpc
 from .zap import GAP_CAVEAT, ZapEngine
+
+_EARN_VENUES_PATH = Path(__file__).with_name("earn_venues.json")
+_earn_cache: dict[str, Any] = {}
+
+
+def _earn_venues() -> dict[str, Any]:
+    """Load once. The file is a measurement record, refreshed by a script, not
+    something that changes under a running process."""
+    if not _earn_cache:
+        try:
+            _earn_cache.update(json.loads(_EARN_VENUES_PATH.read_text()))
+        except Exception:
+            logging.getLogger("sarf.earn").warning("earn_venues.json unreadable", exc_info=True)
+    return _earn_cache
 
 PUBLIC_VIEW_TTL = 10.0
 PUBLIC_PER_MINUTE = 60
@@ -112,6 +129,32 @@ def build_zap_api(db: Database, engine: ZapEngine) -> APIRouter:
                 "not_a_forecast": ("Backtest figures replay ~30 days of each pair's own "
                                    "prices. They describe a period that has already "
                                    "happened and do not predict the next one.")}
+
+    @r.get("/earn/summary")
+    async def earn_summary() -> dict[str, Any]:
+        """What Earn would put on the card: one blended rate, and the venues
+        behind it for anyone who asks the API rather than the page.
+
+        Flag-gated. With EARN_ALLOCATOR_ENABLED off this returns the disabled
+        marker and the risk FAQ, and touches no venue.
+        """
+        if not earn_allocator.enabled():
+            return earn_allocator.disabled_summary()
+        cfg = _earn_venues()
+        venues = await earn_allocator.build_venues(engine, cfg, rpc)
+        legs = earn_allocator.allocate(venues)
+        blended = earn_allocator.blended_rate(legs)
+        return {
+            "enabled": True,
+            "deposit_asset": (cfg.get("deposit_asset") or {}).get("symbol", "SPCXx"),
+            **blended,
+            "allocation": [leg.as_dict() for leg in legs],
+            "not_allocated": earn_allocator.unavailable(venues),
+            "measured_in": ("Every rate is measured in the deposit asset, because that is "
+                            "what you put in and take out. A leg held in dollars is worth "
+                            "fewer of it when its price rises."),
+            "risk_faq": earn_allocator.RISK_FAQ,
+        }
 
     @r.get("/position/{position_id}")
     async def public_position(position_id: str, request: Request) -> dict[str, Any]:

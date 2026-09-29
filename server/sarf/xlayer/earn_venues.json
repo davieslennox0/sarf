@@ -1,0 +1,74 @@
+{
+  "_comment": "Venues Earn may use that are not zap pools. PAXGy has NO on-chain accrual rate (no convertToAssets, no pricePerShare, checked 2026-09-29), so its contribution can only be measured as a price change that mixes the gold price with whatever the issuer accrued. Stored here with the deposit asset's closes beside it so the return can be expressed in SPCXx terms, which is the unit the user deposits and withdraws in. Refresh with scripts/measure_earn_venues.py.",
+  "chain_id": 196,
+  "measured_at": "2026-09-29",
+  "source": "OKX 1D klines per token (onchainos market kline)",
+  "paxgy": {
+    "address": "0x6c6494fd9962eb98b94ffa48f6679058f820700e",
+    "decimals": 18,
+    "pool": "0x568e1aae314fc7e5e624dc47a505fc857d411528",
+    "pool_fee": 500,
+    "route_note": "Traded ONLY through that pool. Mint and redeem are issuer-only and need KYC, so Sarf never mints or redeems.",
+    "days_utc": [
+      20713,
+      20716,
+      20717,
+      20719,
+      20720,
+      20721,
+      20722,
+      20723,
+      20724,
+      20725
+    ],
+    "usd": [
+      4403.878562,
+      4362.5279,
+      4397.966726,
+      4279.188584,
+      4281.234586,
+      4287.344939,
+      4294.040955,
+      4131.990746,
+      4164.3943,
+      4192.392763
+    ]
+  },
+  "deposit_asset": {
+    "symbol": "SPCXx",
+    "wrapped_symbol": "wSPCXx",
+    "address": "0x8e2eed8b8b5e13ea7bf38e50d7821d2c57309072",
+    "days_utc": [
+      20713,
+      20716,
+      20717,
+      20719,
+      20720,
+      20721,
+      20722,
+      20723,
+      20724,
+      20725
+    ],
+    "usd": [
+      151.061682,
+      155.283475,
+      152.951986,
+      148.697456,
+      147.898935,
+      148.77081,
+      148.76404,
+      147.274679,
+      148.692256,
+      149.242257
+    ]
+  },
+  "aave": {
+    "pool": "0xE3F3Caefdd7180F884c01E57f65Df979Af84f116",
+    "reserves": {
+      "USDT0": "0x779ded0c9e1022225f8e0630b35a9b54be713736",
+      "USDG": "0x4ae46a509f6b1d9056937ba4500cb143933d2dc8"
+    },
+    "verified": "both present in the pool's own getReservesList() on 2026-09-29"
+  }
+}

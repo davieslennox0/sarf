@@ -344,6 +344,14 @@ class Settings:
         default_factory=lambda: int(_env("ZAP_WATCH_INTERVAL_SECONDS", "60"))
     )
 
+    # --- Earn: the single-asset savings surface (see xlayer/earn_allocator.py)
+    # OFF. Earn hides which venues a deposit goes to, which raises rather than
+    # lowers the bar on the numbers behind it, so it stays off until the
+    # deposit and withdraw paths have been exercised on mainnet end to end.
+    earn_allocator_enabled: bool = field(
+        default_factory=lambda: _env("EARN_ALLOCATOR_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
+
     # --- Zap keeper: EIP-7702 hands-free exit / re-entry ---------------------
     # OFF, and meant to stay off for now. SarfDelegate is not deployed and has
     # had no external audit, and it is the contract a user's own EOA delegates
