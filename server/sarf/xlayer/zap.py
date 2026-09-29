@@ -64,7 +64,7 @@ from eth_utils import keccak
 from ..config import settings
 from ..db import Database
 from ..validation import ValidationError
-from . import rpc
+from . import rpc, zap_keeper
 from .evm import validate_evm_address, validate_tx_hash
 from .okx_dex import DexError, OkxDexClient
 from .registry import EXPLORER_TX, XStocksRegistry
@@ -322,6 +322,15 @@ class Step:
     data: str
     value: str = "0"
     ctx: dict[str, Any] | None = None  # values fixed at build time, merged on confirm
+    # What this step spends and what it must bring back, for the 7702 keeper
+    # path (see zap_keeper.py). `spend` is (token, max_units, spender) and
+    # `want` is (token, min_units); the delegate turns them into an exact
+    # allowance and a post-condition. A step that leaves them None cannot be
+    # run by the keeper and falls back to the user's signature — the honest
+    # default, since a wrong bound here is a bound the contract would enforce
+    # against the user.
+    spend: tuple[str, int, str] | None = None
+    want: tuple[str, int] | None = None
 
 
 class ZapEngine:
@@ -694,7 +703,11 @@ class ZapEngine:
             built = await self._build(steps[idx], pos, pool, ctx)
             if isinstance(built, Step):
                 pend = {"step": idx, "kind": built.kind, "to": built.to.lower(),
-                        "data": built.data.lower(), "ctx": built.ctx or {}}
+                        "data": built.data.lower(), "ctx": built.ctx or {},
+                        # Carried for the 7702 keeper path; the signing flow
+                        # ignores them. None means "only the user can run it".
+                        "spend": list(built.spend) if built.spend else None,
+                        "want": list(built.want) if built.want else None}
                 self.db.update_zap_position(pos["position_id"], flow_step=idx, flow_ctx=ctx,
                                             pending_tx=json.dumps(pend))
                 tx = {"chainId": 196, "to": built.to, "data": built.data,
@@ -802,7 +815,9 @@ class ZapEngine:
                             f"~{_fmt(received, buy.decimals)} {buy.symbol} in the "
                             f"{pool.key} pool ({impact:.2f}% impact"
                             + (f", {tax / 100:g}% {pool.other.symbol} transfer tax)" if tax else ")"),
-                    self.router, data)
+                    self.router, data,
+                    spend=(sell.address, amount, self.router),
+                    want=(buy.address, self._min(received)))
 
     async def _okx_swap(self, sell: Token, buy: Token, amount: int, owner: str) -> Step:
         try:
@@ -817,7 +832,9 @@ class ZapEngine:
                              f"price impact, over the {settings.max_price_impact_pct}% limit")
         return Step("swap", f"Swap {_fmt(amount, sell.decimals)} {sell.symbol} for "
                             f"~{_fmt(quote.to_amount, buy.decimals)} {buy.symbol} via the OKX "
-                            "DEX aggregator", unsigned.to, unsigned.data, str(unsigned.value or "0"))
+                            "DEX aggregator", unsigned.to, unsigned.data, str(unsigned.value or "0"),
+                    spend=(sell.address, amount, self.reg.dex_approve_address),
+                    want=(buy.address, self._min(quote.to_amount)))
 
     async def _build(self, kind: str, pos: dict[str, Any], pool: Pool,
                      ctx: dict[str, Any]) -> Step | dict[str, Any] | None:
@@ -891,7 +908,9 @@ class ZapEngine:
                             "removeLiquidity(address,address,uint256,uint256,uint256,address,uint256)",
                             ["address", "address", "uint256", "uint256", "uint256", "address", "uint256"],
                             [rwa.address, other.address, lp, min_rwa, min_other, owner,
-                             int(time.time()) + DEADLINE_SECONDS]))
+                             int(time.time()) + DEADLINE_SECONDS]),
+                        spend=(pool.pair, lp, self.router),
+                        want=(rwa.address, min_rwa))
         if kind == "approve_other_router_exit":
             return await self._approve(other, self.router, c("other_out"), owner,
                                        "for the Uniswap V2 router")
@@ -912,7 +931,9 @@ class ZapEngine:
                                        f"{park.symbol} to Aave V3",
                         self.aave_pool, _calldata("supply(address,uint256,address,uint16)",
                                                   ["address", "uint256", "address", "uint16"],
-                                                  [park.address, c("park_amount"), owner, 0]))
+                                                  [park.address, c("park_amount"), owner, 0]),
+                        spend=(park.address, c("park_amount"), self.aave_pool),
+                        want=(self.a_token, c("park_amount") * 999 // 1000))
 
         if kind == "unwrap":
             # Only if the deposit arrived as the underlying. Someone who
@@ -942,7 +963,9 @@ class ZapEngine:
                                          "(principal + interest) from Aave V3",
                         self.aave_pool, _calldata("withdraw(address,uint256,address)",
                                                   ["address", "uint256", "address"],
-                                                  [park.address, amount, owner]))
+                                                  [park.address, amount, owner]),
+                        spend=(self.a_token, amount, self.aave_pool),
+                        want=(park.address, self._min(amount)))
         if kind == "approve_park_okx":
             return await self._approve(park, self.reg.dex_approve_address, c("park_amount"), owner,
                                        "for the OKX DEX aggregator")
@@ -958,9 +981,17 @@ class ZapEngine:
                 return r
             await asyncio.sleep(1.5)
 
-    async def submit_step(self, position_id: str, address: str, tx_hash: str) -> dict[str, Any]:
-        """Bind a wallet-broadcast hash to the step it was built for, wait
-        for it to mine, and advance the flow on the amounts it credited."""
+    async def submit_step(self, position_id: str, address: str, tx_hash: str,
+                          *, via_keeper: bool = False) -> dict[str, Any]:
+        """Bind a broadcast hash to the step it was built for, wait for it to
+        mine, and advance the flow on the amounts it credited.
+
+        `via_keeper` is the 7702 path: the transaction was sent BY the keeper
+        TO the user's own account, carrying execute() calldata, so it cannot
+        match the step's `to`/`data` the way a wallet-signed one does. The
+        accounting below does not change: it still credits only what actually
+        arrived in the user's account, read from the receipt.
+        """
         tx_hash = validate_tx_hash(tx_hash)
         pos = self._owned(position_id, address)
         pend = self._pending(pos)
@@ -976,7 +1007,18 @@ class ZapEngine:
             if time.monotonic() > deadline:
                 raise ValueError("that transaction is not on X Layer (yet). Wait a moment and retry")
             await asyncio.sleep(1.5)
-        if ((tx.get("from") or "").lower() != pos["address"]
+        if via_keeper:
+            # The keeper calls the user's own account, which runs the step
+            # under the user's scope. What makes this safe is the delegate's
+            # own rules, not a calldata match here: it refuses any target the
+            # user did not whitelist and requires the proceeds to land in the
+            # user's account. So the check is only that this is the keeper
+            # driving THIS account.
+            mine = zap_keeper.keeper_address()
+            if (not mine or (tx.get("from") or "").lower() != mine.lower()
+                    or (tx.get("to") or "").lower() != pos["address"]):
+                raise ValueError("that transaction is not this account's keeper step")
+        elif ((tx.get("from") or "").lower() != pos["address"]
                 or (tx.get("to") or "").lower() != pend["to"]
                 or (tx.get("input") or "").lower() != pend["data"]):
             raise ValueError("that transaction is not the step Sarf built for this position")
@@ -1522,6 +1564,50 @@ class ZapEngine:
                 f"{exits:.1f} round trips a year at {cost_pct:.2f}% each"),
         }
 
+    # ----------------------------------------------------------- 7702 keeper
+
+    # A flow is a handful of steps; this is a stop, not a budget.
+    MAX_KEEPER_STEPS = 8
+
+    async def autorun(self, position_id: str, address: str) -> dict[str, Any]:
+        """Run the waiting flow with the keeper, if this account has a scope.
+
+        Falls back to the signing flow for any reason at all, leaving the
+        position exactly where the user's own signature can pick it up. That
+        is the normal outcome, not a failure: almost every account will have
+        no scope.
+        """
+        if not zap_keeper.enabled():
+            return {"status": "queued_for_signature", "reason": "7702 keeper disabled"}
+        scope = await zap_keeper.scope_for(address)
+        if not scope:
+            return {"status": "queued_for_signature", "reason": "no live scope for this account"}
+
+        ran: list[str] = []
+        for _ in range(self.MAX_KEEPER_STEPS):
+            step = await self.next_step(position_id, address)
+            if step.get("status") != "sign":
+                return {"status": step.get("status"), "steps_run": ran}
+            pos = self.db.get_zap_position(position_id)
+            pend = self._pending(pos)
+            out = await zap_keeper.run_step(address, {
+                "kind": pend.get("kind"), "to": pend["to"], "data": pend["data"],
+                "spend": tuple(pend["spend"]) if pend.get("spend") else None,
+                "want": tuple(pend["want"]) if pend.get("want") else None,
+            })
+            if out["status"] != "sent":
+                self.db.log_zap_event(position_id, "keeper_fallback",
+                                      {"step": pend.get("kind"), "reason": out["reason"]})
+                return {"status": "queued_for_signature", "reason": out["reason"],
+                        "steps_run": ran}
+            self.db.log_zap_event(position_id, "keeper_step",
+                                  {"step": pend.get("kind"), "tx_hash": out["tx_hash"]})
+            res = await self.submit_step(position_id, address, out["tx_hash"], via_keeper=True)
+            ran.append(pend.get("kind"))
+            if res.get("status") in ("failed", "pending"):
+                return {"status": res["status"], "steps_run": ran, "tx_hash": out["tx_hash"]}
+        return {"status": "incomplete", "steps_run": ran}
+
     # --------------------------------------------------------------- watcher
 
     async def tick(self) -> list[tuple[str, str]]:
@@ -1554,6 +1640,16 @@ class ZapEngine:
                 if s == frm and cond and self.db.update_zap_position(pid, expect_state=frm, state=to):
                     self.db.log_zap_event(pid, event, snap)
                     moved.append((pid, event))
+                    # An account that granted a scope gets the flow run for it;
+                    # every other account gets today's behaviour, which is the
+                    # position waiting for a signature. A keeper failure must
+                    # never leave the position worse than that, so it is logged
+                    # and swallowed.
+                    if to in ("exit_pending", "reentry_pending") and zap_keeper.enabled():
+                        try:
+                            await self.autorun(pid, pos["address"])
+                        except Exception:
+                            log.warning("keeper autorun failed for %s", pid, exc_info=True)
         return moved
 
     # ------------------------------------------------------- reward arrivals

@@ -344,6 +344,28 @@ class Settings:
         default_factory=lambda: int(_env("ZAP_WATCH_INTERVAL_SECONDS", "60"))
     )
 
+    # --- Zap keeper: EIP-7702 hands-free exit / re-entry ---------------------
+    # OFF, and meant to stay off for now. SarfDelegate is not deployed and has
+    # had no external audit, and it is the contract a user's own EOA delegates
+    # to — a bug in it has the user's whole account in reach. With this false,
+    # zap_keeper.py does nothing at all and every exit and re-entry is queued
+    # for the user's signature exactly as it is today.
+    zap_7702_enabled: bool = field(
+        default_factory=lambda: _env("ZAP_7702_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
+    # The deployed SarfDelegate. An account is only driven by the keeper if it
+    # delegates to THIS address, which makes it security-relevant: never point
+    # it at a contract whose bytecode has not been checked against a fresh
+    # build of contracts/src/SarfDelegate.sol.
+    zap_delegate_address: str = field(
+        default_factory=lambda: _env("ZAP_DELEGATE_ADDRESS", "").strip().lower()
+    )
+    # The keeper EOA. Holds no user funds and needs only gas; its authority is
+    # whatever each user's own scope grants it, and nothing else.
+    zap_keeper_private_key: str = field(
+        default_factory=lambda: _env("ZAP_KEEPER_PRIVATE_KEY", "").strip()
+    )
+
     # --- Official xStocks xPoints (see xlayer/xstocks_points.py) --------------
     # OFF by default. On, get_xpoints also reads the account's balance from the
     # xStocks points API, which means sending that wallet address to a third
