@@ -78,7 +78,13 @@ def test_registry_loads_and_every_address_is_valid(reg):
     for a in reg.assets:
         assert validate_evm_address(a.address) == a.address
         assert a.decimals == 18
-        assert a.symbol.endswith("x")
+        # The x-suffix rule is about xStocks specifically (see the AAPLx vs
+        # XAAPL trap below). The registry also carries assets that are not
+        # xStocks, and PAXGy is really spelled that way by its issuer.
+        if a.is_xstock:
+            assert a.symbol.endswith("x")
+        else:
+            assert a.disclosure, "a non-xStock must carry its own disclosure"
     assert reg.quote.decimals == 6
 
 

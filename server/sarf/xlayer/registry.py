@@ -46,6 +46,26 @@ class RwaAsset:
     # monogram rather than an empty box.
     logo_url: str = ""
 
+    # --- Assets that are not xStocks ----------------------------------------
+    # Everything above describes a tokenized equity, which is all this registry
+    # held until PAXGy. The three fields below exist because an asset that is
+    # not an xStock must not inherit an xStock's standing disclosure or an
+    # xStock's routing.
+    #
+    # `kind` is "xstock" for the 57 equities. `quote_symbol`, when set, is the
+    # ONLY asset this one may be traded against — PAXGy has one real pool on X
+    # Layer and routing it through anything else is routing it through
+    # nothing. `disclosure` replaces the synthetic-exposure line wherever the
+    # asset is shown; it is not additive, because the equity wording would be
+    # false about gold.
+    kind: str = "xstock"
+    quote_symbol: str = ""
+    disclosure: str = ""
+
+    @property
+    def is_xstock(self) -> bool:
+        return self.kind == "xstock"
+
     @property
     def explorer_url(self) -> str:
         return EXPLORER_TOKEN.format(self.address)
@@ -111,6 +131,20 @@ USDC = QuoteAsset(
 )
 
 
+# Paxos/Global Dollar's USDG on X Layer. Verified on chain on 2026-09-29:
+# symbol USDG, 6 decimals. It is here because it is the only liquid pair for
+# PAXGy (USDG/PAXGy, Uniswap V3, 0.05% fee, ~$660k) — PAXGy/USDC is empty — so
+# without USDG as a nameable asset, PAXGy has nothing to trade against. Like
+# USDC, it is NOT the quote asset: caps and pricing stay in USDT.
+USDG = QuoteAsset(
+    symbol="USDG",
+    onchain_symbol="USDG",
+    address="0x4ae46a509f6b1d9056937ba4500cb143933d2dc8",
+    decimals=6,
+    logo_url=_CURRENCY_ICON.format("usdg"),
+)
+
+
 class XStocksRegistry:
     """Immutable, load-once view of the tradable universe."""
 
@@ -153,6 +187,9 @@ class XStocksRegistry:
                 decimals=int(a["decimals"]),
                 cex_ticker=a["cex_ticker"],
                 logo_url=a.get("logo_url", ""),
+                kind=a.get("kind", "xstock"),
+                quote_symbol=(a.get("quote_symbol") or "").upper(),
+                disclosure=a.get("disclosure", ""),
             )
             assets[asset.symbol.upper()] = asset
         if not assets:

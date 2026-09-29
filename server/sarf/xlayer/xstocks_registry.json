@@ -4,7 +4,7 @@
   "generated_at": 1789878551,
   "quote_asset": {
     "symbol": "USDT",
-    "onchain_symbol": "USD₮0",
+    "onchain_symbol": "USD\u20ae0",
     "address": "0x779ded0c9e1022225f8e0630b35a9b54be713736",
     "decimals": 6
   },
@@ -465,6 +465,19 @@
       "decimals": 18,
       "cex_ticker": "",
       "logo_url": "https://static.okx.com/cdn/web3/currency/token/large/196-0x7aefc9965699fbea943e03264d96e50cd4a97b21-900/type=default_90_0"
+    },
+    {
+      "symbol": "PAXGy",
+      "name": "Paxos Gold Yield",
+      "address": "0x6c6494fd9962eb98b94ffa48f6679058f820700e",
+      "decimals": 18,
+      "cex_ticker": "",
+      "logo_url": "",
+      "kind": "gold",
+      "quote_symbol": "USDG",
+      "disclosure": "PAXGy is tokenized gold from Paxos Labs, not an xStock. Minting and redeeming are issuer-only and require KYC and jurisdictional eligibility: Sarf can only buy and sell it on the open market, and cannot mint or redeem it. Its value comes from an exchange rate against PAX Gold that rises as its reserves earn gold-lending returns, and that rate can FALL if a borrower defaults. On X Layer it trades in one pool (USDG/PAXGy), so it is only tradable here against USDG.",
+      "verified_at": "2026-09-29",
+      "verification": "eth_getCode non-empty (8659 bytes), symbol() PAXGy, decimals() 18; pool 0x568e1aae314fc7e5e624dc47a505fc857d411528 token0=USDG token1=PAXGy fee=500 (0.05%), tickSpacing 10; read 2026-09-29: 301,494.15 USDG + 89.3474 PAXGy at 4,162.70 USDG/PAXGy = $673,420 TVL"
     }
   ],
   "dex_router_address": "0x722db4f285F8bD91ef7AF6DA397e83f7fA4E80a7"

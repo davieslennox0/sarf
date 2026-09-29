@@ -56,7 +56,7 @@ from ..xlayer.widget import (
 from ..xlayer.evm import validate_evm_address, validate_tx_hash
 from ..xlayer.okx_dex import DexError, OkxDexClient, Quote
 from ..xlayer.registry import (
-    CHAIN_ID, EXPLORER_TOKEN, EXPLORER_TX, NATIVE, USDC, RwaAsset, XStocksRegistry,
+    CHAIN_ID, EXPLORER_TOKEN, EXPLORER_TX, NATIVE, USDC, USDG, RwaAsset, XStocksRegistry,
 )
 
 # --- display-only price cache ------------------------------------------------
@@ -211,7 +211,29 @@ def _resolve_any(reg: XStocksRegistry, symbol: str) -> Any:
     # money the assistant cannot spend.
     if s.upper() in ("USDC", "USD COIN"):
         return USDC
+    # USDG exists here for one reason: it is the only side PAXGy has a pool
+    # against on X Layer. See _check_pair.
+    if s.upper() in ("USDG", "GLOBAL DOLLAR"):
+        return USDG
     return reg.resolve(s, allowlist=settings.rwa_allowlist)
+
+
+def _check_pair(a: Any, b: Any) -> None:
+    """Refuse a pair an asset has no real market for.
+
+    An asset carrying `quote_symbol` has exactly one liquid pool on X Layer,
+    so any other pairing is a route the aggregator would have to invent out of
+    thin liquidity. PAXGy is the case: one USDG pool, and PAXGy/USDC empty.
+    Better to say so than to hand someone a quote nobody can fill honestly.
+    """
+    for side, other in ((a, b), (b, a)):
+        want = getattr(side, "quote_symbol", "")
+        if want and other.symbol.upper() != want:
+            raise ValidationError(
+                f"{side.symbol} only trades against {want} on X Layer — it has one pool "
+                f"there ({want}/{side.symbol}) and no market against {other.symbol}. "
+                f"Swap to {want} first."
+            )
 
 
 def _grant_from_row(row: dict[str, Any]) -> delegation.Grant:
@@ -763,6 +785,11 @@ class XLayerRwaProvider:
                 "price_usdt": round(price, 6) if price is not None else None,
                 "value_usd": round(value, 2) if value is not None else None,
                 "address": a.address, "explorer_url": a.explorer_url,
+                # Non-xStock holdings carry their own disclosure into every
+                # portfolio view, so a PAXGy row is never shown under the
+                # synthetic-equity line that does not describe it.
+                **({"kind": a.kind, "disclosure": a.disclosure,
+                    "trades_against": a.quote_symbol} if not a.is_xstock else {}),
             })
 
         # OKB is the gas coin, but it is also a real holding with a real price,
@@ -874,7 +901,12 @@ class XLayerRwaProvider:
     def _risk_notes(self, *, asset: RwaAsset, side: str, est_usd: float | None,
                     quote: Quote, slippage: float, stepup: passkey.StepUpDecision,
                     fee: dict[str, Any] | None = None) -> list[str]:
-        notes = [SYNTHETIC_DISCLOSURE]
+        # An asset carrying its own disclosure REPLACES the standing one: the
+        # synthetic-equity wording ("tracks a share price, no dividends or
+        # voting rights") is simply false about tokenized gold, and printing
+        # both would be one true line next to one wrong one. First in the list
+        # either way, because the card shows the first four notes.
+        notes = [getattr(asset, "disclosure", "") or SYNTHETIC_DISCLOSURE]
         if fee and fee.get("charged"):
             notes.append(
                 f"Sarf platform fee: ${fee['usd']:.2f} in {fee['denominated_in']} "
@@ -1043,7 +1075,8 @@ class XLayerRwaProvider:
                     "explorer_url": asset.explorer_url,
                     "quoted_at": int(time.time()),
                     "source": "OKX DEX aggregator (X Layer pools)",
-                    "disclosure": SYNTHETIC_DISCLOSURE,
+                    "disclosure": asset.disclosure or SYNTHETIC_DISCLOSURE,
+                    **({"trades_against": asset.quote_symbol} if asset.quote_symbol else {}),
                 }
             allow = settings.rwa_allowlist
             assets = [a for a in reg.assets if not allow or a.symbol.upper() in allow]
@@ -1078,6 +1111,12 @@ class XLayerRwaProvider:
                             round(price_by_symbol[a.symbol], 6)
                             if price_by_symbol.get(a.symbol) is not None else None),
                         "explorer_url": a.explorer_url,
+                        # Only on the assets that are not xStocks: the standing
+                        # disclosure at the bottom of this response is about
+                        # tokenized equities and is not true of PAXGy, so that
+                        # row carries its own and says what it pairs against.
+                        **({"kind": a.kind, "disclosure": a.disclosure,
+                            "trades_against": a.quote_symbol} if not a.is_xstock else {}),
                     }
                     for a in assets
                 ],
@@ -1088,6 +1127,11 @@ class XLayerRwaProvider:
                     "recognition only and is not tradable here."
                 ),
                 "disclosure": SYNTHETIC_DISCLOSURE,
+                "per_asset_disclosures": (
+                    "Assets with their own `disclosure` field are NOT xStocks and the "
+                    "standing disclosure above does not describe them. Relay theirs "
+                    "instead whenever you mention them."
+                    if any(not a.is_xstock for a in assets) else None),
             }
 
         @mcp.tool(meta=ui(PORTFOLIO_CARD_URI))
@@ -1124,6 +1168,10 @@ class XLayerRwaProvider:
             address = require_address()
             db.upsert_user(address, "mcp")
             asset = reg.resolve(symbol, allowlist=settings.rwa_allowlist)
+            # place_order is USDT-denominated by definition, so an asset that
+            # only has a pool against something else cannot be bought here.
+            # It says which tool to use instead rather than routing blind.
+            _check_pair(asset, reg.quote)
             slippage = self._validate_slippage(slippage_percent)
 
             if side == "buy":
@@ -1369,6 +1417,7 @@ class XLayerRwaProvider:
             buy_asset = _resolve_any(reg, to_symbol)
             if sell_asset.address.lower() == buy_asset.address.lower():
                 raise ValidationError("from_symbol and to_symbol are the same asset")
+            _check_pair(sell_asset, buy_asset)
             slippage = self._validate_slippage(slippage_percent)
             amount_min_units = validate_amount(
                 amount, sell_asset.decimals, what=f"amount ({sell_asset.symbol})"

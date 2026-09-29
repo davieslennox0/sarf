@@ -184,7 +184,12 @@ export function MarketTable({ assets, prices, overview, emptyText = 'No assets m
             <a className="row-left" href={a.explorer_url} target="_blank" rel="noreferrer" title="Contract on the X Layer explorer">
               <TokenMark asset={a} />
               <span className="row-id">
-                <span className="sym">{a.symbol}</span>
+                <span className="sym">
+                  {a.symbol}
+                  {/* Not an xStock. The chip is the cheap half of saying so;
+                      the disclosure under the table is the half that matters. */}
+                  {a.disclosure && <span className="chip" style={{ marginLeft: 8 }}>{a.kind || 'not an xStock'}</span>}
+                </span>
                 <span className="name">{a.name.replace(' xStock', '')}</span>
               </span>
             </a>
@@ -196,12 +201,30 @@ export function MarketTable({ assets, prices, overview, emptyText = 'No assets m
             <span className="r vol hide-md">{compactUsd(o?.volume_24h_usd)}</span>
             <span className="r hide-md"><Sparkline points={o?.spark} change={ch} /></span>
             <span className="mkt-actions hide-sm">
-              <TradeButton side="buy" symbol={a.symbol} />
-              <TradeButton side="sell" symbol={a.symbol} />
+              {/* An asset with one pool cannot be bought with USDT, so it does
+                  not get the buy/sell pair that implies it can. */}
+              {a.trades_against ? (
+                <a className="btn small"
+                   href={`/swap?from=${encodeURIComponent(a.trades_against)}&to=${encodeURIComponent(a.symbol)}`}>
+                  Swap {a.trades_against}
+                </a>
+              ) : (
+                <>
+                  <TradeButton side="buy" symbol={a.symbol} />
+                  <TradeButton side="sell" symbol={a.symbol} />
+                </>
+              )}
             </span>
           </div>
         );
       })}
+      {/* Every asset on screen that is not an xStock says what it is, in its
+          own words, wherever it is listed. */}
+      {assets.filter((a) => a.disclosure).map((a) => (
+        <div className="disclosure" key={`d-${a.symbol}`}>
+          <b>{a.symbol}</b> — {a.disclosure}
+        </div>
+      ))}
     </div>
   );
 }

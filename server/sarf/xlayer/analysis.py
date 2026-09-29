@@ -91,6 +91,10 @@ BUFFER_LOW = 5.0                  # stablecoin buffer considered thin, %
 
 _ETF = "fund"
 _NAME = "single_name"
+# Not an equity at all. PAXGy is a claim on vaulted gold, so it belongs in
+# neither bucket: counting it as a "fund" would let a concentration finding
+# report a gold holding as equity exposure it is not.
+_COMMODITY = "commodity"
 
 CLASSIFICATION: dict[str, tuple[str, str]] = {
     # Broad-market and sector funds
@@ -100,6 +104,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "EWYx":  (_ETF,  "South Korea equity"),
     "XLEx":  (_ETF,  "Energy"),
     "GLDx":  (_ETF,  "Gold (commodity)"),
+    # Tokenized gold from Paxos Labs, not an xStock. Same underlying as GLDx
+    # in exposure terms, different instrument: GLDx tracks a gold ETF's share
+    # price, PAXGy is a redeemable claim on gold whose exchange rate also
+    # carries the issuer's lending risk.
+    "PAXGy": (_COMMODITY, "Gold (commodity)"),
     # Bucketed with the semis it tracks, not into a sector of its own: a
     # wallet holding NVDAx, AMDx and SOXLx has 80% semiconductor exposure, and
     # splitting the leveraged fund out would report 65% and understate it. The

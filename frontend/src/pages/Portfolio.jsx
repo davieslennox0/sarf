@@ -82,6 +82,14 @@ function Holdings({ data, mine, onFund }) {
             : <div className="row static" key={p.symbol}>{body}</div>;
         })}
       </div>
+      {/* A holding that is not an xStock carries its own disclosure into the
+          portfolio, so the standing synthetic-equity line never stands in
+          for something it does not describe. */}
+      {visible.filter((p) => p.disclosure).map((p) => (
+        <div className="disclosure" key={`d-${p.symbol}`}>
+          <b>{p.symbol}</b> — {p.disclosure}
+        </div>
+      ))}
       {sorted.length > PAGE && (
         <button className="see-all" onClick={() => setShowAll((v) => !v)}>
           {showAll ? 'Show fewer' : `Show all ${sorted.length} holdings →`}
