@@ -34,9 +34,11 @@ const NAV = [
   { to: '/markets', label: 'Markets', on: (p) => p === '/markets' },
   { to: '/portfolio', label: 'Portfolio', on: (p) => p === '/portfolio' },
   { to: '/zap', label: 'Zap', on: (p) => p.startsWith('/zap') },
-  // Earn is a single-asset savings surface, served by its own app on its own
-  // database (see earn.js). It never shows the pools Zap does.
-  { to: '/earn', label: 'Earn', on: (p) => p.startsWith('/earn') },
+  // Earn is deliberately NOT in the nav. There is no deposit or withdraw
+  // execution behind it yet (earn_allocator.py is read-only), so it is not
+  // discoverable until that exists and has been tested with real funds. The
+  // route itself still resolves — see EarnHome.jsx — as a "coming soon" page
+  // for anyone who already has the link.
 ];
 
 const isPhone = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
