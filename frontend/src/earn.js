@@ -81,6 +81,10 @@ export async function ensureEarnSession(address) {
 
 export const earnApi = {
   zapPools: () => req('/api/zap/pools'),
+  // The vault-list surface: one row per asset, not per pool. Read-only and
+  // not gated behind the deposit flag — see the server route's own comment.
+  earnVaults: () => req('/api/zap/earn/vaults'),
+  earnVault: (symbol) => req(`/api/zap/earn/vaults/${encodeURIComponent(symbol)}`),
   zapPosition: (id) => req(`/api/zap/position/${encodeURIComponent(id)}`),
   zapMine: () => req('/api/zap/positions'),
   zapDeposit: (body) => req('/api/zap/deposit', { method: 'POST', body: JSON.stringify(body) }),

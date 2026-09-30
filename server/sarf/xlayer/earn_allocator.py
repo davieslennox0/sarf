@@ -325,3 +325,166 @@ def disabled_summary() -> dict[str, Any]:
 
 def enabled() -> bool:
     return bool(settings.earn_allocator_enabled)
+
+
+# ============================================================================
+# PER-ASSET VAULTS — the vault-list page (getsarf.xyz/earn)
+# ============================================================================
+#
+# The list on the page is one row per ASSET a user can deposit, not one row
+# per pool a pool could be deposited into. That distinction is the whole
+# reason this section exists separately from `build_venues` above: a user
+# depositing SPCXx should never learn that three different pools are involved,
+# and NVDAx and SPCXx must never be shown as if they shared a return, because
+# they do not share a single one of their venues.
+#
+# Which pools back which asset. Keyed by the asset's on-chain symbol; the
+# values are zap pool keys whose `rwa` leg wraps that asset (see
+# zap_pools.json — SPCXx trades as wSPCXx, NVDAx as wNVDAx).
+ASSET_POOLS: dict[str, list[str]] = {
+    "SPCXx": ["LAIKA-wSPCXx", "STARLINK-wSPCXx", "IGNIX-wSPCXx"],
+    "NVDAx": ["STERLING-wNVDAx"],
+}
+
+ASSET_META: dict[str, dict[str, str]] = {
+    "SPCXx": {"name": "SpaceX xStock", "category": "rwa_equity", "chain": "X Layer",
+              "description": "Tokenized SpaceX exposure that earns liquidity fees and "
+                             "stablecoin lending interest."},
+    "NVDAx": {"name": "NVIDIA xStock", "category": "rwa_equity", "chain": "X Layer",
+              "description": "Tokenized NVIDIA exposure that earns liquidity fees."},
+    "PAXGy": {"name": "Paxos Gold Yield", "category": "commodity", "chain": "X Layer",
+              "description": "Tokenized gold, bought and held through its one verified "
+                             "market on X Layer."},
+}
+
+
+@dataclass(frozen=True)
+class AssetVault:
+    symbol: str
+    name: str
+    category: str          # "rwa_equity" | "commodity"
+    chain: str
+    description: str
+    apy_pct: float | None
+    apy_status: str        # "measured" | "measuring" | "not_yet_earning"
+    apy_label: str
+    withdraw_cost_pct: float | None   # None => negligible / instant
+    withdraw_label: str
+    flagship: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol, "name": self.name, "category": self.category,
+            "chain": self.chain, "description": self.description,
+            "apy_pct": self.apy_pct, "apy_status": self.apy_status,
+            "apy_label": self.apy_label,
+            "withdraw_cost_pct": self.withdraw_cost_pct,
+            "withdraw_label": self.withdraw_label,
+            "flagship": self.flagship,
+        }
+
+
+async def _paxgy_vault(venues_cfg: dict[str, Any]) -> AssetVault:
+    """PAXGy has no venue that pays it a yield: it is bought and held, not
+    lent or LPed (V3 concentrated-liquidity execution is not built — see
+    the V3-zap research note), and it has no on-chain accrual rate to
+    measure in the first place. Its card says exactly that rather than
+    filling the APY slot with its own price swing, which would present a
+    gold-price move as if it were interest.
+
+    Withdrawal is a single swap through its one pool, so the cost is the
+    pool's own fee (0.05%) — small enough, and unlike an LP unwind not
+    dependent on a live quote, that it reads as "Instant" rather than a
+    percentage nobody asked for.
+    """
+    meta = ASSET_META["PAXGy"]
+    pg, dep = venues_cfg.get("paxgy") or {}, venues_cfg.get("deposit_asset") or {}
+    _, days = _annualise(pg.get("usd") or [], dep.get("usd") or [])
+    return AssetVault(
+        symbol="PAXGy", name=meta["name"], category=meta["category"], chain=meta["chain"],
+        description=meta["description"], apy_pct=None, apy_status="not_yet_earning",
+        apy_label=(f"Not yet earning yield — only {days} days of price history and no "
+                   "venue pays it interest yet" if days else
+                   "Not yet earning yield — bought and held, no lending or liquidity "
+                   "venue for it yet"),
+        withdraw_cost_pct=None, withdraw_label="Instant", flagship=True)
+
+
+async def asset_vault(engine, symbol: str, venues_cfg: dict[str, Any], rpc_mod) -> AssetVault:
+    """One row of the vault list, or the card behind one click-through.
+
+    Builds the SAME venues `build_venues` would for this asset's own pools —
+    same gate, same exclusions — then blends and allocates exactly as the
+    hidden savings card does, so the number on the list page is never a
+    different calculation from the number a user would actually get.
+    """
+    if symbol == "PAXGy":
+        return await _paxgy_vault(venues_cfg)
+
+    meta = ASSET_META[symbol]
+    legs: list[Venue] = []
+    for key in ASSET_POOLS.get(symbol, []):
+        pool = engine.pools.get(key.upper())
+        if pool is None:
+            continue
+        try:
+            v = await engine.pool_viability(pool)
+        except Exception:
+            log.warning("pool %s could not be judged for the %s vault", key, symbol,
+                       exc_info=True)
+            continue
+        protects = v.get("protects_from_bps")
+        if v.get("basis_of_gate") == "backtest" and protects is None:
+            continue                       # no threshold ever beat holding: excluded
+        if v.get("fee_apy_pct") is None:
+            continue                       # still measuring: excluded, not guessed
+        legs.append(Venue(
+            key=f"lp:{pool.key}", kind="lp", label="liquidity fees",
+            rate_pct=v["fee_apy_pct"], rate_kind="yield",
+            basis=f"entered at the {(protects or 0) / 100:g}% exit threshold its own "
+                  "backtest cleared",
+            detail={"round_trip_cost_pct": v.get("round_trip_cost_pct")}))
+
+    aave = venues_cfg.get("aave") or {}
+    for sym, addr in (aave.get("reserves") or {}).items():
+        apy = await _aave_supply_apy(rpc_mod, aave["pool"], addr)
+        if apy is None:
+            continue
+        legs.append(Venue(
+            key=f"aave:{sym}", kind="lending", label="stablecoin lending interest",
+            rate_pct=apy, rate_kind="yield", basis="Aave V3's live supply rate",
+            detail={"round_trip_cost_pct": 0.0}))
+
+    allocated = allocate(legs)
+    used = [leg for leg in allocated if leg.kind != "cash"]
+    if not used:
+        return AssetVault(
+            symbol=symbol, name=meta["name"], category=meta["category"], chain=meta["chain"],
+            description=meta["description"], apy_pct=None, apy_status="measuring",
+            apy_label="Measuring — not enough venue history yet",
+            withdraw_cost_pct=None, withdraw_label="Instant")
+
+    blended = blended_rate(allocated)
+    lp_legs = [leg for leg in used if leg.kind == "lp"]
+    lp_weight = sum(leg.weight for leg in lp_legs)
+    # The withdraw estimate is a live weighted average of exactly the cost
+    # figure the deposit flow already computes per pool (cycle_cost_bps), not
+    # a separate guess: unwinding a mixed position pays each leg's own cost in
+    # proportion to how much of the deposit sits in it right now.
+    withdraw_cost = (sum((leg.detail.get("round_trip_cost_pct") or 0.0) * leg.weight
+                         for leg in lp_legs) / lp_weight) if lp_weight else None
+    return AssetVault(
+        symbol=symbol, name=meta["name"], category=meta["category"], chain=meta["chain"],
+        description=meta["description"],
+        apy_pct=blended["blended_apy_pct"], apy_status="measured",
+        apy_label="30-day blended APY, not a forecast",
+        withdraw_cost_pct=round(withdraw_cost, 2) if withdraw_cost else None,
+        withdraw_label=f"~{withdraw_cost:.1f}% cost" if withdraw_cost else "Instant")
+
+
+async def asset_vaults(engine, venues_cfg: dict[str, Any], rpc_mod) -> list[AssetVault]:
+    """Every vault on the page, in one call. Order is fixed (flagship last so
+    the page can float it into its own slot) rather than sorted by APY, so the
+    list does not reshuffle under a user's finger as rates update."""
+    return [await asset_vault(engine, sym, venues_cfg, rpc_mod)
+            for sym in (*ASSET_POOLS, "PAXGy")]

@@ -1,7 +1,6 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
-import { EARN, ZapClientProvider } from './zapclient.jsx';
 import { api, clearSession, getSession, registerPasskey } from './api.js';
 import Onboarding from './Onboarding.jsx';
 import Sheet from './Sheet.jsx';
@@ -19,6 +18,8 @@ const Markets = lazy(() => import('./pages/Markets.jsx'));
 const Portfolio = lazy(() => import('./pages/Portfolio.jsx'));
 const Zap = lazy(() => import('./pages/Zap.jsx'));
 const ZapPosition = lazy(() => import('./pages/ZapPosition.jsx'));
+const EarnHome = lazy(() => import('./pages/EarnHome.jsx'));
+const EarnAsset = lazy(() => import('./pages/EarnAsset.jsx'));
 const Receipt = lazy(() => import('./pages/Receipt.jsx'));
 const Swap = lazy(() => import('./pages/Swap.jsx'));
 const How = lazy(() => import('./pages/How.jsx'));
@@ -33,8 +34,8 @@ const NAV = [
   { to: '/markets', label: 'Markets', on: (p) => p === '/markets' },
   { to: '/portfolio', label: 'Portfolio', on: (p) => p === '/portfolio' },
   { to: '/zap', label: 'Zap', on: (p) => p.startsWith('/zap') },
-  // Earn is the same pages against the new build, which runs as its own app
-  // on its own database. Separate entry, separate session, nothing shared.
+  // Earn is a single-asset savings surface, served by its own app on its own
+  // database (see earn.js). It never shows the pools Zap does.
   { to: '/earn', label: 'Earn', on: (p) => p.startsWith('/earn') },
 ];
 
@@ -368,8 +369,11 @@ export default function App() {
               <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
               <Route path="/zap" element={<Zap />} />
               <Route path="/zap/:id" element={<ZapPosition />} />
-              <Route path="/earn" element={<ZapClientProvider value={EARN}><Zap /></ZapClientProvider>} />
-              <Route path="/earn/:id" element={<ZapClientProvider value={EARN}><ZapPosition /></ZapClientProvider>} />
+              {/* Earn is a single-asset savings surface: a vault list, then a
+                  per-asset deposit/withdraw card. It never shows the pools or
+                  thresholds the Zap tab does — see pages/EarnHome.jsx. */}
+              <Route path="/earn" element={<EarnHome />} />
+              <Route path="/earn/:symbol" element={<EarnAsset />} />
               <Route path="/swap" element={<Swap />} />
               <Route path="/how" element={<How />} />
               <Route path="/account" element={gate('Your account', <Account />)} />

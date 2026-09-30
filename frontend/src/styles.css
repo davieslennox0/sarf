@@ -1122,3 +1122,40 @@ html, body { overflow-x: hidden; }
 .passkey-note .linkish { font-size: 13px; padding: 0; color: var(--paper-dim); }
 .mono-ish { font-family: var(--mono); font-size: 13px; letter-spacing: .01em; }
 .mono-ish.break { word-break: break-all; }
+
+/* ---- Earn: featured strip + vault table ----------------------------------- */
+.earn-featured {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 22px;
+}
+.earn-feature-card {
+  position: relative; display: flex; flex-direction: column; gap: 12px;
+  text-decoration: none; color: inherit; cursor: pointer; transition: border-color .15s;
+}
+.earn-feature-card:hover { border-color: var(--line-strong); }
+/* The flagship card spans two columns on a three-up grid, so it reads wider
+   than its siblings without needing a different card component. */
+.earn-feature-card.flagship {
+  grid-column: span 2;
+  background: linear-gradient(160deg, rgba(244, 246, 249, .09), var(--s1) 60%);
+  border-color: var(--line-strong);
+}
+.earn-flagship-badge { position: absolute; top: 16px; right: 16px; }
+.earn-feature-head { display: flex; align-items: center; gap: 10px; }
+.earn-feature-name { font-weight: 600; font-size: 15px; }
+.earn-feature-apy { display: flex; flex-direction: column; gap: 2px; }
+.earn-apy { font-size: 26px; font-variant-numeric: tabular-nums; }
+.earn-apy.muted { color: var(--paper-dim); font-size: 20px; }
+.earn-feature-desc { margin: 0; font-size: 13px; color: var(--paper-dim); line-height: 1.5; }
+
+.earn-cols, .earn-row.mkt-row {
+  grid-template-columns: minmax(160px, 1.6fr) 1fr .9fr .8fr;
+}
+@media (max-width: 720px) {
+  .earn-featured { grid-template-columns: 1fr; }
+  .earn-feature-card.flagship { grid-column: span 1; }
+  .earn-cols, .earn-row.mkt-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .earn-cols .hide-sm, .earn-row.mkt-row .hide-sm { display: none; }
+}
+
+.earn-asset-title { display: flex; align-items: center; gap: 14px; }
+.earn-asset-title h1 { margin-bottom: 2px; }

@@ -156,6 +156,46 @@ def build_zap_api(db: Database, engine: ZapEngine) -> APIRouter:
             "risk_faq": earn_allocator.RISK_FAQ,
         }
 
+    @r.get("/earn/vaults")
+    async def earn_vaults() -> dict[str, Any]:
+        """The vault-list page's data: one row per ASSET, never per pool.
+
+        Deliberately NOT gated behind EARN_ALLOCATOR_ENABLED. That flag gates
+        moving money — deposit, rebalance, withdraw, none of which exist yet
+        — not looking at real, already-public numbers. Every figure here is
+        the same measured value get_zap_pools and get_status already publish;
+        grouping it by asset and hiding the pool names is presentation, not a
+        new disclosure. The moment deposits are wired up, the flag will gate
+        that action specifically.
+        """
+        cfg = _earn_venues()
+        vaults = await earn_allocator.asset_vaults(engine, cfg, rpc)
+        return {
+            "vaults": [v.as_dict() for v in vaults],
+            "categories": ["featured", "rwa_equity", "commodity"],
+            "protection_limit": GAP_CAVEAT,
+            "not_a_forecast": ("APY figures are measured over the last 30 days of each "
+                               "vault's own venues. They describe a period that has "
+                               "already happened and do not predict the next one."),
+            "deposits_open": earn_allocator.enabled(),
+            "risk_faq": earn_allocator.RISK_FAQ,
+        }
+
+    @r.get("/earn/vaults/{symbol}")
+    async def earn_vault(symbol: str) -> dict[str, Any]:
+        symbol = symbol.strip()
+        known = {"SPCXx": "SPCXx", "NVDAx": "NVDAx", "PAXGy": "PAXGy"}
+        canon = known.get(symbol) or known.get(symbol.upper()) \
+            or next((v for k, v in known.items() if k.lower() == symbol.lower()), None)
+        if not canon:
+            raise HTTPException(404, f"no Earn vault for {symbol!r}")
+        cfg = _earn_venues()
+        vault = await earn_allocator.asset_vault(engine, canon, cfg, rpc)
+        return {**vault.as_dict(),
+               "protection_limit": GAP_CAVEAT,
+               "deposits_open": earn_allocator.enabled(),
+               "risk_faq": earn_allocator.RISK_FAQ}
+
     @r.get("/position/{position_id}")
     async def public_position(position_id: str, request: Request) -> dict[str, Any]:
         ip = request.client.host if request.client else "?"

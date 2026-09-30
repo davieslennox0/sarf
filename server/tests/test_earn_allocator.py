@@ -151,3 +151,82 @@ def test_summary_endpoint_is_silent_and_harmless_while_the_flag_is_off():
     assert body["enabled"] is False
     assert body["risk_faq"][1]["q"] == "Can my balance go down?"
     assert "blended_apy_pct" not in body
+
+
+# ------------------------------------------------------- per-asset vaults
+
+def test_paxgy_vault_never_fabricates_a_yield():
+    """PAXGy has no on-chain accrual and no LP execution behind it. Its card
+    must say that plainly rather than reporting its own price swing as APY."""
+    import asyncio
+
+    v = asyncio.run(EA._paxgy_vault({"paxgy": {"usd": [1.0] * 9},
+                                     "deposit_asset": {"usd": [1.0] * 9}}))
+    assert v.apy_pct is None
+    assert v.apy_status == "not_yet_earning"
+    assert v.flagship is True
+    assert v.withdraw_label == "Instant" and v.withdraw_cost_pct is None
+
+
+def test_a_vault_with_no_eligible_pool_reads_as_measuring_not_zero():
+    import asyncio
+
+    from types import SimpleNamespace
+
+    engine = SimpleNamespace(pools={}, )
+    v = asyncio.run(EA.asset_vault(engine, "NVDAx", {"aave": {}}, None))
+    assert v.apy_status == "measuring"
+    assert v.apy_pct is None
+
+
+def test_asset_vault_symbols_match_the_spec():
+    assert set(EA.ASSET_POOLS) | {"PAXGy"} == {"SPCXx", "NVDAx", "PAXGy"}
+    for sym in ("SPCXx", "NVDAx", "PAXGy"):
+        assert sym in EA.ASSET_META
+
+
+def test_earn_vaults_endpoint_lists_every_asset_ungated():
+    """Reading the vault list must work even with the flag off — only
+    deposits are gated, not the numbers."""
+    import json
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from sarf.db import Database
+    from sarf.xlayer.okx_dex import OkxDexClient
+    from sarf.xlayer.registry import registry
+    from sarf.xlayer.zap import ZapEngine
+    from sarf.xlayer.zap_api import build_zap_api
+
+    engine = ZapEngine(Database(":memory:"), OkxDexClient(), registry())
+    app = FastAPI()
+    app.include_router(build_zap_api(Database(":memory:"), engine))
+    r = TestClient(app).get("/api/zap/earn/vaults")
+    assert r.status_code == 200
+    body = r.json()
+    symbols = {v["symbol"] for v in body["vaults"]}
+    assert symbols == {"SPCXx", "NVDAx", "PAXGy"}
+    assert body["deposits_open"] is False, "flag is off; deposits must read as closed"
+    assert next(v for v in body["vaults"] if v["symbol"] == "PAXGy")["flagship"] is True
+    for v in body["vaults"]:
+        assert "tvl" not in json.dumps(v).lower(), "no TVL anywhere in a vault row"
+
+
+def test_single_vault_endpoint_rejects_unknown_symbols():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from sarf.db import Database
+    from sarf.xlayer.okx_dex import OkxDexClient
+    from sarf.xlayer.registry import registry
+    from sarf.xlayer.zap import ZapEngine
+    from sarf.xlayer.zap_api import build_zap_api
+
+    engine = ZapEngine(Database(":memory:"), OkxDexClient(), registry())
+    app = FastAPI()
+    app.include_router(build_zap_api(Database(":memory:"), engine))
+    c = TestClient(app)
+    assert c.get("/api/zap/earn/vaults/AAPLx").status_code == 404
+    ok = c.get("/api/zap/earn/vaults/spcxx")
+    assert ok.status_code == 200 and ok.json()["symbol"] == "SPCXx"
