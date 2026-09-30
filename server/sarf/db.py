@@ -442,6 +442,26 @@ CREATE TABLE IF NOT EXISTS zap_events (
 );
 CREATE INDEX IF NOT EXISTS idx_zap_events_pos ON zap_events(position_id, at);
 
+-- One row per Earn deposit, spread across however many venues the allocator
+-- picked. `legs_json` is the list of legs and is the only place that split
+-- lives: an LP leg names the zap_positions row actually doing the work (the
+-- proven deposit/exit machinery, reused rather than duplicated), a lending
+-- leg carries its own reserve/amount/aToken bookkeeping directly since there
+-- is no separate table for those. State is entering while legs are still
+-- being opened, active once every leg has landed, exiting while unwinding,
+-- closed once every leg is back in the deposit asset.
+CREATE TABLE IF NOT EXISTS earn_positions (
+  position_id    TEXT PRIMARY KEY,
+  address        TEXT NOT NULL,
+  asset_symbol   TEXT NOT NULL,
+  deposit_units  TEXT NOT NULL,
+  state          TEXT NOT NULL,
+  legs_json      TEXT NOT NULL DEFAULT '[]',
+  created_at     REAL NOT NULL,
+  updated_at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_earn_positions_address ON earn_positions(address);
+
 -- Daily swap volume per pool, in USD, from the pair's own Swap events. Day
 -- buckets rather than one rolling total so the 7-day window can move without
 -- rescanning a week of blocks: the scanner appends to today, and the window is
@@ -1212,6 +1232,53 @@ class Database:
         cols["updated_at"] = time.time()
         sets = ",".join(f"{k}=?" for k in cols)
         sql = f"UPDATE zap_positions SET {sets} WHERE position_id=?"
+        args: tuple[Any, ...] = (*cols.values(), position_id)
+        if expect_state is not None:
+            sql += " AND state=?"
+            args += (expect_state,)
+        with self._lock, self._conn:
+            return self._conn.execute(sql, args).rowcount == 1
+
+    # ----------------------------------------------------------------- earn
+
+    def create_earn_position(self, **cols: Any) -> str:
+        position_id = "earn_" + uuid.uuid4().hex
+        now = time.time()
+        row = {"position_id": position_id, "created_at": now, "updated_at": now, **cols}
+        if "legs" in row:
+            row["legs_json"] = json.dumps(row.pop("legs"))
+        keys = ",".join(row)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"INSERT INTO earn_positions ({keys}) VALUES ({','.join('?' * len(row))})",
+                tuple(row.values()),
+            )
+        return position_id
+
+    def get_earn_position(self, position_id: str) -> dict[str, Any] | None:
+        cur = self._conn.execute("SELECT * FROM earn_positions WHERE position_id=?",
+                                 (position_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        out = dict(zip([c[0] for c in cur.description], r))
+        out["legs"] = json.loads(out.pop("legs_json") or "[]")
+        return out
+
+    def earn_positions_for(self, address: str) -> list[dict[str, Any]]:
+        ids = self._conn.execute(
+            "SELECT position_id FROM earn_positions WHERE address=? ORDER BY created_at DESC",
+            (address.lower(),),
+        ).fetchall()
+        return [p for (i,) in ids if (p := self.get_earn_position(i))]
+
+    def update_earn_position(self, position_id: str, *, expect_state: str | None = None,
+                             **cols: Any) -> bool:
+        if "legs" in cols:
+            cols["legs_json"] = json.dumps(cols.pop("legs"))
+        cols["updated_at"] = time.time()
+        sets = ",".join(f"{k}=?" for k in cols)
+        sql = f"UPDATE earn_positions SET {sets} WHERE position_id=?"
         args: tuple[Any, ...] = (*cols.values(), position_id)
         if expect_state is not None:
             sql += " AND state=?"
