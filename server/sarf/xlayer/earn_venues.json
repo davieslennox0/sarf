@@ -71,7 +71,7 @@
     },
     "verified": "both present in the pool's own getReservesList() on 2026-09-29"
   },
-  "pendle_rwa": {
+  "earn_rwa": {
     "_comment": "The 'RWA Fixed Yield' venue (sarf/xlayer/earn_pendle.py + pendle_rwa.py). USDG's reserves are cash and short-term US Treasury bills (Paxos, attested monthly) and Pendle's own platform tags this exact market 'stables' AND 'rwa' — the label is Pendle's, not Sarf marketing. Principal-protected by construction: only the PROCEEDS (redeemed minus principal, floored at 0) ever buy an RWA, and the user names which RWA at deposit time, validated against the same registry + RWA_ALLOWLIST every other RWA purchase in Sarf goes through. No leverage, no Aave loop — a borrow-and-loop version is negative carry against the base fixed rate and only turns positive via Pendle's own time-limited incentive emissions, which is marketing spend, not a durable yield.",
     "router": "0x888888888889758F76e7103c6CbF23ABbF58F946",
     "deposit_tokens": {

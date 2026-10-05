@@ -70,15 +70,15 @@ async def open_deposit(db, reg: XStocksRegistry, allowlist, address: str,
     if amount_units <= 0:
         raise ValidationError("amount must be positive")
     asset = reg.resolve(designated_rwa_symbol, allowlist=allowlist)  # raises if bad/disallowed
-    position_id = db.create_pendle_position(
+    position_id = db.create_earn_rwa_position(
         address=address.lower(), deposit_symbol=deposit_symbol.upper(),
         principal_units=str(amount_units), designated_rwa_symbol=asset.symbol,
         pt_units="0", state="entering")
-    return db.get_pendle_position(position_id)
+    return db.get_earn_rwa_position(position_id)
 
 
 def _load(db, address: str, position_id: str) -> dict[str, Any]:
-    pos = db.get_pendle_position(position_id)
+    pos = db.get_earn_rwa_position(position_id)
     if not pos or pos["address"] != address.lower():
         raise ValidationError("no such Pendle position for this account")
     return pos
@@ -125,7 +125,7 @@ async def submit_step(db, reg: XStocksRegistry, address: str, position_id: str,
         pt_in = got.get(pendle.PT_USDG_OCT2026.lower(), 0)
         if not pt_in:
             return {"status": "confirmed", "state": "entering"}  # that was just the approve
-        db.update_pendle_position(position_id, state="open",
+        db.update_earn_rwa_position(position_id, state="open",
                                   pt_units=str(int(pos["pt_units"] or 0) + pt_in))
         return {"status": "confirmed", "state": "open"}
 
@@ -136,7 +136,7 @@ async def submit_step(db, reg: XStocksRegistry, address: str, position_id: str,
             return {"status": "confirmed", "state": "exiting"}  # that was just the approve
         result = pendle.split_proceeds(redeemed_in, int(pos["principal_units"]))
         next_state = "buying_rwa" if result.has_proceeds else "closed"
-        db.update_pendle_position(
+        db.update_earn_rwa_position(
             position_id, state=next_state, redeemed_units=str(result.redeemed_units),
             proceeds_units=str(result.proceeds_units),
             **({} if result.has_proceeds else {"rwa_units": "0"}))
@@ -147,7 +147,7 @@ async def submit_step(db, reg: XStocksRegistry, address: str, position_id: str,
         rwa_in = got.get(asset.address.lower(), 0)
         if not rwa_in:
             return {"status": "confirmed", "state": "buying_rwa"}  # that was just the approve
-        db.update_pendle_position(position_id, state="closed", rwa_units=str(rwa_in))
+        db.update_earn_rwa_position(position_id, state="closed", rwa_units=str(rwa_in))
         return {"status": "confirmed", "state": "closed"}
 
     return {"status": "confirmed", "state": state}
@@ -157,6 +157,6 @@ async def request_withdraw(db, address: str, position_id: str) -> dict[str, Any]
     pos = _load(db, address, position_id)
     if pos["state"] != "open":
         raise ValidationError(f"cannot withdraw from a position in state {pos['state']!r}")
-    if not db.update_pendle_position(position_id, expect_state="open", state="exiting"):
+    if not db.update_earn_rwa_position(position_id, expect_state="open", state="exiting"):
         raise ValidationError("the position changed state; reload it")
-    return db.get_pendle_position(position_id)
+    return db.get_earn_rwa_position(position_id)

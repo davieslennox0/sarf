@@ -6,11 +6,14 @@ import { OpenInChat } from '../handoff.jsx';
 import { Fact, num } from '../zapui.jsx';
 
 /**
- * One Pendle "RWA Fixed Yield" position. Public and bookmarkable, same
+ * One Earn "RWA Fixed Yield" position. Public and bookmarkable, same
  * reasoning as ZapPosition: it shows what the chain already shows. Signing
  * (entry, withdraw, and — only if there are real proceeds — the RWA buy)
  * needs the owner's wallet, same runFlow loop ZapPosition already uses:
  * ask the server for the next step, sign it, confirm, repeat until done.
+ *
+ * Named and branded as Earn throughout — Pendle is the protocol underneath
+ * (disclosed once, honestly, in the footer) but never the product name.
  *
  * Deliberately much smaller than ZapPosition — no IL ring, no thresholds,
  * no exit/re-entry history. The whole position is: principal in, PT held,
@@ -30,7 +33,7 @@ const STATE_LABEL = {
   closed: 'Closed',
 };
 
-export default function PendlePosition() {
+export default function EarnRwaPosition() {
   const { id } = useParams();
   const [v, setV] = useState(null);
   const [isOwner, setIsOwner] = useState(false);
@@ -41,10 +44,10 @@ export default function PendlePosition() {
   const load = useCallback(async () => {
     try {
       let view = null;
-      const mine = await api.pendleMine().catch(() => null);
+      const mine = await api.earnRwaMine().catch(() => null);
       view = mine?.positions?.find((p) => p.position_id === id) || null;
       setIsOwner(!!view);
-      setV(view || (await api.pendlePosition(id)));
+      setV(view || (await api.earnRwaPosition(id)));
       setErr(null);
     } catch (e) {
       setErr(e.message);
@@ -68,12 +71,12 @@ export default function PendlePosition() {
     try {
       const addr = await signIn();
       for (;;) {
-        const st = await api.pendleStep(id);
+        const st = await api.earnRwaStep(id);
         if (st.status !== 'sign') break;
         setSigning({ title: st.title });
         const hash = await sendTransaction(addr, st.tx);
-        let res = await api.pendleStepSubmitted(id, hash);
-        while (res.status === 'pending') res = await api.pendleStepSubmitted(id, hash);
+        let res = await api.earnRwaStepSubmitted(id, hash);
+        while (res.status === 'pending') res = await api.earnRwaStepSubmitted(id, hash);
       }
       setNote('All steps signed and confirmed.');
     } catch (e) {
@@ -88,7 +91,7 @@ export default function PendlePosition() {
     setErr(null);
     try {
       await signIn();
-      setV(await api.pendleWithdraw(id));
+      setV(await api.earnRwaWithdraw(id));
       setNote('Withdraw queued. Sign it below.');
     } catch (e) {
       setErr(e.message || String(e));
@@ -105,7 +108,7 @@ export default function PendlePosition() {
   const rwa = u18(v.rwa_units);
   const pending = ['entering', 'exiting', 'buying_rwa'].includes(v.state);
   const closed = v.state === 'closed';
-  const ask = (s) => `Using Sarf, ${s} (Pendle RWA position ${v.position_id}).`;
+  const ask = (s) => `Using Sarf, ${s} (Earn RWA Fixed Yield position ${v.position_id}).`;
 
   return (
     <section className="zap">
@@ -115,7 +118,7 @@ export default function PendlePosition() {
         <div className="pos-id">
           <div>
             <h1>
-              RWA Fixed Yield
+              Earn — RWA Fixed Yield
               <span className={`chip${pending ? ' accent' : ''}`}>{v.state.replace(/_/g, ' ')}</span>
             </h1>
             <p className="sub">{STATE_LABEL[v.state] || v.state} · proceeds buy {v.designated_rwa_symbol}</p>
@@ -136,7 +139,7 @@ export default function PendlePosition() {
           <div className="card">
             <h3>Principal-protected by construction</h3>
             <p className="small" style={{ marginTop: 0 }}>
-              Your {v.deposit_symbol} bought a Pendle fixed-yield Principal Token. At
+              Your {v.deposit_symbol} bought a fixed-yield Principal Token. At
               withdrawal, the principal always comes back as {v.deposit_symbol}. Only the
               proceeds actually earned — never the principal — buy {v.designated_rwa_symbol}.
               If there are no proceeds, nothing is bought; there is never a loss beyond the
@@ -171,7 +174,7 @@ export default function PendlePosition() {
               ) : (
                 <>
                   <button className="primary big" style={{ marginTop: 10 }} onClick={runFlow}>Sign next steps in wallet</button>
-                  <OpenInChat text={ask('show me what is waiting to be signed on my Pendle RWA position and give me the link')} />
+                  <OpenInChat text={ask('show me what is waiting to be signed on my Earn RWA position and give me the link')} />
                 </>
               )}
             </div>
@@ -188,7 +191,7 @@ export default function PendlePosition() {
               <h3>Withdraw</h3>
               <p className="small">Redeems the PT back to {v.deposit_symbol}. Principal returns as-is; any real proceeds buy {v.designated_rwa_symbol}.</p>
               <button className="danger" style={{ marginTop: 10 }} onClick={withdraw}>Withdraw now</button>
-              <OpenInChat text={ask('withdraw my Pendle RWA position')} />
+              <OpenInChat text={ask('withdraw my Earn RWA position')} />
             </div>
           )}
           <div className="card">
@@ -198,15 +201,16 @@ export default function PendlePosition() {
                 Copy share link
               </button>
             </div>
-            <OpenInChat text={ask('show me my Pendle RWA position')} label="check it in chat" />
+            <OpenInChat text={ask('show me my Earn RWA position')} label="check it in chat" />
           </div>
         </aside>
       </div>
 
       <p className="disclosure" style={{ marginTop: 22 }}>
         USDG's reserves are cash and short-term US Treasury bills, attested monthly by Paxos.
-        The fixed rate is Pendle's own live quote, not a Sarf guarantee, and only applies to a
-        position held to maturity — an early exit sells the PT on Pendle's own market instead.
+        The fixed rate is a live market quote (via Pendle's fixed-yield protocol), not a Sarf
+        guarantee, and only applies to a position held to maturity — an early exit sells the
+        Principal Token on the open market instead.
       </p>
     </section>
   );

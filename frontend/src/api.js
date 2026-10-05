@@ -191,13 +191,13 @@ export const api = {
       method: 'POST', body: JSON.stringify({ tx_hash: txHash }),
     }),
 
-  pendlePosition: (id) => req(`/api/pendle/${encodeURIComponent(id)}`),
-  pendleMine: () => req('/api/pendle/positions/mine'),
-  pendleDeposit: (body) => req('/api/pendle/deposit', { method: 'POST', body: JSON.stringify(body) }),
-  pendleWithdraw: (id) => req(`/api/pendle/${encodeURIComponent(id)}/withdraw`, { method: 'POST' }),
-  pendleStep: (id) => req(`/api/pendle/${encodeURIComponent(id)}/step`, { method: 'POST' }),
-  pendleStepSubmitted: (id, txHash) =>
-    req(`/api/pendle/${encodeURIComponent(id)}/step/submitted`, {
+  earnRwaPosition: (id) => req(`/api/earn-rwa/${encodeURIComponent(id)}`),
+  earnRwaMine: () => req('/api/earn-rwa/positions/mine'),
+  earnRwaDeposit: (body) => req('/api/earn-rwa/deposit', { method: 'POST', body: JSON.stringify(body) }),
+  earnRwaWithdraw: (id) => req(`/api/earn-rwa/${encodeURIComponent(id)}/withdraw`, { method: 'POST' }),
+  earnRwaStep: (id) => req(`/api/earn-rwa/${encodeURIComponent(id)}/step`, { method: 'POST' }),
+  earnRwaStepSubmitted: (id, txHash) =>
+    req(`/api/earn-rwa/${encodeURIComponent(id)}/step/submitted`, {
       method: 'POST', body: JSON.stringify({ tx_hash: txHash }),
     }),
 

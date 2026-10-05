@@ -116,7 +116,7 @@ def test_submit_step_approve_only_receipt_keeps_state_entering(monkeypatch, db, 
 
     out = run(ep.submit_step(db, reg, ADDR, pos["position_id"], "0xhash"))
     assert out == {"status": "confirmed", "state": "entering"}
-    assert db.get_pendle_position(pos["position_id"])["state"] == "entering"
+    assert db.get_earn_rwa_position(pos["position_id"])["state"] == "entering"
 
 
 def test_submit_step_pt_transfer_moves_to_open_and_records_pt_units(monkeypatch, db, reg):
@@ -128,7 +128,7 @@ def test_submit_step_pt_transfer_moves_to_open_and_records_pt_units(monkeypatch,
 
     out = run(ep.submit_step(db, reg, ADDR, pos["position_id"], "0xhash"))
     assert out == {"status": "confirmed", "state": "open"}
-    final = db.get_pendle_position(pos["position_id"])
+    final = db.get_earn_rwa_position(pos["position_id"])
     assert final["state"] == "open" and final["pt_units"] == "1502681"
 
 
@@ -141,7 +141,7 @@ def test_submit_step_reverted_tx_raises_and_credits_nothing(monkeypatch, db, reg
 
     with pytest.raises(ValidationError, match="reverted"):
         run(ep.submit_step(db, reg, ADDR, pos["position_id"], "0xhash"))
-    assert db.get_pendle_position(pos["position_id"])["state"] == "entering"
+    assert db.get_earn_rwa_position(pos["position_id"])["state"] == "entering"
 
 
 # --------------------------------------------------------- withdraw / exit
@@ -154,7 +154,7 @@ def test_request_withdraw_refuses_a_position_that_is_not_open(db, reg):
 
 def _opened_position(db, reg, pt_units=1_502_681):
     pos = run(ep.open_deposit(db, reg, frozenset(), ADDR, "USDT0", 1_500_000, "SPCXx"))
-    db.update_pendle_position(pos["position_id"], state="open", pt_units=str(pt_units))
+    db.update_earn_rwa_position(pos["position_id"], state="open", pt_units=str(pt_units))
     return pos["position_id"]
 
 
@@ -169,7 +169,7 @@ def test_exit_with_proceeds_moves_to_buying_rwa_not_closed(monkeypatch, db, reg)
 
     out = run(ep.submit_step(db, reg, ADDR, position_id, "0xhash"))
     assert out == {"status": "confirmed", "state": "buying_rwa"}
-    final = db.get_pendle_position(position_id)
+    final = db.get_earn_rwa_position(position_id)
     assert final["proceeds_units"] == "100000"  # 1,600,000 - 1,500,000
 
 
@@ -186,13 +186,13 @@ def test_exit_at_a_loss_closes_directly_with_zero_proceeds(monkeypatch, db, reg)
 
     out = run(ep.submit_step(db, reg, ADDR, position_id, "0xhash"))
     assert out == {"status": "confirmed", "state": "closed"}
-    final = db.get_pendle_position(position_id)
+    final = db.get_earn_rwa_position(position_id)
     assert final["proceeds_units"] == "0" and final["rwa_units"] == "0"
 
 
 def test_next_step_buying_rwa_builds_a_real_okx_swap_for_the_chosen_asset(db, reg):
     position_id = _opened_position(db, reg)
-    db.update_pendle_position(position_id, state="buying_rwa", proceeds_units="100000")
+    db.update_earn_rwa_position(position_id, state="buying_rwa", proceeds_units="100000")
 
     step = run(ep.next_step(db, reg, FakeDex(), ADDR, position_id))
     assert step["status"] == "sign" and step["kind"] == "swap"
@@ -201,7 +201,7 @@ def test_next_step_buying_rwa_builds_a_real_okx_swap_for_the_chosen_asset(db, re
 
 def test_submit_step_buying_rwa_credits_only_the_designated_asset(monkeypatch, db, reg):
     position_id = _opened_position(db, reg)
-    db.update_pendle_position(position_id, state="buying_rwa", proceeds_units="100000")
+    db.update_earn_rwa_position(position_id, state="buying_rwa", proceeds_units="100000")
 
     async def fake_receipt(tx_hash):
         return {"status": "0x1", "logs": [_transfer_log(RWA_ADDR, ADDR, 628)]}
@@ -209,4 +209,4 @@ def test_submit_step_buying_rwa_credits_only_the_designated_asset(monkeypatch, d
 
     out = run(ep.submit_step(db, reg, ADDR, position_id, "0xhash"))
     assert out == {"status": "confirmed", "state": "closed"}
-    assert db.get_pendle_position(position_id)["rwa_units"] == "628"
+    assert db.get_earn_rwa_position(position_id)["rwa_units"] == "628"
