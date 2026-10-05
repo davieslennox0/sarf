@@ -191,6 +191,16 @@ export const api = {
       method: 'POST', body: JSON.stringify({ tx_hash: txHash }),
     }),
 
+  pendlePosition: (id) => req(`/api/pendle/${encodeURIComponent(id)}`),
+  pendleMine: () => req('/api/pendle/positions/mine'),
+  pendleDeposit: (body) => req('/api/pendle/deposit', { method: 'POST', body: JSON.stringify(body) }),
+  pendleWithdraw: (id) => req(`/api/pendle/${encodeURIComponent(id)}/withdraw`, { method: 'POST' }),
+  pendleStep: (id) => req(`/api/pendle/${encodeURIComponent(id)}/step`, { method: 'POST' }),
+  pendleStepSubmitted: (id, txHash) =>
+    req(`/api/pendle/${encodeURIComponent(id)}/step/submitted`, {
+      method: 'POST', body: JSON.stringify({ tx_hash: txHash }),
+    }),
+
   passkeyStatus: () => req('/api/passkey/status'),
   passkeyRegisterOptions: () => req('/api/passkey/register/options', { method: 'POST' }),
   passkeyRegisterVerify: (cred) =>

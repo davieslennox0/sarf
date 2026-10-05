@@ -18,6 +18,7 @@ const Markets = lazy(() => import('./pages/Markets.jsx'));
 const Portfolio = lazy(() => import('./pages/Portfolio.jsx'));
 const Zap = lazy(() => import('./pages/Zap.jsx'));
 const ZapPosition = lazy(() => import('./pages/ZapPosition.jsx'));
+const PendlePosition = lazy(() => import('./pages/PendlePosition.jsx'));
 const EarnHome = lazy(() => import('./pages/EarnHome.jsx'));
 const EarnAsset = lazy(() => import('./pages/EarnAsset.jsx'));
 const Receipt = lazy(() => import('./pages/Receipt.jsx'));
@@ -371,6 +372,7 @@ export default function App() {
               <Route path="/portfolio" element={gate('Your portfolio', <Portfolio />)} />
               <Route path="/zap" element={<Zap />} />
               <Route path="/zap/:id" element={<ZapPosition />} />
+              <Route path="/pendle/:id" element={<PendlePosition />} />
               {/* Earn is a single-asset savings surface: a vault list, then a
                   per-asset deposit/withdraw card. It never shows the pools or
                   thresholds the Zap tab does — see pages/EarnHome.jsx. */}

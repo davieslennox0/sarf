@@ -462,6 +462,26 @@ CREATE TABLE IF NOT EXISTS earn_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_earn_positions_address ON earn_positions(address);
 
+-- Pendle PT-USDG fixed-yield positions, tagged as Sarf's RWA product (see
+-- xlayer/pendle_rwa.py's module docstring for why the RWA label holds up).
+-- Principal is protected by construction: only `proceeds_units` (redeemed
+-- minus principal, floored at 0) ever buys `designated_rwa_symbol`.
+CREATE TABLE IF NOT EXISTS pendle_positions (
+  position_id            TEXT PRIMARY KEY,
+  address                TEXT NOT NULL,
+  deposit_symbol         TEXT NOT NULL,
+  principal_units        TEXT NOT NULL,
+  designated_rwa_symbol  TEXT NOT NULL,
+  pt_units               TEXT,
+  state                  TEXT NOT NULL DEFAULT 'entering',
+  redeemed_units         TEXT,
+  proceeds_units         TEXT,
+  rwa_units              TEXT,
+  created_at             REAL NOT NULL,
+  updated_at             REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pendle_positions_address ON pendle_positions(address);
+
 -- Daily swap volume per pool, in USD, from the pair's own Swap events. Day
 -- buckets rather than one rolling total so the 7-day window can move without
 -- rescanning a week of blocks: the scanner appends to today, and the window is
@@ -1279,6 +1299,45 @@ class Database:
         cols["updated_at"] = time.time()
         sets = ",".join(f"{k}=?" for k in cols)
         sql = f"UPDATE earn_positions SET {sets} WHERE position_id=?"
+        args: tuple[Any, ...] = (*cols.values(), position_id)
+        if expect_state is not None:
+            sql += " AND state=?"
+            args += (expect_state,)
+        with self._lock, self._conn:
+            return self._conn.execute(sql, args).rowcount == 1
+
+    def create_pendle_position(self, **cols: Any) -> str:
+        position_id = "pendle_" + uuid.uuid4().hex
+        now = time.time()
+        row = {"position_id": position_id, "created_at": now, "updated_at": now, **cols}
+        keys = ",".join(row)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"INSERT INTO pendle_positions ({keys}) VALUES ({','.join('?' * len(row))})",
+                tuple(row.values()),
+            )
+        return position_id
+
+    def get_pendle_position(self, position_id: str) -> dict[str, Any] | None:
+        cur = self._conn.execute("SELECT * FROM pendle_positions WHERE position_id=?",
+                                 (position_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return dict(zip([c[0] for c in cur.description], r))
+
+    def pendle_positions_for(self, address: str) -> list[dict[str, Any]]:
+        ids = self._conn.execute(
+            "SELECT position_id FROM pendle_positions WHERE address=? ORDER BY created_at DESC",
+            (address.lower(),),
+        ).fetchall()
+        return [p for (i,) in ids if (p := self.get_pendle_position(i))]
+
+    def update_pendle_position(self, position_id: str, *, expect_state: str | None = None,
+                               **cols: Any) -> bool:
+        cols["updated_at"] = time.time()
+        sets = ",".join(f"{k}=?" for k in cols)
+        sql = f"UPDATE pendle_positions SET {sets} WHERE position_id=?"
         args: tuple[Any, ...] = (*cols.values(), position_id)
         if expect_state is not None:
             sql += " AND state=?"

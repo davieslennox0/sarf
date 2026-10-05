@@ -33,12 +33,14 @@ from . import admin, auth, oauth, passkey
 from .config import settings
 from .db import Database
 from .providers.xlayer_rwa import XLayerRwaProvider
+from .providers.pendle_tools import register_pendle_tools
 from .providers.zap_tools import register_zap_tools
 from .xlayer import deposit
 from .xlayer.api import build_xlayer_api
 from .xlayer.okx_dex import dex
 from .xlayer.registry import registry as load_registry
 from .xlayer.zap import ZapEngine
+from .xlayer.pendle_api import build_pendle_api
 from .xlayer.zap_api import build_zap_api
 from .xlayer.swap_api import build_swap_api
 from .xlayer.account_api import build_account_api
@@ -171,6 +173,10 @@ provider.register_tools(mcp)
 # step.
 zap_engine = ZapEngine(db, dex, rwa_registry)
 register_zap_tools(mcp, zap_engine)
+# Pendle "RWA Fixed Yield" venue — its own position table and lifecycle
+# (xlayer/earn_pendle.py), not a leg inside the still-"coming soon" blended
+# Earn allocator. Same MCP-tools-plus-REST split as the zap.
+register_pendle_tools(mcp, db, rwa_registry, dex)
 
 
 @asynccontextmanager
@@ -421,6 +427,7 @@ async def healthz():
 app.include_router(build_xlayer_api(db, dex, rwa_registry, provider))
 app.include_router(oauth.build_oauth(db))
 app.include_router(build_zap_api(db, zap_engine))
+app.include_router(build_pendle_api(db, rwa_registry, dex))
 app.include_router(build_swap_api(db, dex, rwa_registry, provider))
 app.include_router(build_account_api(db, rwa_registry, provider))
 # Operator console. Registered unconditionally: with SARF_ADMIN_EMAILS unset
