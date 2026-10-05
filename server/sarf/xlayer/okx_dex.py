@@ -142,6 +142,105 @@ def _router_names(router_list: list[dict[str, Any]] | None) -> list[str]:
     return names
 
 
+class _McpSession:
+    """One long-lived `onchainos mcp` subprocess, reused for every CLI-transport
+    call for the rest of this process's life, instead of spawning a fresh
+    process per call.
+
+    A fresh subprocess cost ~0.6s of process-start overhead alone, before any
+    network round trip. Fanned out over the 20+ symbols a single market page
+    prices concurrently, that is what stacked into the multi-second "Reading
+    X Layer..." stalls: not one slow call, but a pile of competing process
+    spawns on a box that was already short on CPU. A warm MCP round trip over
+    one process's stdio answers in whatever the network call itself takes
+    (tens to a few hundred ms), because there is no process to start.
+
+    Every call is serialised behind `_call_lock`, one request in flight at a
+    time. That was not the original design — JSON-RPC ids should let
+    concurrent callers pipeline through one connection — but sending several
+    `tools/call` requests before reading their replies measurably breaks this
+    particular binary: it either hung mid-batch or the whole process died
+    with "Connection lost" partway through, confirmed by driving it directly
+    outside of asyncio's scheduling. A queued 300ms-ish round trip per symbol
+    is the real, verified cost of this transport; a crashed shared process
+    taking every in-flight caller down with it is not an acceptable trade for
+    shaving that down.
+    """
+
+    def __init__(self, *, timeout: float):
+        self._timeout = timeout
+        self._proc: asyncio.subprocess.Process | None = None
+        self._start_lock = asyncio.Lock()
+        self._call_lock = asyncio.Lock()
+
+    async def _ensure_started(self) -> None:
+        if self._proc is not None and self._proc.returncode is None:
+            return
+        async with self._start_lock:
+            if self._proc is not None and self._proc.returncode is None:
+                return
+            self._proc = await asyncio.create_subprocess_exec(
+                _CLI, "mcp",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await self._request("initialize", {
+                "protocolVersion": "2024-11-05", "capabilities": {},
+                "clientInfo": {"name": "sarf", "version": "1"},
+            })
+            await self._notify("notifications/initialized")
+
+    async def _write(self, obj: dict[str, Any]) -> None:
+        assert self._proc is not None and self._proc.stdin is not None
+        self._proc.stdin.write((json.dumps(obj) + "\n").encode())
+        await self._proc.stdin.drain()
+
+    async def _notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        await self._write(msg)
+
+    async def _request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        assert self._proc is not None and self._proc.stdout is not None
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "id": 1, "method": method}
+        if params is not None:
+            msg["params"] = params
+        await self._write(msg)
+        line = await asyncio.wait_for(self._proc.stdout.readline(), timeout=self._timeout)
+        if not line:
+            # The process ended (crashed, or `onchainos` was upgraded under
+            # us). Let the NEXT call respawn rather than retry a connection
+            # that is already dead.
+            dead, self._proc = self._proc, None
+            if dead.returncode is None:
+                dead.kill()
+            raise DexError("quote backend (mcp) connection closed")
+        return json.loads(line)
+
+    async def call(self, tool: str, arguments: dict[str, Any]) -> Any:
+        async with self._call_lock:
+            await self._ensure_started()
+            try:
+                msg = await self._request("tools/call", {"name": tool, "arguments": arguments})
+            except asyncio.TimeoutError:
+                raise DexError(f"quote backend (mcp) timed out calling {tool}")
+            except json.JSONDecodeError:
+                raise DexError("quote backend (mcp) returned malformed output")
+        if "error" in msg:
+            raise DexError(f"quote backend (mcp) error: {msg['error'].get('message')}")
+        result = msg.get("result") or {}
+        items = result.get("content") or [{}]
+        text = items[0].get("text", "")
+        if result.get("isError"):
+            raise DexError(str(text)[:200] or f"{tool} rejected the request")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+
 class OkxDexClient:
     def __init__(self, *, timeout: float = 20.0):
         self._timeout = timeout
@@ -149,10 +248,21 @@ class OkxDexClient:
         self._secret = os.environ.get("OKX_API_SECRET", "").strip()
         self._passphrase = os.environ.get("OKX_API_PASSPHRASE", "").strip()
         self._project = os.environ.get("OKX_PROJECT_ID", "").strip()
+        # Set once the configured key/secret/passphrase have been rejected
+        # outright: any 401 from this signed endpoint, whatever OKX's own
+        # error code inside the body says (seen both 50125 "no access" on
+        # market/candles and 50114 "Invalid Authority" on aggregator/quote
+        # for the same dead key). That is not a transient failure — retrying
+        # it is pointless for the rest of this process's life, so treat it
+        # exactly like no credential at all and fall through to the CLI
+        # transport, same as the docstring above already promises for an
+        # unconfigured key.
+        self._http_dead = False
+        self._mcp = _McpSession(timeout=timeout)
 
     @property
     def transport(self) -> str:
-        if self._key and self._secret and self._passphrase:
+        if self._key and self._secret and self._passphrase and not self._http_dead:
             return "http"
         if os.path.exists(_CLI):
             return "cli"
@@ -193,6 +303,14 @@ class OkxDexClient:
             if r.status_code == 429:
                 last = DexError("OKX DEX API returned HTTP 429")
             elif r.status_code != 200:
+                if r.status_code == 401:
+                    # A signed-HMAC request failing auth is never about this
+                    # one call — it is the key itself. Confirmed two distinct
+                    # OKX error codes for the exact same dead key depending on
+                    # endpoint (50125 on market/candles, 50114 "Invalid
+                    # Authority" on aggregator/quote), so the reliable signal
+                    # is the 401 itself, not any one code inside the body.
+                    self._http_dead = True
                 raise DexError(f"OKX DEX API returned HTTP {r.status_code}")
             else:
                 body = r.json()
@@ -207,26 +325,33 @@ class OkxDexClient:
             await asyncio.sleep(_RETRY_BASE * (2 ** attempt) * (0.5 + random.random()))
         raise last or DexError("OKX DEX API did not answer")
 
-    async def _cli(self, args: list[str]) -> Any:
-        proc = await asyncio.create_subprocess_exec(
-            _CLI, *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=self._timeout * 3)
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise DexError("quote backend timed out")
-        if proc.returncode != 0:
-            raise DexError(f"quote backend failed: {(err or b'').decode()[:200]}")
-        try:
-            body = json.loads(out.decode())
-        except json.JSONDecodeError:
-            raise DexError("quote backend returned malformed output")
-        if body.get("ok") is False:
-            raise DexError(str(body.get("error") or "quote backend rejected the request")[:200])
-        return body.get("data", body)
+    async def _cli(self, tool: str, arguments: dict[str, Any]) -> Any:
+        """Call one `onchainos` MCP tool through the shared warm session.
+
+        Replaces a per-call `onchainos <args>` subprocess (see _McpSession's
+        docstring for why that was the thing actually making prices slow).
+        """
+        return await self._mcp.call(tool, arguments)
+
+    async def _dispatch(self, *, http_path: str, http_params: dict[str, Any],
+                        cli_tool: str, cli_args: dict[str, Any]) -> Any:
+        """HTTP first; if it dies mid-call (the key just got rejected), retry
+        the SAME request over CLI immediately rather than surfacing a failure
+        the caller would read as "this pair has no route" — a transport
+        falling over has nothing to do with the asset it was asked about.
+
+        Only retries once and only for that specific transition, so a pair
+        that genuinely has no route still fails the normal way, and a
+        persistently broken CLI cannot turn into a retry loop.
+        """
+        if self.transport == "http":
+            try:
+                return await self._http(http_path, http_params)
+            except DexError:
+                if self._http_dead and os.path.exists(_CLI):
+                    return await self._cli(cli_tool, cli_args)
+                raise
+        return await self._cli(cli_tool, cli_args)
 
     @staticmethod
     def _first(data: Any) -> dict[str, Any]:
@@ -244,8 +369,7 @@ class OkxDexClient:
         """Read-only price estimate. Never used as an execution authorization."""
         if amount_min_units <= 0:
             raise DexError("quote amount must be positive")
-        t = self.transport
-        if t == "none":
+        if self.transport == "none":
             raise DexError(
                 "no quote backend configured: set OKX_API_KEY/OKX_API_SECRET/"
                 "OKX_API_PASSPHRASE, or install the onchainos CLI"
@@ -255,14 +379,12 @@ class OkxDexClient:
             "fromTokenAddress": from_address, "toTokenAddress": to_address,
             "amount": amount_min_units,
         }
-        if t == "http":
-            raw = await self._http("/api/v6/dex/aggregator/quote", params)
-        else:
-            raw = await self._cli([
-                "swap", "quote", "--chain", str(CHAIN_ID),
-                "--from", from_address, "--to", to_address,
-                "--amount", str(amount_min_units),
-            ])
+        raw = await self._dispatch(
+            http_path="/api/v6/dex/aggregator/quote", http_params=params,
+            cli_tool="swap_quote", cli_args={
+                "chain": str(CHAIN_ID), "from": from_address, "to": to_address,
+                "amount": str(amount_min_units),
+            })
         d = self._first(raw)
         try:
             to_amount = int(d["toTokenAmount"])
@@ -293,18 +415,15 @@ class OkxDexClient:
         [ts, o, h, l, c, vol, volUsd, confirm]; the CLI answers objects. Both
         come back in the same shape.
         """
-        t = self.transport
-        if t == "none":
+        if self.transport == "none":
             raise DexError("no market data backend configured")
         limit = max(1, min(int(limit), 299))
-        if t == "http":
-            raw = await self._http("/api/v6/dex/market/candles", {
-                "chainIndex": CHAIN_ID, "tokenContractAddress": address,
-                "bar": bar, "limit": limit,
-            })
-        else:
-            raw = await self._cli(["market", "kline", "--chain", str(CHAIN_ID),
-                                   "--address", address, "--bar", bar, "--limit", str(limit)])
+        raw = await self._dispatch(
+            http_path="/api/v6/dex/market/candles",
+            http_params={"chainIndex": CHAIN_ID, "tokenContractAddress": address,
+                        "bar": bar, "limit": limit},
+            cli_tool="market_kline",
+            cli_args={"chain": str(CHAIN_ID), "address": address, "bar": bar, "limit": limit})
         out = []
         for row in raw or []:
             try:
@@ -405,14 +524,27 @@ class OkxDexClient:
                        else "toTokenReferrerWalletAddress")
                 params[key] = fee_recipient
                 fee_applied = True
-            raw = await self._http("/api/v6/dex/aggregator/swap", params)
+            cli_args = {
+                "chain": str(CHAIN_ID), "from": from_address, "to": to_address,
+                "amount": str(amount_min_units),
+                "wallet": user_address, "slippage": str(slippage_pct),
+            }
+            try:
+                raw = await self._http("/api/v6/dex/aggregator/swap", params)
+            except DexError:
+                if not (self._http_dead and os.path.exists(_CLI)):
+                    raise
+                # The key died mid-call: retry over CLI, but the fee cannot
+                # ride along on that transport, so say so truthfully rather
+                # than claiming a fee that was never actually attached.
+                fee_applied = False
+                raw = await self._cli("swap_swap", cli_args)
         else:
-            raw = await self._cli([
-                "swap", "swap", "--chain", str(CHAIN_ID),
-                "--from", from_address, "--to", to_address,
-                "--amount", str(amount_min_units),
-                "--wallet", user_address, "--slippage", str(slippage_pct),
-            ])
+            raw = await self._cli("swap_swap", {
+                "chain": str(CHAIN_ID), "from": from_address, "to": to_address,
+                "amount": str(amount_min_units),
+                "wallet": user_address, "slippage": str(slippage_pct),
+            })
         d = self._first(raw)
         tx = d.get("tx") or {}
         rr = d.get("routerResult") or {}

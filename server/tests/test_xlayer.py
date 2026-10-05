@@ -1499,7 +1499,7 @@ def test_candles_normalises_http_rows_and_cli_objects(monkeypatch):
 
     monkeypatch.setattr(okx_dex.OkxDexClient, "transport", property(lambda self: "cli"))
 
-    async def cli(self, args):
+    async def cli(self, tool, arguments):
         return [{"ts": "1789848000000", "o": "1", "h": "2", "l": "1", "c": "2", "volUsd": "7"},
                 {"ts": "bad"}]
     monkeypatch.setattr(okx_dex.OkxDexClient, "_cli", cli)
