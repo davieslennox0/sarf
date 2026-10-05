@@ -52,6 +52,14 @@ DEPOSIT_TOKENS = {
     "USDG": pendle.USDG,
 }
 
+# One entry per fixed-yield market this venue can deposit into. The single
+# source of truth for both the MCP tool (get_earn_rwa_markets) and the public
+# REST listing (GET /api/earn-rwa/markets) — kept here, not duplicated in
+# each surface, so the two can never quote a different rate.
+MARKETS = [
+    {"label": "USDG-29OCT2026", "maturity": "2026-10-29T00:00:00Z", "implied_apy_pct": 3.19},
+]
+
 
 def _token_address(symbol: str) -> str:
     addr = DEPOSIT_TOKENS.get(symbol.upper())

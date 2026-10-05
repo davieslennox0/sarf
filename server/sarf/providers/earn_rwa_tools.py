@@ -35,14 +35,6 @@ from ..xlayer.okx_dex import OkxDexClient
 from ..xlayer.registry import XStocksRegistry
 from ..xlayer.zap import _units
 
-# One entry per fixed-yield market this venue can deposit into — matches
-# earn_venues.json's "pendle_rwa.markets" exactly; kept here too so this
-# read-only listing tool has no dependency on earn_pendle.py carrying
-# display data it has no other use for.
-_MARKETS = [
-    {"label": "USDG-29OCT2026", "maturity": "2026-10-29T00:00:00Z", "implied_apy_pct": 3.19},
-]
-
 
 def position_url(position_id: str) -> str:
     return f"{settings.public_url}/earn-rwa/{position_id}"
@@ -76,7 +68,7 @@ def register_earn_rwa_tools(mcp: FastMCP, db: Database, reg: XStocksRegistry,
         """
         return {
             "markets": [{**m, "deposit_tokens": list(earn_rwa_exec.DEPOSIT_TOKENS)}
-                       for m in _MARKETS],
+                       for m in earn_rwa_exec.MARKETS],
             "how_it_works": (
                 "Deposit a stablecoin, it buys a fixed-yield Principal Token (PT) that "
                 "redeems 1:1 to the stablecoin at maturity for a fixed, already-known "

@@ -54,6 +54,18 @@ def build_earn_rwa_api(db: Database, reg: XStocksRegistry, dex: OkxDexClient) ->
             v["sign_url"] = v["position_url"]
         return v
 
+    @r.get("/markets")
+    async def markets() -> dict[str, Any]:
+        """Public, read-only: the fixed-yield markets this venue can deposit
+        into, plus which stablecoins it accepts. Registered before
+        /{position_id} on purpose — a literal path has to win over the
+        catch-all or "markets" gets read as a position id."""
+        return {
+            "markets": [{**m, "deposit_tokens": list(earn_rwa_exec.DEPOSIT_TOKENS)}
+                       for m in earn_rwa_exec.MARKETS],
+            "principal_protected": True,
+        }
+
     @r.get("/{position_id}")
     async def public_position(position_id: str, request: Request) -> dict[str, Any]:
         ip = request.client.host if request.client else "?"

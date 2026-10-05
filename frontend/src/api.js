@@ -191,6 +191,7 @@ export const api = {
       method: 'POST', body: JSON.stringify({ tx_hash: txHash }),
     }),
 
+  earnRwaMarkets: () => req('/api/earn-rwa/markets'),
   earnRwaPosition: (id) => req(`/api/earn-rwa/${encodeURIComponent(id)}`),
   earnRwaMine: () => req('/api/earn-rwa/positions/mine'),
   earnRwaDeposit: (body) => req('/api/earn-rwa/deposit', { method: 'POST', body: JSON.stringify(body) }),

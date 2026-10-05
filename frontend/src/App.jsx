@@ -35,11 +35,12 @@ const NAV = [
   { to: '/markets', label: 'Markets', on: (p) => p === '/markets' },
   { to: '/portfolio', label: 'Portfolio', on: (p) => p === '/portfolio' },
   { to: '/zap', label: 'Zap', on: (p) => p.startsWith('/zap') },
-  // Earn is deliberately NOT in the nav. There is no deposit or withdraw
-  // execution behind it yet (earn_allocator.py is read-only), so it is not
-  // discoverable until that exists and has been tested with real funds. The
-  // route itself still resolves — see EarnHome.jsx — as a "coming soon" page
-  // for anyone who already has the link.
+  // Earn went back in the nav once the RWA Fixed Yield venue had a real,
+  // mainnet-tested deposit/withdraw path behind it (xlayer/earn_pendle.py +
+  // pendle_rwa.py) — see EarnHome.jsx. The blended LP+Aave allocator
+  // (earn_execution.py) is NOT what this links to; it still has no
+  // deposit UI of its own.
+  { to: '/earn', label: 'Earn', on: (p) => p.startsWith('/earn') && !p.startsWith('/earn-rwa') },
 ];
 
 const isPhone = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
