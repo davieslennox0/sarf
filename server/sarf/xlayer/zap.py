@@ -1250,12 +1250,14 @@ class ZapEngine:
             "aave_usdt_supply_apy_pct": aave["supply_apy_pct"] if aave else None,
             "pool_fee_return_since_entry_pct": r2(lp_fee_pct),
             "pool_fee_apr_pct_measured": r2(lp_fee_apr),
-            "incentive_rewards": ("USDG paid by X Layer to LPs in this pool during the program "
-                                  f"window ({self.incentive['window']}). Claimed on OKX's side, "
-                                  "not tracked by Sarf"),
             # Never shown without the IL beside it. See the headline.
             "il_bps_now": r2(il_now),
         }
+        if self.incentive.get("active"):
+            yield_block["incentive_rewards"] = (
+                "USDG paid by X Layer to LPs in this pool during the program "
+                f"window ({self.incentive['window']}). Claimed on OKX's side, "
+                "not tracked by Sarf")
 
         # --- what this position has actually earned -------------------------
         #
@@ -1297,7 +1299,17 @@ class ZapEngine:
                 "note": ("Both are already inside the position value and need no claim. "
                          "Uniswap fees compound into the pool position itself"),
             },
-            "paid_separately": {
+            "realized_usd": realized_usd,
+            "total_accrued_usd": r2(sum(earned)) if earned else None,
+            # The rule for this feature: no yield figure without the IL that
+            # paid for it standing next to it.
+            "il_bps_now": r2(il_now),
+        }
+        # No live programme means no "paid separately" card — a card showing
+        # a reward window that ended weeks ago, with 0 received and a claim
+        # link for a programme that is over, is worse than showing nothing.
+        if self.incentive.get("active"):
+            earnings["paid_separately"] = {
                 "programme": self.incentive["name"],
                 "window": self.incentive["window"],
                 "pot": self.incentive.get("rewards"),
@@ -1330,13 +1342,7 @@ class ZapEngine:
                              "there is nothing here to sign. Verified 2026-09-20: no on-chain "
                              "distributor and no claim contract is published"),
                 },
-            },
-            "realized_usd": realized_usd,
-            "total_accrued_usd": r2(sum(earned)) if earned else None,
-            # The rule for this feature: no yield figure without the IL that
-            # paid for it standing next to it.
-            "il_bps_now": r2(il_now),
-        }
+            }
         earning = ("Aave supply APY " + (f"{aave['supply_apy_pct']:.2f}%" if aave else "unavailable")
                    if pos["state"] in ("parked", "reentry_pending")
                    else "pool fees " + (f"{lp_fee_pct:+.3f}% since entry" if lp_fee_pct is not None
@@ -1365,8 +1371,9 @@ class ZapEngine:
             "state": pos["state"],
             "state_label": STATE_LABELS.get(pos["state"], pos["state"]),
             "headline": headline,
-            "pool": {**pool.public(), "incentive_program": self.incentive["name"],
-                     "incentive_window": self.incentive["window"]},
+            "pool": {**pool.public(), **({"incentive_program": self.incentive["name"],
+                                          "incentive_window": self.incentive["window"]}
+                                         if self.incentive.get("active") else {})},
             "deposit": {"asset": pos["deposit_symbol"],
                         "amount": _fmt(pos["deposit_amount"], R),
                         "usd_at_deposit": r2(pos.get("deposit_usd"))},

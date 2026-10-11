@@ -623,6 +623,10 @@ def test_incentives_are_counted_from_arrivals_never_estimated():
     so the page reports payments, each one a hash, and never a projection."""
     db = Database(":memory:")
     eng = ZapEngine(db, None, registry())
+    # This test is about the counting mechanism itself (arrivals, not
+    # estimates) — independent of whether a programme happens to be live
+    # today. Round 2 ended 2026-09-25; force it on here to exercise the path.
+    eng.incentive["active"] = True
     pid = db.create_zap_position(
         address=OWNER, pool_key="LAIKA-wSPCXx", deposit_symbol="SPCXx",
         deposit_amount=str(E18 // 2), deposit_usd=92.4, il_threshold_bps=800,
@@ -656,6 +660,29 @@ def test_incentives_are_counted_from_arrivals_never_estimated():
                             "amount": "9000000"}])
     assert run(eng.view(db.get_zap_position(pid)))["earnings"]["paid_separately"][
         "received_usdg"] == 2.0
+
+
+def test_no_live_programme_means_no_incentive_card_at_all():
+    """A card showing a reward window that ended weeks ago, with 0 received
+    and a claim link for a programme that is over, is worse than showing
+    nothing — so with no active programme, the whole 'paid separately'
+    section and the pool's incentive_program/window fields are absent
+    entirely, not present-but-empty."""
+    db = Database(":memory:")
+    eng = ZapEngine(db, None, registry())
+    assert eng.incentive.get("active") is False  # the real config, as shipped
+    pid = db.create_zap_position(
+        address=OWNER, pool_key="LAIKA-wSPCXx", deposit_symbol="SPCXx",
+        deposit_amount=str(E18 // 2), deposit_usd=92.4, il_threshold_bps=800,
+        reentry_bps=400, state="in_pool", entered_at=100.0)
+
+    v = run(eng.view(db.get_zap_position(pid)))
+    assert "paid_separately" not in v["earnings"]
+    assert "incentive_rewards" not in v["yield"]
+    assert "incentive_program" not in v["pool"] and "incentive_window" not in v["pool"]
+    # The pool itself is still fully usable — nothing about being
+    # non-incentivised removes it from the list or disables depositing.
+    assert v["pool"]["key"] == "LAIKA-wSPCXx"
 
 
 def test_steps_carry_a_gas_limit_wide_enough_for_the_token_s_heavy_path():

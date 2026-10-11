@@ -112,7 +112,7 @@ def register_zap_tools(mcp: FastMCP, engine: ZapEngine) -> None:
                 "Every number under `backtest` is a replay of ~30 days of this pair's own "
                 "prices. Say so whenever you quote one: it describes a period that has "
                 "already happened and does not predict the next one."),
-            "incentive_program": {**engine.incentive, "status": "ended"},
+            "incentive_program": engine.incentive,
             "exit_parking": "Aave V3 USDT on X Layer",
         }
 
