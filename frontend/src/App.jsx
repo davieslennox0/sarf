@@ -41,6 +41,9 @@ const NAV = [
   // (earn_execution.py) is NOT what this links to; it still has no
   // deposit UI of its own.
   { to: '/earn', label: 'Earn', on: (p) => p.startsWith('/earn') && !p.startsWith('/earn-rwa') },
+  // External: Sarf's own DEX, on its own subdomain/app, not a client-side
+  // route in this bundle — rendered as a plain <a>, not a router <Link>.
+  { to: 'https://dex.getsarf.xyz', label: 'Bridge', external: true, on: () => false },
 ];
 
 const isPhone = () => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches;
@@ -357,7 +360,9 @@ export default function App() {
           </Link>
           <div className="links">
             {NAV.map((n) => (
-              <Link key={n.to} className={n.on(pathname) ? 'on' : ''} to={n.to}>{n.label}</Link>
+              n.external
+                ? <a key={n.to} href={n.to} target="_blank" rel="noreferrer">{n.label} ↗</a>
+                : <Link key={n.to} className={n.on(pathname) ? 'on' : ''} to={n.to}>{n.label}</Link>
             ))}
           </div>
           <div className="header-right">
