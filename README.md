@@ -17,6 +17,14 @@ same provider methods and the same `ZapEngine` instance the MCP tools use, so a
 position opened in chat is the same row the website edits, and neither can
 drift from the other by being fixed in one place only.
 
+**Three things to put a wallet to work:**
+
+| | What it does | Live at |
+|---|---|---|
+| **[Zap](#the-zap--single-asset-liquidity-with-a-line-for-impermanent-loss)** | One asset in, both legs of a pool paired automatically, with an impermanent-loss line that unwinds to Aave on a breach and re-enters when it clears. | [getsarf.xyz/zap](https://getsarf.xyz/zap) |
+| **Earn** | Deposit a stablecoin into a fixed-yield position (Pendle PT-USDG under the hood); principal always returns as stablecoin, and only the *proceeds* — never the principal — buy an xStock you choose at deposit time. | [getsarf.xyz/earn](https://getsarf.xyz/earn) |
+| **Bridge** | Sell an RWA on one chain, bridge the proceeds over Circle CCTP, buy a *different* RWA on another — Solana, Ethereum, Arbitrum, Base, Hyperliquid and X Layer, one flow. Its own app, same non-custodial signing model. | [dex.getsarf.xyz](https://dex.getsarf.xyz) |
+
 ```
 User asks Claude to buy a tokenized stock
   → Claude calls place_order
